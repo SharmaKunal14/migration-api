@@ -1,0 +1,24 @@
+aws_region        = "replace-with-recorded-region"
+owner             = "replace-with-owner"
+product_domain    = "replace-with-development-hostname"
+route53_zone_id   = "replace-with-zone-id"
+acm_certificate_arn = "arn:aws:acm:us-east-1:123456789012:certificate/replace-me"
+
+supabase_url          = "https://project-ref.supabase.co"
+supabase_jwt_issuer   = "https://project-ref.supabase.co/auth/v1"
+supabase_jwt_audience = "authenticated"
+supabase_jwks_url     = "https://project-ref.supabase.co/auth/v1/.well-known/jwks.json"
+
+database_secret_arn                   = "arn:aws:secretsmanager:region:account:secret:runtime-db"
+database_secret_kms_key_arn           = "arn:aws:kms:region:account:key/runtime-secret-key"
+database_migration_secret_arn         = "arn:aws:secretsmanager:region:account:secret:migration-db"
+database_migration_secret_kms_key_arn = "arn:aws:kms:region:account:key/migration-secret-key"
+
+openai_identity_provider_id = "replace-with-development-wif-provider-id"
+openai_service_account_id   = "replace-with-development-service-account-id"
+openai_model                = "gpt-5.6-sol"
+openai_project_alias        = "development-agent"
+
+agent_image_digest    = "sha256:replace-with-64-lowercase-hex-characters"
+migrator_image_digest = "sha256:replace-with-64-lowercase-hex-characters"
+

@@ -1,0 +1,16 @@
+node_modules/
+coverage/
+dist/
+.vite/
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfplan
+*.zip
+*.log
+.env
+.env.*
+!.env.example
+terraform.tfvars
+infra/terraform/**/backend.hcl
+.DS_Store

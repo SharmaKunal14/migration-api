@@ -1,0 +1,27 @@
+{
+  "schemaVersion": "1.0",
+  "artifactId": "44444444-4444-4444-8444-444444444444",
+  "organisationId": "11111111-1111-4111-8111-111111111111",
+  "owner": {
+    "type": "vendor_release",
+    "id": "33333333-3333-4333-8333-333333333333"
+  },
+  "artifactType": "vendor_evidence",
+  "storage": {
+    "provider": "s3",
+    "bucketAlias": "development-artifacts",
+    "objectKey": "env/development/org/11111111-1111-4111-8111-111111111111/vendor/orbitchat/release/2.0.0/evidence/source-aaaaaaaa",
+    "versionId": null,
+    "kmsKeyAlias": "alias/migration-api-development-artifacts"
+  },
+  "integrity": {
+    "algorithm": "sha256",
+    "digest": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "bytes": 8192
+  },
+  "mediaType": "text/markdown; charset=utf-8",
+  "sensitivity": "public",
+  "retentionClass": "vendor_evidence",
+  "createdAt": "2026-07-24T09:55:00Z",
+  "expiresAt": null
+}

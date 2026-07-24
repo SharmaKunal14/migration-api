@@ -1,0 +1,323 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://migration-api.example/schemas/v1/agent-run.schema.json",
+  "title": "Migration API agent run",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "agentRunId",
+    "organisationId",
+    "agentType",
+    "context",
+    "status",
+    "policyVersion",
+    "toolRegistryVersion",
+    "model",
+    "budgets",
+    "usage",
+    "inputArtifacts",
+    "outputArtifactId",
+    "terminal",
+    "createdAt",
+    "startedAt",
+    "completedAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "agentRunId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "organisationId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "agentType": {
+      "enum": ["change_intelligence", "impact_analysis", "migration"]
+    },
+    "context": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["migrationRunId", "candidateId", "vendorReleaseId"],
+      "properties": {
+        "migrationRunId": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "candidateId": {
+          "$ref": "#/$defs/nullableUuid"
+        },
+        "vendorReleaseId": {
+          "$ref": "#/$defs/nullableUuid"
+        }
+      },
+      "anyOf": [
+        {
+          "properties": {
+            "migrationRunId": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        },
+        {
+          "properties": {
+            "candidateId": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        },
+        {
+          "properties": {
+            "vendorReleaseId": {
+              "$ref": "#/$defs/uuid"
+            }
+          }
+        }
+      ]
+    },
+    "status": {
+      "enum": ["queued", "running", "succeeded", "failed", "cancelled"]
+    },
+    "policyVersion": {
+      "$ref": "#/$defs/version"
+    },
+    "toolRegistryVersion": {
+      "$ref": "#/$defs/version"
+    },
+    "model": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "projectAlias",
+        "api",
+        "requestedModel",
+        "returnedModel",
+        "reasoningEffort",
+        "store",
+        "background",
+        "parallelToolCalls",
+        "truncation",
+        "promptCacheMode"
+      ],
+      "properties": {
+        "provider": {
+          "const": "openai"
+        },
+        "projectAlias": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,62}$"
+        },
+        "api": {
+          "const": "responses"
+        },
+        "requestedModel": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "returnedModel": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 128
+        },
+        "reasoningEffort": {
+          "enum": ["none", "low", "medium", "high", "xhigh", "max"]
+        },
+        "store": {
+          "const": false
+        },
+        "background": {
+          "const": false
+        },
+        "parallelToolCalls": {
+          "const": false
+        },
+        "truncation": {
+          "const": "disabled"
+        },
+        "promptCacheMode": {
+          "const": "explicit"
+        }
+      }
+    },
+    "budgets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxModelCalls",
+        "maxToolCalls",
+        "maxIterations",
+        "maxInputTokens",
+        "maxOutputTokens",
+        "maxWallClockMs"
+      ],
+      "properties": {
+        "maxModelCalls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "maxToolCalls": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 500
+        },
+        "maxIterations": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "maxInputTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 2000000
+        },
+        "maxOutputTokens": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 200000
+        },
+        "maxWallClockMs": {
+          "type": "integer",
+          "minimum": 1000,
+          "maximum": 86400000
+        }
+      }
+    },
+    "usage": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "modelCalls",
+            "toolCalls",
+            "iterations",
+            "inputTokens",
+            "outputTokens",
+            "durationMs"
+          ],
+          "properties": {
+            "modelCalls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "toolCalls": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "iterations": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "inputTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "outputTokens": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "durationMs": {
+              "type": "integer",
+              "minimum": 0
+            }
+          }
+        }
+      ]
+    },
+    "inputArtifacts": {
+      "type": "array",
+      "maxItems": 100,
+      "uniqueItems": true,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["artifactId", "sha256"],
+        "properties": {
+          "artifactId": {
+            "$ref": "#/$defs/uuid"
+          },
+          "sha256": {
+            "$ref": "#/$defs/sha256"
+          }
+        }
+      }
+    },
+    "outputArtifactId": {
+      "$ref": "#/$defs/nullableUuid"
+    },
+    "terminal": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["code", "safeErrorCode"],
+          "properties": {
+            "code": {
+              "enum": [
+                "completed",
+                "cancelled",
+                "budget_exhausted_model_calls",
+                "budget_exhausted_tool_calls",
+                "budget_exhausted_iterations",
+                "budget_exhausted_time",
+                "invalid_model_output",
+                "policy_rejected",
+                "upstream_transient",
+                "upstream_permanent",
+                "infrastructure_failed"
+              ]
+            },
+            "safeErrorCode": {
+              "type": ["string", "null"],
+              "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+            }
+          }
+        }
+      ]
+    },
+    "createdAt": {
+      "$ref": "#/$defs/dateTime"
+    },
+    "startedAt": {
+      "$ref": "#/$defs/nullableDateTime"
+    },
+    "completedAt": {
+      "$ref": "#/$defs/nullableDateTime"
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "nullableUuid": {
+      "type": ["string", "null"],
+      "format": "uuid"
+    },
+    "dateTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "nullableDateTime": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+    }
+  }
+}

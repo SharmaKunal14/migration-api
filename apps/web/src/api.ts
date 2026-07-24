@@ -1,0 +1,82 @@
+import type { PublicAgentRun, PublicOrganisation } from '@migration/contracts';
+
+import { browserConfiguration } from './config.js';
+
+interface ApiErrorBody {
+  readonly error?: {
+    readonly code?: string;
+    readonly message?: string;
+    readonly requestId?: string;
+  };
+}
+
+export class ApiError extends Error {
+  public constructor(
+    public readonly code: string,
+    message: string,
+    public readonly requestId: string | undefined,
+  ) {
+    super(message);
+    this.name = 'ApiError';
+  }
+}
+
+async function request<T>(token: string, path: string, init?: RequestInit): Promise<T> {
+  const headers = new Headers(init?.headers);
+  headers.set('accept', 'application/json');
+  headers.set('authorization', `Bearer ${token}`);
+  if (init?.body) {
+    headers.set('content-type', 'application/json');
+  }
+  const response = await fetch(`${browserConfiguration.VITE_API_BASE_URL}${path}`, {
+    ...init,
+    headers,
+    credentials: 'omit',
+  });
+  const body: unknown = await response.json();
+  if (!response.ok) {
+    const error = body as ApiErrorBody;
+    throw new ApiError(
+      error.error?.code ?? 'REQUEST_FAILED',
+      error.error?.message ?? 'The request could not be completed.',
+      error.error?.requestId,
+    );
+  }
+  return body as T;
+}
+
+export async function loadMe(
+  token: string,
+): Promise<{ organisations: PublicOrganisation[] }> {
+  return request(token, '/v1/me');
+}
+
+export async function createOrganisation(
+  token: string,
+  input: { readonly name: string; readonly slug: string },
+): Promise<{ organisation: PublicOrganisation }> {
+  return request(token, '/v1/organisations', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function createDemoRun(
+  token: string,
+  organisationId: string,
+  idempotencyKey: string,
+): Promise<{ run: PublicAgentRun }> {
+  return request(token, `/v1/organisations/${organisationId}/demo-runs`, {
+    method: 'POST',
+    headers: { 'idempotency-key': idempotencyKey },
+    body: JSON.stringify({ scenarioId: 'orbitchat-typescript-v1-v2' }),
+  });
+}
+
+export async function loadRun(
+  token: string,
+  organisationId: string,
+  runId: string,
+): Promise<{ run: PublicAgentRun }> {
+  return request(token, `/v1/organisations/${organisationId}/runs/${runId}`);
+}

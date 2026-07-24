@@ -1,0 +1,55 @@
+{
+  "schemaVersion": "1.0",
+  "name": "read_vendor_evidence",
+  "version": "1.0.0",
+  "description": "Reads one bounded byte range from an already validated vendor evidence artifact.",
+  "strict": true,
+  "allowedAgents": ["change_intelligence"],
+  "allowedPhases": ["analyzing_vendor_evidence"],
+  "requiredRunStates": ["running"],
+  "sideEffect": "none",
+  "retryClass": "idempotent",
+  "limits": {
+    "maxInputBytes": 1024,
+    "maxOutputBytes": 65536,
+    "timeoutMs": 5000
+  },
+  "evidencePolicy": "metadata",
+  "inputSchema": {
+    "type": "object",
+    "properties": {
+      "artifactId": {
+        "type": "string",
+        "format": "uuid"
+      },
+      "startByte": {
+        "type": "integer",
+        "minimum": 0
+      },
+      "endByte": {
+        "type": ["integer", "null"],
+        "minimum": 1
+      }
+    },
+    "required": ["artifactId", "startByte", "endByte"],
+    "additionalProperties": false
+  },
+  "outputSchema": {
+    "type": "object",
+    "properties": {
+      "content": {
+        "type": "string",
+        "maxLength": 65536
+      },
+      "sha256": {
+        "type": "string",
+        "pattern": "^[a-f0-9]{64}$"
+      },
+      "truncated": {
+        "type": "boolean"
+      }
+    },
+    "required": ["content", "sha256", "truncated"],
+    "additionalProperties": false
+  }
+}

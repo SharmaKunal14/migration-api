@@ -1,0 +1,434 @@
+name: Deploy development
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: Type deploy-development to confirm the deployment
+        required: true
+        type: string
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: deploy-development
+  cancel-in-progress: false
+
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: 'true'
+  TF_IN_AUTOMATION: 'true'
+  TF_INPUT: 'false'
+  AWS_STS_REGIONAL_ENDPOINTS: regional
+
+jobs:
+  prepare:
+    name: Build, migrate, and plan
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    environment:
+      name: development
+    outputs:
+      agent_image_digest: ${{ steps.images.outputs.agent_image_digest }}
+      migrator_image_digest: ${{ steps.images.outputs.migrator_image_digest }}
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      ECR_REGISTRY:
+        ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
+      DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+      VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_owner: ${{ vars.OWNER }}
+      TF_VAR_product_domain: ${{ vars.PRODUCT_DOMAIN }}
+      TF_VAR_route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
+      TF_VAR_acm_certificate_arn: ${{ vars.ACM_CERTIFICATE_ARN }}
+      TF_VAR_supabase_url: ${{ vars.SUPABASE_URL }}
+      TF_VAR_supabase_jwt_issuer: ${{ vars.SUPABASE_JWT_ISSUER }}
+      TF_VAR_supabase_jwt_audience: ${{ vars.SUPABASE_JWT_AUDIENCE }}
+      TF_VAR_supabase_jwks_url: ${{ vars.SUPABASE_JWKS_URL }}
+      TF_VAR_database_secret_arn: ${{ vars.DATABASE_SECRET_ARN }}
+      TF_VAR_database_secret_kms_key_arn: ${{ vars.DATABASE_SECRET_KMS_KEY_ARN }}
+      TF_VAR_database_migration_secret_arn: ${{ vars.DATABASE_MIGRATION_SECRET_ARN }}
+      TF_VAR_database_migration_secret_kms_key_arn:
+        ${{ vars.DATABASE_MIGRATION_SECRET_KMS_KEY_ARN }}
+      TF_VAR_openai_identity_provider_id: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
+      TF_VAR_openai_service_account_id: ${{ vars.OPENAI_SERVICE_ACCOUNT_ID }}
+      TF_VAR_openai_model: ${{ vars.OPENAI_MODEL }}
+      TF_VAR_openai_project_alias: ${{ vars.OPENAI_PROJECT_ALIAS }}
+
+    steps:
+      - name: Check out the selected revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22.14.0
+          package-manager-cache: false
+
+      - name: Validate protected deployment inputs
+        env:
+          DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
+        run: node scripts/deploy/validate-environment.mjs
+
+      - name: Create evidence directory
+        run: |
+          mkdir -p deployment-evidence
+          {
+            echo "repository=${GITHUB_REPOSITORY}"
+            echo "revision=${GITHUB_SHA}"
+            echo "run_id=${GITHUB_RUN_ID}"
+            echo "run_attempt=${GITHUB_RUN_ATTEMPT}"
+            echo "actor=${GITHUB_ACTOR}"
+          } > deployment-evidence/deployment.txt
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify application and infrastructure inputs
+        run: npm run check
+
+      - name: Generate application SBOM
+        run:
+          npm sbom --omit=dev --sbom-format=cyclonedx >
+          deployment-evidence/application.cdx.json
+
+      - name: Build deployable browser assets
+        env:
+          VITE_API_BASE_URL: /api
+          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+        run: npm run build:web
+
+      - name: Configure short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: migration-api-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+
+      - name: Verify AWS identity and deployment foundation
+        run: |
+          aws sts get-caller-identity --query Arn --output text
+          aws ecr describe-repositories \
+            --repository-names \
+              migration-api-development-agent \
+              migration-api-development-database-migrator \
+            --output json > deployment-evidence/ecr-repositories.json
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+
+      - name: Initialize and validate Terraform
+        working-directory: infra/terraform/environments/development
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="kms_key_id=${TF_STATE_KMS_KEY_ARN}" \
+            -backend-config="use_lockfile=true"
+          terraform validate
+
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
+      - name: Authenticate Docker to ECR
+        run: |
+          aws ecr get-login-password |
+            docker login \
+              --username AWS \
+              --password-stdin \
+              "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
+
+      - name: Build and push immutable images
+        run: |
+          agent_image="${ECR_REGISTRY}/migration-api-development-agent:${GITHUB_SHA}"
+          migrator_image="${ECR_REGISTRY}/migration-api-development-database-migrator:${GITHUB_SHA}"
+          if ! aws ecr describe-images \
+            --repository-name migration-api-development-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker buildx build \
+              --file workers/agent/Dockerfile \
+              --platform linux/arm64 \
+              --provenance=mode=max \
+              --sbom=true \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "${agent_image}" \
+              --push \
+              .
+          fi
+          if ! aws ecr describe-images \
+            --repository-name migration-api-development-database-migrator \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker buildx build \
+              --file workers/database-migrator/Dockerfile \
+              --platform linux/arm64 \
+              --provenance=mode=max \
+              --sbom=true \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "${migrator_image}" \
+              --push \
+              .
+          fi
+
+      - name: Resolve and validate immutable image digests
+        id: images
+        run: |
+          agent_digest="$(aws ecr describe-images \
+            --repository-name migration-api-development-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          migrator_digest="$(aws ecr describe-images \
+            --repository-name migration-api-development-database-migrator \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          if [[ ! "${agent_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Agent digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${migrator_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Migrator digest is invalid." >&2
+            exit 1
+          fi
+          {
+            echo "TF_VAR_agent_image_digest=${agent_digest}"
+            echo "TF_VAR_migrator_image_digest=${migrator_digest}"
+          } >> "${GITHUB_ENV}"
+          {
+            echo "agent_image_digest=${agent_digest}"
+            echo "migrator_image_digest=${migrator_digest}"
+          } >> "${GITHUB_OUTPUT}"
+          {
+            echo "agent_image_digest=${agent_digest}"
+            echo "migrator_image_digest=${migrator_digest}"
+          } >> deployment-evidence/deployment.txt
+
+      - name: Gate on ECR vulnerability scans
+        run: |
+          bash scripts/deploy/wait-for-ecr-scan.sh \
+            migration-api-development-agent \
+            "${TF_VAR_agent_image_digest}" \
+            deployment-evidence/agent-image-scan.json
+          bash scripts/deploy/wait-for-ecr-scan.sh \
+            migration-api-development-database-migrator \
+            "${TF_VAR_migrator_image_digest}" \
+            deployment-evidence/migrator-image-scan.json
+
+      - name: Refresh AWS credentials for migration and planning
+        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: migration-api-plan-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+
+      - name: Update only the migrator task definition
+        working-directory: infra/terraform/environments/development
+        run: |
+          terraform plan \
+            -input=false \
+            -out=migrator.tfplan \
+            -target=aws_ecs_task_definition.migrator
+          terraform show -no-color migrator.tfplan > ../../../../deployment-evidence/migrator-plan.txt
+          terraform apply -input=false migrator.tfplan
+
+      - name: Run database migrations from Fargate
+        run: |
+          bash scripts/deploy/run-migrator.sh \
+            infra/terraform/environments/development \
+            deployment-evidence
+
+      - name: Create and inspect the complete deployment plan
+        working-directory: infra/terraform/environments/development
+        run: |
+          terraform plan -input=false -out=stage-1.tfplan
+          terraform show -no-color stage-1.tfplan > ../../../../deployment-evidence/terraform-plan.txt
+          if grep -Eq 'replace-with|sha256:0{64}' ../../../../deployment-evidence/terraform-plan.txt; then
+            echo "Terraform plan contains placeholder values." >&2
+            exit 1
+          fi
+
+      - name: Package the exact saved-plan inputs
+        run: |
+          tar -czf deployment-plan-payload.tar.gz \
+            infra/terraform/environments/development/stage-1.tfplan \
+            infra/terraform/environments/development/.terraform/api.zip \
+            infra/terraform/environments/development/.terraform/outbox.zip \
+            infra/terraform/environments/development/.terraform/workflow-control.zip \
+            dist/services \
+            dist/web
+
+      - name: Upload the saved-plan payload
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: development-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment-plan-payload.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+      - name: Upload preparation evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: development-preparation-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment-evidence/
+          if-no-files-found: warn
+          retention-days: 30
+
+  apply:
+    name: Approve and apply the saved plan
+    needs: prepare
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    environment:
+      name: development
+      url: ${{ steps.deployment.outputs.product_url }}
+    env:
+      AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
+      AWS_REGION: ${{ vars.AWS_REGION }}
+      DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
+      TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
+      VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
+      TF_VAR_aws_region: ${{ vars.AWS_REGION }}
+      TF_VAR_owner: ${{ vars.OWNER }}
+      TF_VAR_product_domain: ${{ vars.PRODUCT_DOMAIN }}
+      TF_VAR_route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
+      TF_VAR_acm_certificate_arn: ${{ vars.ACM_CERTIFICATE_ARN }}
+      TF_VAR_supabase_url: ${{ vars.SUPABASE_URL }}
+      TF_VAR_supabase_jwt_issuer: ${{ vars.SUPABASE_JWT_ISSUER }}
+      TF_VAR_supabase_jwt_audience: ${{ vars.SUPABASE_JWT_AUDIENCE }}
+      TF_VAR_supabase_jwks_url: ${{ vars.SUPABASE_JWKS_URL }}
+      TF_VAR_database_secret_arn: ${{ vars.DATABASE_SECRET_ARN }}
+      TF_VAR_database_secret_kms_key_arn: ${{ vars.DATABASE_SECRET_KMS_KEY_ARN }}
+      TF_VAR_database_migration_secret_arn: ${{ vars.DATABASE_MIGRATION_SECRET_ARN }}
+      TF_VAR_database_migration_secret_kms_key_arn:
+        ${{ vars.DATABASE_MIGRATION_SECRET_KMS_KEY_ARN }}
+      TF_VAR_openai_identity_provider_id: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
+      TF_VAR_openai_service_account_id: ${{ vars.OPENAI_SERVICE_ACCOUNT_ID }}
+      TF_VAR_openai_model: ${{ vars.OPENAI_MODEL }}
+      TF_VAR_openai_project_alias: ${{ vars.OPENAI_PROJECT_ALIAS }}
+      TF_VAR_agent_image_digest: ${{ needs.prepare.outputs.agent_image_digest }}
+      TF_VAR_migrator_image_digest: ${{ needs.prepare.outputs.migrator_image_digest }}
+
+    steps:
+      - name: Check out the exact planned revision
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22.14.0
+          package-manager-cache: false
+
+      - name: Revalidate protected deployment inputs
+        env:
+          DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
+        run: node scripts/deploy/validate-environment.mjs
+
+      - name: Rebuild local deployment inputs
+        env:
+          VITE_API_BASE_URL: /api
+          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+        run: |
+          npm ci --ignore-scripts
+          npm run build
+
+      - name: Configure fresh short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: migration-api-apply-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+
+      - name: Initialize Terraform
+        working-directory: infra/terraform/environments/development
+        run: |
+          terraform init \
+            -input=false \
+            -backend-config="bucket=${TF_STATE_BUCKET}" \
+            -backend-config="region=${AWS_REGION}" \
+            -backend-config="kms_key_id=${TF_STATE_KMS_KEY_ARN}" \
+            -backend-config="use_lockfile=true"
+
+      - name: Download the reviewed saved-plan payload
+        uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
+        with:
+          name: development-plan-${{ github.run_id }}-${{ github.run_attempt }}
+          path: .
+
+      - name: Restore the saved-plan inputs
+        run: |
+          tar -xzf deployment-plan-payload.tar.gz
+          test -s infra/terraform/environments/development/stage-1.tfplan
+          test -s infra/terraform/environments/development/.terraform/api.zip
+          test -s infra/terraform/environments/development/.terraform/outbox.zip
+          test -s infra/terraform/environments/development/.terraform/workflow-control.zip
+
+      - name: Apply the exact reviewed plan
+        working-directory: infra/terraform/environments/development
+        run: |
+          mkdir -p ../../../../deployment-evidence
+          terraform apply -input=false stage-1.tfplan |
+            tee ../../../../deployment-evidence/terraform-apply.txt
+          terraform output -json > ../../../../deployment-evidence/terraform-outputs.json
+
+      - name: Smoke-test the public deployment
+        id: deployment
+        run: |
+          product_url="$(terraform \
+            -chdir=infra/terraform/environments/development \
+            output -raw product_url)"
+          echo "product_url=${product_url}" >> "${GITHUB_OUTPUT}"
+          bash scripts/deploy/smoke-test.sh "${product_url}" deployment-evidence
+          {
+            echo "### Development deployment"
+            echo
+            echo "- Revision: \`${GITHUB_SHA}\`"
+            echo "- URL: ${product_url}"
+            echo "- Agent: \`${TF_VAR_agent_image_digest}\`"
+            echo "- Migrator: \`${TF_VAR_migrator_image_digest}\`"
+            echo "- Migration: passed"
+            echo "- Saved-plan approval: passed"
+            echo "- Public smoke checks: passed"
+          } >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Upload deployment evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: development-deployment-${{ github.run_id }}-${{ github.run_attempt }}
+          path: deployment-evidence/
+          if-no-files-found: warn
+          retention-days: 30

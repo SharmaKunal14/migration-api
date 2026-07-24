@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  application:
+    runs-on: ubuntu-24.04
+    container: node:22.14.0-bookworm-slim
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify application
+        run: npm run check
+
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
+
+  terraform:
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Check out source
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Install Terraform
+        uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
+        with:
+          terraform_version: 1.10.5
+          terraform_wrapper: false
+
+      - name: Validate GitHub Actions workflows
+        run: |
+          curl \
+            --fail \
+            --location \
+            --silent \
+            --show-error \
+            https://github.com/rhysd/actionlint/releases/download/v1.7.12/actionlint_1.7.12_linux_amd64.tar.gz \
+            --output "${RUNNER_TEMP}/actionlint.tar.gz"
+          echo \
+            "8aca8db96f1b94770f1b0d72b6dddcb1ebb8123cb3712530b08cc387b349a3d8  ${RUNNER_TEMP}/actionlint.tar.gz" |
+            sha256sum --check
+          tar -xzf "${RUNNER_TEMP}/actionlint.tar.gz" -C "${RUNNER_TEMP}" actionlint
+          "${RUNNER_TEMP}/actionlint" -color
+
+      - name: Terraform format
+        run: terraform fmt -check -recursive infra/terraform
+
+      - name: Prepare validation-only build placeholders
+        run: |
+          mkdir -p dist/services dist/web
+          touch dist/services/api.js
+          touch dist/services/outbox-dispatcher.js
+          touch dist/services/workflow-control.js
+          printf '<!doctype html><title>validation only</title>' > dist/web/index.html
+
+      - name: Initialize application providers
+        working-directory: infra/terraform/environments/development
+        run: terraform init -backend=false -input=false
+
+      - name: Validate application configuration
+        working-directory: infra/terraform/environments/development
+        run: terraform validate
+
+      - name: Initialize bootstrap providers
+        working-directory: infra/terraform/bootstrap
+        run: terraform init -backend=false -input=false
+
+      - name: Validate bootstrap configuration
+        working-directory: infra/terraform/bootstrap
+        run: terraform validate

@@ -1,0 +1,5 @@
+bucket       = "replace-with-bootstrap-state-bucket"
+region       = "replace-with-recorded-region"
+kms_key_id   = "replace-with-bootstrap-state-kms-key-arn"
+use_lockfile = true
+

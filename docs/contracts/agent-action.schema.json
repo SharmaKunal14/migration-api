@@ -1,0 +1,170 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://migration-api.example/schemas/v1/agent-action.schema.json",
+  "title": "Migration API agent action",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "agentActionId",
+    "agentRunId",
+    "modelCallId",
+    "sequence",
+    "attempt",
+    "tool",
+    "sideEffect",
+    "idempotencyKey",
+    "validatedInputDigest",
+    "status",
+    "result",
+    "error",
+    "startedAt",
+    "completedAt",
+    "durationMs"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "agentActionId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "agentRunId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "modelCallId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "sequence": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10000
+    },
+    "attempt": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 10
+    },
+    "tool": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "version"],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9_]{2,63}$"
+        },
+        "version": {
+          "$ref": "#/$defs/version"
+        }
+      }
+    },
+    "sideEffect": {
+      "enum": ["none", "workspace_only"]
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{7,127}$"
+    },
+    "validatedInputDigest": {
+      "$ref": "#/$defs/sha256"
+    },
+    "status": {
+      "enum": ["started", "succeeded", "failed", "rejected", "timed_out"]
+    },
+    "result": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["outputDigest", "outputBytes", "evidenceArtifactId"],
+          "properties": {
+            "outputDigest": {
+              "$ref": "#/$defs/sha256"
+            },
+            "outputBytes": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 10485760
+            },
+            "evidenceArtifactId": {
+              "$ref": "#/$defs/nullableUuid"
+            }
+          }
+        }
+      ]
+    },
+    "error": {
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["classification", "safeErrorCode", "retryable"],
+          "properties": {
+            "classification": {
+              "enum": [
+                "validation",
+                "authorization",
+                "policy",
+                "timeout",
+                "upstream_transient",
+                "upstream_permanent",
+                "infrastructure"
+              ]
+            },
+            "safeErrorCode": {
+              "type": "string",
+              "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+            },
+            "retryable": {
+              "type": "boolean"
+            }
+          }
+        }
+      ]
+    },
+    "startedAt": {
+      "$ref": "#/$defs/dateTime"
+    },
+    "completedAt": {
+      "$ref": "#/$defs/nullableDateTime"
+    },
+    "durationMs": {
+      "type": ["integer", "null"],
+      "minimum": 0,
+      "maximum": 3600000
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "nullableUuid": {
+      "type": ["string", "null"],
+      "format": "uuid"
+    },
+    "dateTime": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "nullableDateTime": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "version": {
+      "type": "string",
+      "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+(?:-[0-9A-Za-z.-]+)?$"
+    }
+  }
+}

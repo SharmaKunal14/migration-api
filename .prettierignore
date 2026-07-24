@@ -1,0 +1,7 @@
+coverage/
+dist/
+docs/
+node_modules/
+.terraform/
+package-lock.json
+docs/contracts/*.json

@@ -1,0 +1,57 @@
+{
+  "schemaVersion": "1.0",
+  "agentRunId": "22222222-2222-4222-8222-222222222222",
+  "organisationId": "11111111-1111-4111-8111-111111111111",
+  "agentType": "change_intelligence",
+  "context": {
+    "migrationRunId": null,
+    "candidateId": null,
+    "vendorReleaseId": "33333333-3333-4333-8333-333333333333"
+  },
+  "status": "succeeded",
+  "policyVersion": "1.0.0",
+  "toolRegistryVersion": "1.0.0",
+  "model": {
+    "provider": "openai",
+    "projectAlias": "development-agent",
+    "api": "responses",
+    "requestedModel": "gpt-5.6-sol",
+    "returnedModel": "gpt-5.6-sol",
+    "reasoningEffort": "medium",
+    "store": false,
+    "background": false,
+    "parallelToolCalls": false,
+    "truncation": "disabled",
+    "promptCacheMode": "explicit"
+  },
+  "budgets": {
+    "maxModelCalls": 4,
+    "maxToolCalls": 12,
+    "maxIterations": 6,
+    "maxInputTokens": 50000,
+    "maxOutputTokens": 12000,
+    "maxWallClockMs": 300000
+  },
+  "usage": {
+    "modelCalls": 2,
+    "toolCalls": 3,
+    "iterations": 2,
+    "inputTokens": 8200,
+    "outputTokens": 1900,
+    "durationMs": 18400
+  },
+  "inputArtifacts": [
+    {
+      "artifactId": "44444444-4444-4444-8444-444444444444",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+  ],
+  "outputArtifactId": "55555555-5555-4555-8555-555555555555",
+  "terminal": {
+    "code": "completed",
+    "safeErrorCode": null
+  },
+  "createdAt": "2026-07-24T10:00:00Z",
+  "startedAt": "2026-07-24T10:00:01Z",
+  "completedAt": "2026-07-24T10:00:19Z"
+}

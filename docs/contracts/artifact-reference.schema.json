@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://migration-api.example/schemas/v1/artifact-reference.schema.json",
+  "title": "Migration API artifact reference",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "artifactId",
+    "organisationId",
+    "owner",
+    "artifactType",
+    "storage",
+    "integrity",
+    "mediaType",
+    "sensitivity",
+    "retentionClass",
+    "createdAt",
+    "expiresAt"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "artifactId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "organisationId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "owner": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id"],
+      "properties": {
+        "type": {
+          "enum": [
+            "vendor_release",
+            "repository_snapshot",
+            "agent_run",
+            "migration_run",
+            "verification_run"
+          ]
+        },
+        "id": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "artifactType": {
+      "enum": [
+        "vendor_evidence",
+        "migration_specification",
+        "repository_snapshot",
+        "inventory",
+        "context_manifest",
+        "agent_checkpoint",
+        "agent_action",
+        "impact_report",
+        "migration_plan",
+        "patch",
+        "verification_result",
+        "stdout_log",
+        "stderr_log",
+        "final_result"
+      ]
+    },
+    "storage": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "provider",
+        "bucketAlias",
+        "objectKey",
+        "versionId",
+        "kmsKeyAlias"
+      ],
+      "properties": {
+        "provider": {
+          "const": "s3"
+        },
+        "bucketAlias": {
+          "type": "string",
+          "pattern": "^[a-z][a-z0-9-]{1,62}$"
+        },
+        "objectKey": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 1024,
+          "pattern": "^env/[a-z0-9-]+/org/[0-9a-f-]+/.+$"
+        },
+        "versionId": {
+          "type": ["string", "null"],
+          "minLength": 1,
+          "maxLength": 1024
+        },
+        "kmsKeyAlias": {
+          "type": "string",
+          "pattern": "^alias/[A-Za-z0-9/_-]{1,250}$"
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["algorithm", "digest", "bytes"],
+      "properties": {
+        "algorithm": {
+          "const": "sha256"
+        },
+        "digest": {
+          "$ref": "#/$defs/sha256"
+        },
+        "bytes": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10737418240
+        }
+      }
+    },
+    "mediaType": {
+      "type": "string",
+      "pattern": "^[a-z0-9!#$&^_.+-]+/[a-z0-9!#$&^_.+-]+(?:;[ -~]+)?$",
+      "maxLength": 255
+    },
+    "sensitivity": {
+      "enum": [
+        "public",
+        "internal",
+        "customer_metadata",
+        "customer_source",
+        "customer_derived"
+      ]
+    },
+    "retentionClass": {
+      "enum": ["transient_source", "run_evidence", "vendor_evidence", "audit"]
+    },
+    "createdAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "expiresAt": {
+      "type": ["string", "null"],
+      "format": "date-time"
+    }
+  },
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    }
+  }
+}

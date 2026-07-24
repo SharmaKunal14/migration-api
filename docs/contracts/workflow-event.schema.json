@@ -1,0 +1,254 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://migration-api.example/schemas/v1/workflow-event.schema.json",
+  "title": "Migration API workflow event",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "eventId",
+    "eventType",
+    "occurredAt",
+    "correlationId",
+    "organisationId",
+    "aggregate",
+    "idempotencyKey",
+    "payload"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0"
+    },
+    "eventId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "eventType": {
+      "enum": [
+        "agent_run.requested",
+        "agent_run.started",
+        "agent_action.completed",
+        "agent_run.completed",
+        "agent_run.failed"
+      ]
+    },
+    "occurredAt": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "correlationId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "organisationId": {
+      "$ref": "#/$defs/uuid"
+    },
+    "aggregate": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["type", "id", "version"],
+      "properties": {
+        "type": {
+          "const": "agent_run"
+        },
+        "id": {
+          "$ref": "#/$defs/uuid"
+        },
+        "version": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "idempotencyKey": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9:_-]{7,127}$"
+    },
+    "payload": {
+      "type": "object"
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "agent_run.requested"
+          }
+        },
+        "required": ["eventType"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/requestedPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "agent_run.started"
+          }
+        },
+        "required": ["eventType"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/startedPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "agent_action.completed"
+          }
+        },
+        "required": ["eventType"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/actionCompletedPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "agent_run.completed"
+          }
+        },
+        "required": ["eventType"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/completedPayload"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "eventType": {
+            "const": "agent_run.failed"
+          }
+        },
+        "required": ["eventType"]
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "$ref": "#/$defs/failedPayload"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "uuid": {
+      "type": "string",
+      "format": "uuid"
+    },
+    "requestedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentRunId", "requestId"],
+      "properties": {
+        "agentRunId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "requestId": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "startedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentRunId", "attempt"],
+      "properties": {
+        "agentRunId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10
+        }
+      }
+    },
+    "actionCompletedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentRunId", "agentActionId", "sequence", "status"],
+      "properties": {
+        "agentRunId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "agentActionId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "sequence": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "status": {
+          "enum": ["succeeded", "failed", "rejected", "timed_out"]
+        }
+      }
+    },
+    "completedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentRunId", "terminalCode", "outputArtifactId"],
+      "properties": {
+        "agentRunId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "terminalCode": {
+          "const": "completed"
+        },
+        "outputArtifactId": {
+          "$ref": "#/$defs/uuid"
+        }
+      }
+    },
+    "failedPayload": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["agentRunId", "terminalCode", "safeErrorCode"],
+      "properties": {
+        "agentRunId": {
+          "$ref": "#/$defs/uuid"
+        },
+        "terminalCode": {
+          "enum": [
+            "cancelled",
+            "budget_exhausted_model_calls",
+            "budget_exhausted_tool_calls",
+            "budget_exhausted_iterations",
+            "budget_exhausted_time",
+            "invalid_model_output",
+            "policy_rejected",
+            "upstream_transient",
+            "upstream_permanent",
+            "infrastructure_failed"
+          ]
+        },
+        "safeErrorCode": {
+          "type": "string",
+          "pattern": "^[A-Z][A-Z0-9_]{2,63}$"
+        }
+      }
+    }
+  }
+}
