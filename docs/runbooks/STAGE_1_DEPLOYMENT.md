@@ -38,7 +38,25 @@ image.
 1. Create the development Supabase project and exact GitHub OAuth callbacks.
 2. Create `app_runtime`, `app_readonly`, and `app_migrator` database roles.
 3. Store the runtime and migration credentials in separate Secrets Manager
-   secrets encrypted by customer-managed KMS keys.
+   secrets encrypted by customer-managed KMS keys. Both secrets must use the
+   strict JSON shape below. Use the IPv4 Supavisor hostname, a numeric port,
+   the pooler-qualified role name, and the project CA certificate downloaded
+   from the Supabase dashboard:
+
+   ```json
+   {
+     "host": "aws-0-region.pooler.supabase.com",
+     "port": 5432,
+     "database": "postgres",
+     "username": "app_role.project-ref",
+     "password": "stored-only-in-secrets-manager",
+     "sslCaCertificate": "-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----"
+   }
+   ```
+
+   Use session pooling on port `5432` for the migrator and transaction pooling
+   on port `6543` for the Lambda runtime credential. Never disable certificate
+   or hostname verification.
 4. Enable AWS outbound identity federation.
 5. Decode a development AWS OIDC subject token locally and verify `iss`, `aud`,
    `sub`, and expiry without sending it to another service.

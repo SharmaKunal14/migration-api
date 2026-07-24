@@ -7,20 +7,13 @@ import {
   SecretsManagerClient,
 } from '@aws-sdk/client-secrets-manager';
 import pg from 'pg';
-import { z } from 'zod';
 
-import { migratorConfigSchema, parseConfig } from '@migration/config';
+import {
+  databaseCredentialSchema,
+  migratorConfigSchema,
+  parseConfig,
+} from '@migration/config';
 import { writeLog } from '@migration/observability';
-
-const databaseSecretSchema = z
-  .object({
-    host: z.string().min(1),
-    port: z.number().int().min(1).max(65_535),
-    database: z.string().min(1),
-    username: z.string().min(1),
-    password: z.string().min(1),
-  })
-  .strict();
 
 const migrationName = /^\d{4}_[a-z0-9_]+\.sql$/u;
 const advisoryLockName = 'migration-api-schema-v1';
@@ -37,7 +30,7 @@ async function main(): Promise<void> {
   if (!response.SecretString) {
     throw new Error('The migration credential secret has no string value.');
   }
-  const credentials = databaseSecretSchema.parse(JSON.parse(response.SecretString));
+  const credentials = databaseCredentialSchema.parse(JSON.parse(response.SecretString));
   const client = new pg.Client({
     host: credentials.host,
     port: credentials.port,
@@ -48,7 +41,10 @@ async function main(): Promise<void> {
     connectionTimeoutMillis: 5_000,
     options:
       '-c statement_timeout=30000 -c lock_timeout=5000 -c idle_in_transaction_session_timeout=30000',
-    ssl: { rejectUnauthorized: true },
+    ssl: {
+      ca: credentials.sslCaCertificate,
+      rejectUnauthorized: true,
+    },
   });
   await client.connect();
   try {

@@ -2,11 +2,31 @@ import { z } from 'zod';
 
 const nonEmpty = z.string().trim().min(1);
 const awsArn = z.string().regex(/^arn:aws[a-zA-Z-]*:/u, 'Expected an AWS ARN');
+const pemCertificate = z
+  .string()
+  .trim()
+  .min(1)
+  .max(16 * 1024)
+  .regex(
+    /^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/u,
+    'Expected a PEM-encoded certificate',
+  );
 
 const commonSchema = z.object({
   APP_ENVIRONMENT: z.enum(['development', 'staging', 'production']),
   AWS_REGION: nonEmpty,
 });
+
+export const databaseCredentialSchema = z
+  .object({
+    host: nonEmpty,
+    port: z.number().int().min(1).max(65_535),
+    database: nonEmpty,
+    username: nonEmpty,
+    password: z.string().min(1),
+    sslCaCertificate: pemCertificate,
+  })
+  .strict();
 
 export const apiConfigSchema = commonSchema.extend({
   ARTIFACT_BUCKET: nonEmpty,
@@ -50,6 +70,7 @@ export type DispatcherConfig = z.infer<typeof dispatcherConfigSchema>;
 export type WorkflowControlConfig = z.infer<typeof workflowControlConfigSchema>;
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
 export type MigratorConfig = z.infer<typeof migratorConfigSchema>;
+export type DatabaseCredential = z.infer<typeof databaseCredentialSchema>;
 
 export function parseConfig<T>(
   schema: z.ZodType<T>,

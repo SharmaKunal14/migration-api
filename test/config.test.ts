@@ -1,6 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
-import { agentConfigSchema, parseConfig } from '@migration/config';
+import {
+  agentConfigSchema,
+  databaseCredentialSchema,
+  parseConfig,
+} from '@migration/config';
 
 const validEnvironment = {
   APP_ENVIRONMENT: 'development',
@@ -14,6 +18,19 @@ const validEnvironment = {
   OPENAI_SERVICE_ACCOUNT_ID: 'svc_example',
   OPENAI_WIF_AUDIENCE: 'https://api.openai.com/v1',
   ORGANISATION_ID: '6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624',
+};
+
+const validDatabaseCredential = {
+  host: 'aws-0-ap-southeast-2.pooler.supabase.com',
+  port: 5432,
+  database: 'postgres',
+  username: 'app_migrator.project-ref',
+  password: 'not-a-real-password',
+  sslCaCertificate: [
+    '-----BEGIN CERTIFICATE-----',
+    'QUJDRA==',
+    '-----END CERTIFICATE-----',
+  ].join('\n'),
 };
 
 describe('startup configuration', () => {
@@ -42,5 +59,27 @@ describe('startup configuration', () => {
         EXTRA_SECRET: sensitiveValue,
       }),
     ).toThrow(expect.not.stringContaining(sensitiveValue));
+  });
+});
+
+describe('database credential validation', () => {
+  it('accepts a bounded PEM CA certificate', () => {
+    expect(databaseCredentialSchema.parse(validDatabaseCredential)).toEqual(
+      validDatabaseCredential,
+    );
+  });
+
+  it.each([
+    ['missing CA certificate', { sslCaCertificate: undefined }],
+    ['malformed CA certificate', { sslCaCertificate: 'not-a-certificate' }],
+    ['string port', { port: '5432' }],
+    ['unexpected field', { unexpected: 'value' }],
+  ])('rejects %s', (_name, replacement) => {
+    expect(() =>
+      databaseCredentialSchema.parse({
+        ...validDatabaseCredential,
+        ...replacement,
+      }),
+    ).toThrow();
   });
 });

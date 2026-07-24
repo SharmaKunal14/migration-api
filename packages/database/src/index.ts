@@ -4,19 +4,9 @@ import {
 } from '@aws-sdk/client-secrets-manager';
 import { CamelCasePlugin, Kysely, PostgresDialect, sql, type ColumnType } from 'kysely';
 import pg from 'pg';
-import { z } from 'zod';
 
+import { databaseCredentialSchema } from '@migration/config';
 import type { OrganisationRole, RunStatus, TerminalCode } from '@migration/domain';
-
-const databaseSecretSchema = z
-  .object({
-    host: z.string().min(1),
-    port: z.number().int().min(1).max(65_535),
-    database: z.string().min(1),
-    username: z.string().min(1),
-    password: z.string().min(1),
-  })
-  .strict();
 
 type Timestamp = ColumnType<Date, Date | string, Date | string>;
 
@@ -161,7 +151,7 @@ export async function createDatabase(
   if (!response.SecretString) {
     throw new Error('The database credential secret has no string value.');
   }
-  const credentials = databaseSecretSchema.parse(JSON.parse(response.SecretString));
+  const credentials = databaseCredentialSchema.parse(JSON.parse(response.SecretString));
   const pool = new pg.Pool({
     host: credentials.host,
     port: credentials.port,
@@ -174,7 +164,10 @@ export async function createDatabase(
     max: 1,
     options:
       '-c statement_timeout=5000 -c lock_timeout=2000 -c idle_in_transaction_session_timeout=5000',
-    ssl: { rejectUnauthorized: true },
+    ssl: {
+      ca: credentials.sslCaCertificate,
+      rejectUnauthorized: true,
+    },
   });
   pool.on('error', () => {
     // The caller observes query failure; credential and connection details are not logged.
