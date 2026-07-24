@@ -45,7 +45,7 @@ the same independently for the migration image.
 
 ## Terraform
 
-Use Terraform 1.10.5. Bootstrap state first. Initialize the application stack
+Use Terraform 1.15.8. Bootstrap state first. Initialize the application stack
 with an uncommitted `backend.hcl` containing the state bucket and KMS key
 identifiers. Store non-secret environment values in an approved deployment
 variable store, not in a committed `terraform.tfvars`.

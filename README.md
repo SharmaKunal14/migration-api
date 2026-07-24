@@ -13,7 +13,7 @@ Requirements:
 
 - Node.js 22.14.0
 - npm 10.9.2
-- Terraform 1.10.5 for infrastructure validation
+- Terraform 1.15.8 for infrastructure validation
 
 ```bash
 npm ci

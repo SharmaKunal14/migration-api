@@ -65,8 +65,8 @@ Performed on 2026-07-24:
   lines for the configured boundary packages.
 - `npm audit --audit-level=high`: zero known vulnerabilities.
 - `npm audit --omit=dev --audit-level=high`: zero known vulnerabilities.
-- Terraform 1.10.5 format check: passed.
-- Terraform 1.10.5 bootstrap and development validation: valid with zero
+- Terraform 1.15.8 format check: passed.
+- Terraform 1.15.8 bootstrap and development validation: valid with zero
   errors and zero warnings.
 - Targeted repository secret-pattern scan: no matches.
 - GitHub Actions validation with actionlint 1.7.12: passed.
