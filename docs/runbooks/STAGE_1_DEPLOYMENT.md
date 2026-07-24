@@ -9,7 +9,7 @@ The deployment must not begin until these values are recorded:
 
 - AWS and Supabase regions, with latency and data-processing rationale;
 - OpenAI project/data region and actual retention controls;
-- development product domain, Route 53 zone, and `us-east-1` certificate;
+- development product domain, GoDaddy DNS access, and `us-east-1` certificate;
 - exact OpenAI WIF provider and service-account mapping;
 - separate runtime and migration database roles and secrets;
 - GitHub deployment repository/environment.
@@ -42,6 +42,8 @@ the same independently for the migration image.
 6. Configure the OpenAI workload-identity provider and map the exact agent task
    role ARN with only `api.model.request`.
 7. Record the OpenAI project retention/data-residency configuration.
+8. Request the product certificate in `us-east-1`, add its DNS-validation CNAME
+   in GoDaddy, and wait for ACM status `ISSUED`.
 
 ## Terraform
 
@@ -53,6 +55,21 @@ variable store, not in a committed `terraform.tfvars`.
 Review the saved plan before apply. A successful apply is not Stage 1
 acceptance; complete the security-negative and end-to-end evidence in the
 acceptance checklist.
+
+Terraform creates the CloudFront distribution but does not manage GoDaddy DNS.
+On the first full apply, read the `cloudfront_cname_target` output and create
+this record in GoDaddy:
+
+```text
+Type:  CNAME
+Name:  migration-api
+Value: <cloudfront_cname_target>
+```
+
+Do not proxy, forward, or add a second A/AAAA record for the same hostname. The
+deployment smoke check waits up to 20 minutes for the exact CNAME before failing.
+Keep the ACM validation CNAME permanently so certificate renewal remains
+automatic.
 
 After the task definition exists, run the database migrator as a one-off Fargate
 task in the control subnets with the control security group. Wait for a zero exit
@@ -75,6 +92,7 @@ a substitute for reviewing changes before they reach `main`.
 ## Post-deployment checks
 
 - HTTP redirects to HTTPS.
+- GoDaddy resolves the product hostname as the exact CloudFront CNAME.
 - A deep UI link returns the app shell.
 - `/api/*` failures remain JSON failures.
 - Inline script and unapproved connections are blocked by CSP.

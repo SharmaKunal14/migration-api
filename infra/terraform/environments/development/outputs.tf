@@ -2,6 +2,11 @@ output "product_url" {
   value = "https://${var.product_domain}"
 }
 
+output "cloudfront_cname_target" {
+  description = "Create a GoDaddy CNAME for product_domain pointing to this hostname."
+  value       = aws_cloudfront_distribution.web.domain_name
+}
+
 output "api_endpoint" {
   value = aws_apigatewayv2_api.control.api_endpoint
 }

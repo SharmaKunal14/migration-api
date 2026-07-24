@@ -104,7 +104,7 @@ Rules:
 | CloudFront distribution           | One HTTPS product origin                      |
 | Origin Access Control             | CloudFront-only S3 reads                      |
 | ACM certificate                   | Product domain in required certificate region |
-| Route 53 record                   | Product hostname                              |
+| GoDaddy CNAME (manual)            | Product hostname to CloudFront distribution   |
 | AWS WAF web ACL                   | Managed baseline and rate rule                |
 | CloudFront response-header policy | CSP and browser security headers              |
 | CloudFront logs/metrics           | Bounded retention; no application source      |

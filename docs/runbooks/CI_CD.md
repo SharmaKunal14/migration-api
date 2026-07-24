@@ -55,8 +55,7 @@ configuration, not secret credential values:
 | `TF_STATE_BUCKET` | Bootstrap output `state_bucket` |
 | `TF_STATE_KMS_KEY_ARN` | Bootstrap output `state_kms_key_arn` |
 | `OWNER` | Resource owner tag |
-| `PRODUCT_DOMAIN` | Hostname without scheme or path |
-| `ROUTE53_ZONE_ID` | Existing hosted-zone ID |
+| `PRODUCT_DOMAIN` | GoDaddy hostname without scheme or path |
 | `ACM_CERTIFICATE_ARN` | Validated `us-east-1` CloudFront certificate |
 | `SUPABASE_URL` | Public project URL |
 | `SUPABASE_PUBLISHABLE_KEY` | Browser-safe publishable key, never service role |
@@ -106,6 +105,12 @@ first run:
 
 After the foundation exists, normal deployments use only the workflow.
 
+The first full deployment is the exception for DNS: after Terraform creates
+CloudFront, the workflow emits the exact `cloudfront_cname_target` as a notice.
+Create the product-hostname CNAME in GoDaddy while the bounded smoke check waits.
+Subsequent deployments retain the same distribution and require no manual DNS
+change unless the reviewed plan replaces it.
+
 ## Deployment
 
 From GitHub Actions:
@@ -118,7 +123,9 @@ From GitHub Actions:
    prepare the plan;
 6. inspect `terraform-plan.txt` in the preparation evidence artifact;
 7. approve the second protected `development` job to apply that exact plan; and
-8. retain the deployment evidence artifact and complete the manual authenticated
+8. on the first deployment, add the emitted CloudFront CNAME target in GoDaddy
+   before the 20-minute DNS wait expires; and
+9. retain the deployment evidence artifact and complete the manual authenticated
    and security-negative checks.
 
 Failure before the complete Terraform apply leaves the currently deployed

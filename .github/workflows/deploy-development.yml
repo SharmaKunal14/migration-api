@@ -44,7 +44,6 @@ jobs:
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
       TF_VAR_owner: ${{ vars.OWNER }}
       TF_VAR_product_domain: ${{ vars.PRODUCT_DOMAIN }}
-      TF_VAR_route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
       TF_VAR_acm_certificate_arn: ${{ vars.ACM_CERTIFICATE_ARN }}
       TF_VAR_supabase_url: ${{ vars.SUPABASE_URL }}
       TF_VAR_supabase_jwt_issuer: ${{ vars.SUPABASE_JWT_ISSUER }}
@@ -314,7 +313,6 @@ jobs:
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
       TF_VAR_owner: ${{ vars.OWNER }}
       TF_VAR_product_domain: ${{ vars.PRODUCT_DOMAIN }}
-      TF_VAR_route53_zone_id: ${{ vars.ROUTE53_ZONE_ID }}
       TF_VAR_acm_certificate_arn: ${{ vars.ACM_CERTIFICATE_ARN }}
       TF_VAR_supabase_url: ${{ vars.SUPABASE_URL }}
       TF_VAR_supabase_jwt_issuer: ${{ vars.SUPABASE_JWT_ISSUER }}
@@ -410,13 +408,21 @@ jobs:
           product_url="$(terraform \
             -chdir=infra/terraform/environments/development \
             output -raw product_url)"
+          cloudfront_cname_target="$(terraform \
+            -chdir=infra/terraform/environments/development \
+            output -raw cloudfront_cname_target)"
           echo "product_url=${product_url}" >> "${GITHUB_OUTPUT}"
-          bash scripts/deploy/smoke-test.sh "${product_url}" deployment-evidence
+          echo "::notice title=GoDaddy DNS required::Create a CNAME for ${product_url#https://} pointing to ${cloudfront_cname_target}"
+          bash scripts/deploy/smoke-test.sh \
+            "${product_url}" \
+            "${cloudfront_cname_target}" \
+            deployment-evidence
           {
             echo "### Development deployment"
             echo
             echo "- Revision: \`${GITHUB_SHA}\`"
             echo "- URL: ${product_url}"
+            echo "- GoDaddy CNAME target: \`${cloudfront_cname_target}\`"
             echo "- Agent: \`${TF_VAR_agent_image_digest}\`"
             echo "- Migrator: \`${TF_VAR_migrator_image_digest}\`"
             echo "- Migration: passed"

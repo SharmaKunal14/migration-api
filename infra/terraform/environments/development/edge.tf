@@ -442,15 +442,3 @@ resource "aws_s3_object" "web" {
   content_type  = lookup(local.content_types, regex("\\.[^.]+$", each.value), "application/octet-stream")
   cache_control = each.value == "index.html" ? "no-cache, no-store, must-revalidate" : "public, max-age=31536000, immutable"
 }
-
-resource "aws_route53_record" "web" {
-  zone_id = var.route53_zone_id
-  name    = var.product_domain
-  type    = "A"
-
-  alias {
-    name                   = aws_cloudfront_distribution.web.domain_name
-    zone_id                = aws_cloudfront_distribution.web.hosted_zone_id
-    evaluate_target_health = false
-  }
-}

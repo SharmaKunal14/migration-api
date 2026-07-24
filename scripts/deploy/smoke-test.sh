@@ -2,15 +2,41 @@
 set -euo pipefail
 
 product_url="${1:?product URL is required}"
-evidence_directory="${2:?evidence directory is required}"
+cloudfront_cname_target="${2:?CloudFront CNAME target is required}"
+evidence_directory="${3:?evidence directory is required}"
 
 if [[ ! "${product_url}" =~ ^https://[a-z0-9.-]+$ ]]; then
   echo "Product URL must be an HTTPS origin without a path." >&2
   exit 1
 fi
+if [[ ! "${cloudfront_cname_target}" =~ ^[a-z0-9.-]+\.cloudfront\.net$ ]]; then
+  echo "CloudFront CNAME target is invalid." >&2
+  exit 1
+fi
 
 mkdir -p "${evidence_directory}"
 host="${product_url#https://}"
+
+echo "Waiting for GoDaddy CNAME ${host} -> ${cloudfront_cname_target}."
+for attempt in $(seq 1 80); do
+  if node -e '
+    const dns = require("node:dns");
+    const [host, expected] = process.argv.slice(1);
+    const normalize = value => value.toLowerCase().replace(/\.$/u, "");
+    dns.resolveCname(host, (error, records) => {
+      if (error || !records.some(record => normalize(record) === normalize(expected))) {
+        process.exitCode = 1;
+      }
+    });
+  ' "${host}" "${cloudfront_cname_target}"; then
+    break
+  fi
+  if [[ "${attempt}" == '80' ]]; then
+    echo "GoDaddy CNAME did not resolve to ${cloudfront_cname_target} within 20 minutes." >&2
+    exit 1
+  fi
+  sleep 15
+done
 
 for attempt in $(seq 1 20); do
   if curl \

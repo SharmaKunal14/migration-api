@@ -16,7 +16,6 @@ const requiredVariables = [
   'TF_VAR_openai_service_account_id',
   'TF_VAR_owner',
   'TF_VAR_product_domain',
-  'TF_VAR_route53_zone_id',
   'TF_VAR_supabase_jwks_url',
   'TF_VAR_supabase_jwt_audience',
   'TF_VAR_supabase_jwt_issuer',

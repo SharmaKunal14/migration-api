@@ -9,12 +9,7 @@ variable "owner" {
 }
 
 variable "product_domain" {
-  description = "Dedicated development product hostname."
-  type        = string
-}
-
-variable "route53_zone_id" {
-  description = "Route 53 hosted zone containing product_domain."
+  description = "Dedicated development hostname managed manually in GoDaddy."
   type        = string
 }
 

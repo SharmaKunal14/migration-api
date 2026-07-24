@@ -215,9 +215,6 @@ data "aws_iam_policy_document" "github_deploy" {
       "lambda:*",
       "logs:*",
       "network-firewall:*",
-      "route53:ChangeResourceRecordSets",
-      "route53:GetHostedZone",
-      "route53:ListResourceRecordSets",
       "s3:*",
       "scheduler:*",
       "states:*",
@@ -244,4 +241,3 @@ output "state_kms_key_arn" {
 output "github_deploy_role_arn" {
   value = aws_iam_role.github_deploy.arn
 }
-

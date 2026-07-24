@@ -41,7 +41,7 @@
 - AWS and Supabase region decisions.
 - OpenAI project region, retention/data controls, provider ID, service account,
   and live WIF mapping.
-- Product domain, certificate, and Route 53 ownership.
+- Product domain, GoDaddy DNS access, and certificate ownership.
 - Supabase project, GitHub OAuth configuration, database roles, network
   allowlist, and migration execution.
 - ECR image digest, Terraform plan/apply, and live smoke evidence.
