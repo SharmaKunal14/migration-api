@@ -129,6 +129,11 @@ resource "aws_iam_role" "github_deploy" {
   assume_role_policy = data.aws_iam_policy_document.github_deploy_trust.json
 }
 
+resource "aws_iam_service_linked_role" "network_firewall" {
+  aws_service_name = "network-firewall.amazonaws.com"
+  description      = "Allows AWS Network Firewall to manage development firewall resources."
+}
+
 # Stage 1 application resources are name-scoped. Several create APIs do not support
 # resource-level permissions before a resource exists; those actions require "*".
 data "aws_iam_policy_document" "github_deploy" {
@@ -191,6 +196,42 @@ data "aws_iam_policy_document" "github_deploy" {
       "arn:aws:iam::${data.aws_caller_identity.current.account_id}:role/migration-api-development-*",
       "arn:aws:iam::${data.aws_caller_identity.current.account_id}:policy/migration-api-development-*"
     ]
+  }
+
+  # CloudWatch ListTagsForResource does not support resource-level permissions.
+  statement {
+    sid       = "DevelopmentAlarmTags"
+    actions   = ["cloudwatch:ListTagsForResource"]
+    resources = ["*"]
+  }
+
+  # KMS ListAliases does not support resource-level permissions.
+  statement {
+    sid       = "KmsAliasDiscovery"
+    actions   = ["kms:ListAliases"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "DevelopmentKmsData"
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:GenerateDataKey"
+    ]
+    resources = ["arn:aws:kms:${var.aws_region}:${data.aws_caller_identity.current.account_id}:key/*"]
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Application"
+      values   = ["migration-api"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "aws:ResourceTag/Environment"
+      values   = ["development"]
+    }
   }
 
   statement {

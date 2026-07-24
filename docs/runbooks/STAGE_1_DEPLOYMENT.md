@@ -110,10 +110,13 @@ terraform -chdir=infra/terraform/bootstrap apply -input=false bootstrap.tfplan
 terraform -chdir=infra/terraform/bootstrap output
 ```
 
-For an existing bootstrap, the reviewed plan must update only the deployment
-role's assume-role policy. If Terraform proposes creating the state bucket, KMS
-key, or deployment role, stop: the existing bootstrap state is not loaded. Do
-not apply a second bootstrap or manually broaden the role trust policy.
+For an existing bootstrap, the reviewed plan may update the deployment role's
+trust or permissions and may create the one-time AWS Network Firewall
+service-linked role. If Terraform proposes creating the state bucket, KMS key,
+or deployment role, stop: the existing bootstrap state is not loaded. Do not
+apply a second bootstrap or manually broaden the role trust policy. The
+service-linked role remains bootstrap-owned so the GitHub deployment role does
+not need permission to create arbitrary service-linked roles.
 
 ### One-time ECR foundation
 
@@ -275,6 +278,12 @@ uses short-lived GitHub OIDC credentials, builds immutable commit-tagged images,
 blocks on ECR high or critical findings, runs the migration task, applies a saved
 Terraform plan, and performs public smoke checks. An environment approval is not
 a substitute for reviewing changes before they reach `main`.
+
+After a partial Terraform apply, merge the corrective change and start a new
+workflow run from the updated `main` branch. Do not rerun only the failed job:
+its saved plan and build artifacts describe the previous revision. Terraform
+will refresh its remote state and reconcile resources that were created before
+the failure; do not delete those resources manually.
 
 ## Post-deployment checks
 

@@ -435,6 +435,7 @@ jobs:
       - name: Apply the exact reviewed plan
         working-directory: infra/terraform/environments/development
         run: |
+          set -o pipefail
           mkdir -p ../../../../deployment-evidence
           terraform apply -input=false stage-1.tfplan |
             tee ../../../../deployment-evidence/terraform-apply.txt
