@@ -68,7 +68,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
-          node-version: 22.14.0
+          node-version: 22.23.1
           package-manager-cache: false
 
       - name: Validate protected deployment inputs
@@ -92,6 +92,9 @@ jobs:
 
       - name: Verify application and infrastructure inputs
         run: npm run check
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
 
       - name: Generate application SBOM
         run:
@@ -209,9 +212,40 @@ jobs:
             echo "Migrator digest is invalid." >&2
             exit 1
           fi
+          resolve_arm64_digest() {
+            local image_reference="${1:?image reference is required}"
+            docker buildx imagetools inspect --raw "${image_reference}" |
+              jq -er '
+                [
+                  .manifests[]
+                  | select(
+                      .platform.os == "linux"
+                      and .platform.architecture == "arm64"
+                    )
+                  | .digest
+                ]
+                | if length == 1 then .[0]
+                  else error("expected exactly one linux/arm64 image manifest")
+                  end
+              '
+          }
+          agent_scan_digest="$(resolve_arm64_digest \
+            "${ECR_REGISTRY}/migration-api-development-agent@${agent_digest}")"
+          migrator_scan_digest="$(resolve_arm64_digest \
+            "${ECR_REGISTRY}/migration-api-development-database-migrator@${migrator_digest}")"
+          if [[ ! "${agent_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Agent scan digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${migrator_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Migrator scan digest is invalid." >&2
+            exit 1
+          fi
           {
             echo "TF_VAR_agent_image_digest=${agent_digest}"
             echo "TF_VAR_migrator_image_digest=${migrator_digest}"
+            echo "AGENT_SCAN_DIGEST=${agent_scan_digest}"
+            echo "MIGRATOR_SCAN_DIGEST=${migrator_scan_digest}"
           } >> "${GITHUB_ENV}"
           {
             echo "agent_image_digest=${agent_digest}"
@@ -220,17 +254,19 @@ jobs:
           {
             echo "agent_image_digest=${agent_digest}"
             echo "migrator_image_digest=${migrator_digest}"
+            echo "agent_scan_digest=${agent_scan_digest}"
+            echo "migrator_scan_digest=${migrator_scan_digest}"
           } >> deployment-evidence/deployment.txt
 
       - name: Gate on ECR vulnerability scans
         run: |
           bash scripts/deploy/wait-for-ecr-scan.sh \
             migration-api-development-agent \
-            "${TF_VAR_agent_image_digest}" \
+            "${AGENT_SCAN_DIGEST}" \
             deployment-evidence/agent-image-scan.json
           bash scripts/deploy/wait-for-ecr-scan.sh \
             migration-api-development-database-migrator \
-            "${TF_VAR_migrator_image_digest}" \
+            "${MIGRATOR_SCAN_DIGEST}" \
             deployment-evidence/migrator-image-scan.json
 
       - name: Refresh AWS credentials for migration and planning
@@ -339,7 +375,7 @@ jobs:
       - name: Install Node.js
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
-          node-version: 22.14.0
+          node-version: 22.23.1
           package-manager-cache: false
 
       - name: Revalidate protected deployment inputs

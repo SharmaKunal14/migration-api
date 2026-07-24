@@ -20,7 +20,8 @@ formatting, and both Terraform roots.
 4. verifies that the one-time state and ECR foundation exists;
 5. builds ARM64 images with provenance and SBOM attestations;
 6. reuses an existing immutable commit tag on a safe retry;
-7. blocks on high or critical ECR scan findings;
+7. resolves each ARM64 child manifest separately from its deployable OCI index
+   and blocks on high or critical ECR scan findings;
 8. updates and runs the database migrator from Fargate;
 9. creates and uploads one complete saved Terraform plan;
 10. pauses for a second protected-environment approval after the plan can be

@@ -26,9 +26,12 @@ docker build --platform linux/arm64 -f workers/agent/Dockerfile -t <ecr>:<commit
 docker build --platform linux/arm64 -f workers/database-migrator/Dockerfile -t <migrator-ecr>:<commit> .
 ```
 
-Scan the image and generate an SBOM before pushing. Resolve the pushed ECR image
-to its immutable `sha256:` digest and supply only that digest to Terraform. Do
-the same independently for the migration image.
+Generate SBOM and provenance attestations while building and pushing each image.
+Resolve the pushed OCI index to two immutable `sha256:` values: retain the index
+digest for Terraform and resolve its `linux/arm64` child manifest for the ECR
+vulnerability scan. Never pass the OCI index to the ECR scanner or the child
+manifest to Terraform. Apply the same separation independently to the migration
+image.
 
 ## Provider-side configuration
 

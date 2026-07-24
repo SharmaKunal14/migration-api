@@ -1,12 +1,5 @@
 import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
-import {
-  Navigate,
-  Outlet,
-  Route,
-  Routes,
-  useNavigate,
-  useParams,
-} from 'react-router-dom';
+import { Navigate, Outlet, Route, Routes, useNavigate, useParams } from 'react-router';
 
 import type { PublicAgentRun, PublicOrganisation } from '@migration/contracts';
 
