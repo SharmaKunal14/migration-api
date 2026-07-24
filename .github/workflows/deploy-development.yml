@@ -278,13 +278,15 @@ jobs:
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
           mask-aws-account-id: true
 
-      - name: Update only the migrator task definition
+      - name: Update the migrator task definition and policies
         working-directory: infra/terraform/environments/development
         run: |
           terraform plan \
             -input=false \
             -out=migrator.tfplan \
-            -target=aws_ecs_task_definition.migrator
+            -target=aws_ecs_task_definition.migrator \
+            -target=aws_iam_role_policy.migrator_execution \
+            -target=aws_iam_role_policy.migrator_task
           terraform show -no-color migrator.tfplan > ../../../../deployment-evidence/migrator-plan.txt
           terraform apply -input=false migrator.tfplan
 

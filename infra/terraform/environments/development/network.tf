@@ -268,9 +268,17 @@ resource "aws_security_group" "control" {
   }
 
   egress {
-    description = "PostgreSQL transaction pooler"
+    description = "PostgreSQL direct connection"
     protocol    = "tcp"
     from_port   = 5432
+    to_port     = 5432
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "PostgreSQL transaction pooler"
+    protocol    = "tcp"
+    from_port   = 6543
     to_port     = 6543
     cidr_blocks = ["0.0.0.0/0"]
   }

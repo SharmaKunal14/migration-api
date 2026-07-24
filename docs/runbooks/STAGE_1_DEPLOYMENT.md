@@ -140,6 +140,42 @@ terraform -chdir=infra/terraform/environments/development init \
   -backend-config="use_lockfile=true"
 ```
 
+On the first deployment, create only the control networking and migrator
+foundation before adding the resulting NAT CIDRs to the Supabase database
+allowlist. This exceptional targeted apply must include both migrator policy
+resources explicitly because IAM policies are reverse dependencies of the task
+definition roles:
+
+```bash
+terraform -chdir=infra/terraform/environments/development plan \
+  -input=false \
+  -out=first-run-control-foundation.tfplan \
+  -target=aws_ecs_cluster.agent \
+  -target=aws_ecs_task_definition.migrator \
+  -target=aws_iam_role_policy.migrator_execution \
+  -target=aws_iam_role_policy.migrator_task \
+  -target=aws_route.public_default \
+  -target=aws_route_table_association.public \
+  -target=aws_route.control_default \
+  -target=aws_route_table_association.control \
+  -target=aws_security_group.control \
+  -target=aws_vpc_endpoint.s3 \
+  -target=aws_vpc_endpoint.interface
+terraform -chdir=infra/terraform/environments/development show \
+  -no-color \
+  first-run-control-foundation.tfplan
+terraform -chdir=infra/terraform/environments/development apply \
+  -input=false \
+  first-run-control-foundation.tfplan
+```
+
+Do not use `-auto-approve`. The reviewed plan must contain both
+`aws_iam_role_policy.migrator_execution` and
+`aws_iam_role_policy.migrator_task`; without them, Fargate cannot pull the
+image, write logs, or read and decrypt the migration credential. Add every
+`control_nat_egress_cidrs` output to the Supabase network allowlist before
+running the migration task.
+
 Review the saved plan before apply. A successful apply is not Stage 1
 acceptance; complete the security-negative and end-to-end evidence in the
 acceptance checklist.
