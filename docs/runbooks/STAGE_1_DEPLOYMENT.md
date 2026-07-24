@@ -47,10 +47,95 @@ the same independently for the migration image.
 
 ## Terraform
 
-Use Terraform 1.15.8. Bootstrap state first. Initialize the application stack
-with an uncommitted `backend.hcl` containing the state bucket and KMS key
-identifiers. Store non-secret environment values in an approved deployment
-variable store, not in a committed `terraform.tfvars`.
+Use Terraform 1.15.8. Bootstrap state first.
+
+### One-time ECR foundation
+
+The two ECR repositories must exist before the deployment workflow can build
+and push images. They are owned by the isolated `infra/terraform/foundation`
+root so its plan requires only the recorded AWS region and owner tag, not image
+digests or application-provider configuration.
+
+First confirm neither repository already exists:
+
+```bash
+aws ecr describe-repositories \
+  --region ap-southeast-2 \
+  --repository-names migration-api-development-agent
+aws ecr describe-repositories \
+  --region ap-southeast-2 \
+  --repository-names migration-api-development-database-migrator
+```
+
+`RepositoryNotFoundException` is expected on the first deployment. If either
+repository exists, stop: determine its Terraform ownership and encryption
+configuration before importing or replacing it.
+
+Initialize the foundation in a dedicated Terraform data directory:
+
+```bash
+export AWS_REGION="<recorded-development-region>"
+export OWNER="<recorded-owner-tag>"
+export TF_STATE_BUCKET="<bootstrap-state_bucket-output>"
+export TF_STATE_KMS_KEY_ARN="<bootstrap-state_kms_key_arn-output>"
+export TF_DATA_DIR="/tmp/migration-api-foundation-terraform-data"
+mkdir -p "${TF_DATA_DIR}"
+terraform -chdir=infra/terraform/foundation init \
+  -reconfigure \
+  -input=false \
+  -backend-config="bucket=${TF_STATE_BUCKET}" \
+  -backend-config="key=development/foundation.tfstate" \
+  -backend-config="region=${AWS_REGION}" \
+  -backend-config="encrypt=true" \
+  -backend-config="kms_key_id=${TF_STATE_KMS_KEY_ARN}" \
+  -backend-config="use_lockfile=true"
+```
+
+Create, inspect, and apply a saved foundation plan:
+
+```bash
+terraform -chdir=infra/terraform/foundation validate
+terraform -chdir=infra/terraform/foundation plan \
+  -input=false \
+  -var="aws_region=${AWS_REGION}" \
+  -var="owner=${OWNER}" \
+  -out=foundation.tfplan
+terraform -chdir=infra/terraform/foundation show \
+  -no-color \
+  foundation.tfplan
+terraform -chdir=infra/terraform/foundation apply \
+  -input=false \
+  foundation.tfplan
+terraform -chdir=infra/terraform/foundation output
+```
+
+The reviewed plan must contain only the dedicated container-image KMS key and
+alias, the two immutable ECR repositories, and their lifecycle policies.
+Do not use `-auto-approve`.
+
+After applying the foundation, build and push both images as documented above,
+wait for their vulnerability scans, and record their immutable `sha256:`
+digests.
+
+### Application stack
+
+Initialize the application stack in its separate Terraform data directory.
+Store non-secret environment values in an approved deployment variable store,
+not in a committed `terraform.tfvars`.
+
+```bash
+export TF_DATA_DIR="/tmp/migration-api-development-terraform-data"
+mkdir -p "${TF_DATA_DIR}"
+terraform -chdir=infra/terraform/environments/development init \
+  -reconfigure \
+  -input=false \
+  -backend-config="bucket=${TF_STATE_BUCKET}" \
+  -backend-config="key=development/application.tfstate" \
+  -backend-config="region=${AWS_REGION}" \
+  -backend-config="encrypt=true" \
+  -backend-config="kms_key_id=${TF_STATE_KMS_KEY_ARN}" \
+  -backend-config="use_lockfile=true"
+```
 
 Review the saved plan before apply. A successful apply is not Stage 1
 acceptance; complete the security-negative and end-to-end evidence in the

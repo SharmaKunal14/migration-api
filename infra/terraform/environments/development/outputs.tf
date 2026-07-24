@@ -20,11 +20,11 @@ output "artifact_kms_key_arn" {
 }
 
 output "agent_ecr_repository_url" {
-  value = aws_ecr_repository.agent.repository_url
+  value = data.aws_ecr_repository.agent.repository_url
 }
 
 output "migrator_ecr_repository_url" {
-  value = aws_ecr_repository.migrator.repository_url
+  value = data.aws_ecr_repository.migrator.repository_url
 }
 
 output "migrator_task_definition_arn" {

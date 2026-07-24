@@ -231,7 +231,7 @@ resource "aws_ecs_task_definition" "agent" {
   container_definitions = jsonencode([
     {
       name                   = "agent"
-      image                  = "${aws_ecr_repository.agent.repository_url}@${var.agent_image_digest}"
+      image                  = "${data.aws_ecr_repository.agent.repository_url}@${var.agent_image_digest}"
       essential              = true
       readonlyRootFilesystem = true
       user                   = "1000:1000"
@@ -283,7 +283,7 @@ resource "aws_ecs_task_definition" "migrator" {
   container_definitions = jsonencode([
     {
       name                   = "database-migrator"
-      image                  = "${aws_ecr_repository.migrator.repository_url}@${var.migrator_image_digest}"
+      image                  = "${data.aws_ecr_repository.migrator.repository_url}@${var.migrator_image_digest}"
       essential              = true
       readonlyRootFilesystem = true
       user                   = "1000:1000"

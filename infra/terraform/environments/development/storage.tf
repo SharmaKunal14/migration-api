@@ -210,68 +210,10 @@ resource "aws_s3_bucket_server_side_encryption_configuration" "web" {
   }
 }
 
-resource "aws_ecr_repository" "agent" {
-  name                 = "migration-api-development-agent"
-  image_tag_mutability = "IMMUTABLE"
-  force_delete         = false
-
-  encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.artifacts.arn
-  }
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
+data "aws_ecr_repository" "agent" {
+  name = "migration-api-development-agent"
 }
 
-resource "aws_ecr_lifecycle_policy" "agent" {
-  repository = aws_ecr_repository.agent.name
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
-        description  = "Retain the latest 30 immutable images"
-        selection = {
-          tagStatus   = "any"
-          countType   = "imageCountMoreThan"
-          countNumber = 30
-        }
-        action = { type = "expire" }
-      }
-    ]
-  })
-}
-
-resource "aws_ecr_repository" "migrator" {
-  name                 = "migration-api-development-database-migrator"
-  image_tag_mutability = "IMMUTABLE"
-  force_delete         = false
-
-  encryption_configuration {
-    encryption_type = "KMS"
-    kms_key         = aws_kms_key.artifacts.arn
-  }
-
-  image_scanning_configuration {
-    scan_on_push = true
-  }
-}
-
-resource "aws_ecr_lifecycle_policy" "migrator" {
-  repository = aws_ecr_repository.migrator.name
-  policy = jsonencode({
-    rules = [
-      {
-        rulePriority = 1
-        description  = "Retain the latest 30 immutable migrator images"
-        selection = {
-          tagStatus   = "any"
-          countType   = "imageCountMoreThan"
-          countNumber = 30
-        }
-        action = { type = "expire" }
-      }
-    ]
-  })
+data "aws_ecr_repository" "migrator" {
+  name = "migration-api-development-database-migrator"
 }

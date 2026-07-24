@@ -1,0 +1,82 @@
+provider "aws" {
+  region = var.aws_region
+
+  default_tags {
+    tags = {
+      Application        = "migration-api"
+      Environment        = "development"
+      Owner              = var.owner
+      DataClassification = "synthetic"
+      ManagedBy          = "terraform"
+      Stage              = "1"
+    }
+  }
+}
+
+resource "aws_kms_key" "container_images" {
+  description             = "Migration API development container images"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true
+}
+
+resource "aws_kms_alias" "container_images" {
+  name          = "alias/migration-api/development/container-images"
+  target_key_id = aws_kms_key.container_images.key_id
+}
+
+resource "aws_ecr_repository" "agent" {
+  name                 = "migration-api-development-agent"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = false
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.container_images.arn
+  }
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "agent" {
+  repository = aws_ecr_repository.agent.name
+  policy     = local.image_lifecycle_policy
+}
+
+resource "aws_ecr_repository" "migrator" {
+  name                 = "migration-api-development-database-migrator"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = false
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.container_images.arn
+  }
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+}
+
+resource "aws_ecr_lifecycle_policy" "migrator" {
+  repository = aws_ecr_repository.migrator.name
+  policy     = local.image_lifecycle_policy
+}
+
+locals {
+  image_lifecycle_policy = jsonencode({
+    rules = [
+      {
+        rulePriority = 1
+        description  = "Retain the latest 30 immutable images"
+        selection = {
+          tagStatus   = "any"
+          countType   = "imageCountMoreThan"
+          countNumber = 30
+        }
+        action = { type = "expire" }
+      }
+    ]
+  })
+}

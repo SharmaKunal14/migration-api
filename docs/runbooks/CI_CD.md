@@ -97,11 +97,12 @@ first run:
 
 1. create the GitHub OIDC provider in the AWS development account;
 2. apply `infra/terraform/bootstrap`;
-3. initialize the application state backend;
-4. make the narrow foundation apply documented in `STAGE_1_DEPLOYMENT.md`;
-5. add the resulting NAT CIDRs to the Supabase database allowlist;
-6. configure the exact OpenAI WIF role mapping; and
-7. populate the GitHub `development` environment variables.
+3. apply the isolated ECR foundation in `infra/terraform/foundation`;
+4. build, scan, and push both container images;
+5. initialize the application state backend;
+6. add the resulting NAT CIDRs to the Supabase database allowlist;
+7. configure the exact OpenAI WIF role mapping; and
+8. populate the GitHub `development` environment variables.
 
 After the foundation exists, normal deployments use only the workflow.
 

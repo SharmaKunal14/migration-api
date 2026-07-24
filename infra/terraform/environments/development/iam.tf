@@ -160,7 +160,7 @@ data "aws_iam_policy_document" "agent_execution" {
       "ecr:BatchGetImage",
       "ecr:GetDownloadUrlForLayer"
     ]
-    resources = [aws_ecr_repository.agent.arn]
+    resources = [data.aws_ecr_repository.agent.arn]
   }
 
   # ECR authorization tokens do not support resource-level permissions.
@@ -241,7 +241,7 @@ data "aws_iam_policy_document" "migrator_execution" {
       "ecr:BatchGetImage",
       "ecr:GetDownloadUrlForLayer"
     ]
-    resources = [aws_ecr_repository.migrator.arn]
+    resources = [data.aws_ecr_repository.migrator.arn]
   }
 
   statement {
