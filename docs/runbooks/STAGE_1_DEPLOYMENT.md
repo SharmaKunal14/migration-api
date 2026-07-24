@@ -52,6 +52,51 @@ image.
 
 Use Terraform 1.15.8. Bootstrap state first.
 
+### Bootstrap state and GitHub deployment trust
+
+The deployment role trusts GitHub's immutable Actions OIDC subject, including
+the numeric owner and repository IDs. Resolve and record those IDs instead of
+deriving trust from mutable repository names alone:
+
+```bash
+gh api repos/<owner>/<repository> \
+  --jq '{owner_id: .owner.id, repository_id: .id}'
+gh api repos/<owner>/<repository>/actions/oidc/customization/sub
+```
+
+The reported subject prefix must match:
+
+```text
+repo:<owner>@<owner-id>/<repository>@<repository-id>
+```
+
+Initialize the bootstrap root using its existing local state, then create and
+inspect a saved plan with the exact immutable IDs:
+
+```bash
+export TF_DATA_DIR="/tmp/migration-api-bootstrap-terraform-data"
+mkdir -p "${TF_DATA_DIR}"
+terraform -chdir=infra/terraform/bootstrap init -input=false
+terraform -chdir=infra/terraform/bootstrap plan \
+  -input=false \
+  -var="aws_region=<recorded-development-region>" \
+  -var="owner=<recorded-owner-tag>" \
+  -var="state_bucket_name=<globally-unique-state-bucket>" \
+  -var="github_repository=<owner>/<repository>" \
+  -var="github_repository_owner_id=<numeric-owner-id>" \
+  -var="github_repository_id=<numeric-repository-id>" \
+  -var="github_deployment_environment=development" \
+  -out=bootstrap.tfplan
+terraform -chdir=infra/terraform/bootstrap show -no-color bootstrap.tfplan
+terraform -chdir=infra/terraform/bootstrap apply -input=false bootstrap.tfplan
+terraform -chdir=infra/terraform/bootstrap output
+```
+
+For an existing bootstrap, the reviewed plan must update only the deployment
+role's assume-role policy. If Terraform proposes creating the state bucket, KMS
+key, or deployment role, stop: the existing bootstrap state is not loaded. Do
+not apply a second bootstrap or manually broaden the role trust policy.
+
 ### One-time ECR foundation
 
 The two ECR repositories must exist before the deployment workflow can build
