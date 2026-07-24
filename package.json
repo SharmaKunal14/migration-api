@@ -9,7 +9,7 @@
   },
   "scripts": {
     "build": "npm run build:services && npm run build:web",
-    "build:services": "node scripts/build-services.mjs",
+    "build:services": "node scripts/build-services.mjs && node scripts/verify-service-bundles.mjs",
     "build:web": "vite build --config apps/web/vite.config.ts",
     "check": "npm run format:check && npm run docs:lint && npm run lint && npm run typecheck && npm run contracts:validate && npm run secrets:scan && npm test && npm run build",
     "contracts:validate": "node scripts/validate-contracts.mjs",

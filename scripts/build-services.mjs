@@ -3,6 +3,9 @@ import { mkdir } from 'node:fs/promises';
 import { build } from 'esbuild';
 
 const common = {
+  banner: {
+    js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
+  },
   bundle: true,
   format: 'esm',
   logLevel: 'info',
