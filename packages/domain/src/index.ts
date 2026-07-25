@@ -41,6 +41,13 @@ export interface Membership {
   readonly role: OrganisationRole;
 }
 
+export interface RepositoryScanEligibility {
+  readonly selected: boolean;
+  readonly enabled: boolean;
+  readonly archived: boolean;
+  readonly installationStatus: 'active' | 'suspended' | 'removed';
+}
+
 export type OrganisationAction =
   | 'organisation:read'
   | 'organisation:create'
@@ -92,6 +99,15 @@ export function requireAction(
     );
   }
   return membership;
+}
+
+export function isRepositoryScannable(repository: RepositoryScanEligibility): boolean {
+  return (
+    repository.selected &&
+    repository.enabled &&
+    !repository.archived &&
+    repository.installationStatus === 'active'
+  );
 }
 
 export function requireIdempotencyKey(value: string | undefined): string {

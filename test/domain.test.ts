@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   DomainError,
+  isRepositoryScannable,
   requireAction,
   requireIdempotencyKey,
   type Membership,
@@ -89,4 +90,27 @@ describe('idempotency keys', () => {
       );
     },
   );
+});
+
+describe('repository scan eligibility', () => {
+  const eligible = {
+    selected: true,
+    enabled: true,
+    archived: false,
+    installationStatus: 'active',
+  } as const;
+
+  it('allows only a selected, enabled, non-archived repository on an active installation', () => {
+    expect(isRepositoryScannable(eligible)).toBe(true);
+  });
+
+  it.each([
+    ['unselected', { selected: false }],
+    ['disabled', { enabled: false }],
+    ['archived', { archived: true }],
+    ['suspended installation', { installationStatus: 'suspended' }],
+    ['removed installation', { installationStatus: 'removed' }],
+  ] as const)('denies an %s repository', (_name, override) => {
+    expect(isRepositoryScannable({ ...eligible, ...override })).toBe(false);
+  });
 });

@@ -11,7 +11,12 @@ import type {
   PublicRepositoryScan,
 } from '@migration/contracts';
 import type { Actor, Membership } from '@migration/domain';
-import { DomainError, requireAction, type OrganisationRole } from '@migration/domain';
+import {
+  DomainError,
+  isRepositoryScannable,
+  requireAction,
+  type OrganisationRole,
+} from '@migration/domain';
 
 export interface OrganisationRecord {
   readonly id: string;
@@ -551,12 +556,7 @@ export class ApiRepository implements ApiRepositoryPort {
           404,
         );
       }
-      if (
-        !repository.selected ||
-        !repository.enabled ||
-        repository.archived ||
-        repository.installationStatus !== 'active'
-      ) {
+      if (!isRepositoryScannable(repository)) {
         throw new DomainError(
           'REPOSITORY_SCAN_NOT_ALLOWED',
           'The repository is not available for scanning.',

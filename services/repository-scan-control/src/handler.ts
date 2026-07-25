@@ -16,6 +16,7 @@ import {
   type RepositoryScanControlConfig,
 } from '@migration/config';
 import { createDatabase, type AppDatabase } from '@migration/database';
+import { isRepositoryScannable } from '@migration/domain';
 import { writeLog } from '@migration/observability';
 
 const MAX_RESULT_BYTES = 1024 * 1024;
@@ -151,10 +152,7 @@ async function markStarted(
     if (
       scan.status !== 'queued' ||
       scan.version !== workflow.expectedVersion ||
-      !scan.selected ||
-      !scan.enabled ||
-      scan.archived ||
-      scan.installationStatus !== 'active'
+      !isRepositoryScannable(scan)
     ) {
       throw new ScanControlError('REPOSITORY_SCAN_STATE_INVALID');
     }

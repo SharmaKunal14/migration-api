@@ -34,6 +34,18 @@ resource "aws_cloudwatch_log_metric_filter" "github_reconciliation_failure" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "repository_acquisition_failure" {
+  name           = "migration-api-development-repository-acquisition-failure"
+  log_group_name = aws_cloudwatch_log_group.source_fetcher.name
+  pattern        = "{ $.event = \"repository_acquisition_failed\" }"
+
+  metric_transformation {
+    name      = "RepositoryAcquisitionFailed"
+    namespace = "MigrationApi/Development"
+    value     = "1"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "api_errors" {
   alarm_name          = "migration-api-development-api-errors"
   alarm_description   = "Control API returned Lambda errors."
@@ -191,6 +203,19 @@ resource "aws_cloudwatch_metric_alarm" "repository_scan_workflow_failures" {
   namespace           = "AWS/States"
   metric_name         = "ExecutionsFailed"
   dimensions          = { StateMachineArn = aws_sfn_state_machine.repository_scan.arn }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "repository_acquisition_failure" {
+  alarm_name          = "migration-api-development-repository-acquisition-failure"
+  alarm_description   = "A selected repository could not be acquired safely."
+  namespace           = "MigrationApi/Development"
+  metric_name         = "RepositoryAcquisitionFailed"
   statistic           = "Sum"
   period              = 300
   evaluation_periods  = 1

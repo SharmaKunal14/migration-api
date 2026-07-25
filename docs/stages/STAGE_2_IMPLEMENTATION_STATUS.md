@@ -1,6 +1,6 @@
 # Stage 2 implementation status
 
-- **Status:** Stage 2A and 2B live; Stage 2C implemented locally but not yet deployed
+- **Status:** Stage 2C live; Stage 2D exit hardening implemented locally
 - **Updated:** 2026-07-26
 
 ## Implemented
@@ -54,20 +54,26 @@
   dependencies in the onboarding UI.
 - Service build, deployment-input, Terraform, secret-scanning, and CI wiring
   for the new webhook and broker services.
+- Shared fail-closed scan eligibility policy covering repository selection,
+  enablement, archival, and installation lifecycle state.
+- A source-acquisition failure metric and alarm for handled failures that do
+  not fail the Step Functions execution.
+- Stage 2 exit runbook covering live lifecycle, webhook, archive, queue, DLQ,
+  alarm, and log-redaction evidence.
 
 ## Explicitly incomplete
 
-- Live Stage 2C source acquisition and exact-commit dependency evidence.
-- Operational confirmation that Stage 2B orphan webhook retries have drained
-  or been classified in the DLQ.
+- Deployment of the Stage 2D acquisition-failure alarm.
+- Live deselection and removal/suspension evidence proving that new scans and
+  token issuance fail closed.
 
 ## Verification
 
 Performed locally on 2026-07-26:
 
 - `npm run check`: passed.
-- 133 tests passed.
-- Coverage: 92.95% statements, 88.70% branches, 100% functions, and 92.73%
+- 143 tests passed.
+- Coverage: 94.01% statements, 90.60% branches, 100% functions, and 93.81%
   lines for configured boundary packages, including archive acquisition.
 - Secret-pattern scan: passed.
 - Production service and frontend builds: passed.
@@ -75,12 +81,21 @@ Performed locally on 2026-07-26:
 - Terraform 1.15.8 development and foundation validation: passed using
   checksum-verified HashiCorp binaries and locked providers.
 
-Live installation linking and Stage 2B repository reconciliation were
-confirmed in development. Stage 2C has not yet been deployed.
+Live installation linking, Stage 2B repository reconciliation, and Stage 2C
+exact-commit dependency inventory were confirmed in development.
+
+Read-only operational inspection on 2026-07-26 found the main webhook queue
+empty and two visible DLQ messages. Reconciler logs classify both delivery IDs
+as `GITHUB_INSTALLATION_NOT_LINKED` events received before the installation was
+linked. Existing Stage 2 alarms were `OK` except the DLQ alarm, which correctly
+remained `ALARM` while those messages were retained. The operator explicitly
+accepted retaining and ignoring these two classified messages; they require no
+redrive or deletion.
 
 ## Exit assessment
 
-Stage 2 has not passed its live exit gate. The implementation is complete
-locally, including negative archive and fixed-origin tests, but it must not be
-marked complete until one selected repository produces dependency evidence at
-an exact commit in development and the Stage 2B orphan events are classified.
+Stage 2 has not passed its complete live exit gate. Exact-commit dependency
+evidence is live, but Stage 2D must be deployed and the fail-closed lifecycle
+checks and Stage 2B queue/DLQ state must be recorded before Stage 2 is marked
+complete. The two retained DLQ events are classified and accepted, so they are
+not a remaining Stage 2 blocker.

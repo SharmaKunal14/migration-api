@@ -57,6 +57,9 @@ export async function normalizeGithubTarball(
   const inventoryFiles: InventoryFile[] = [];
 
   extract.on('entry', (header, stream, next) => {
+    // Destroying the extractor also errors the active entry stream. Keep that
+    // expected teardown error from becoming an uncaught process-level event.
+    stream.on('error', () => undefined);
     void (async (): Promise<void> => {
       const components = safeArchiveComponents(header.name);
       root ??= components[0];
