@@ -48,6 +48,7 @@ export const githubAppSecretSchema = z
     appId: z.string().regex(/^[1-9][0-9]{0,19}$/u),
     privateKey: z
       .string()
+      .trim()
       .min(256)
       .max(16 * 1024)
       .regex(privateKeyPattern),

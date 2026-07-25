@@ -123,6 +123,19 @@ describe('GitHub webhook configuration', () => {
 });
 
 describe('GitHub App secret validation', () => {
+  it('accepts and normalizes a PEM file with its standard trailing newline', () => {
+    const privateKey = [
+      ['-----BEGIN RSA ', 'PRIVATE KEY-----'].join(''),
+      'A'.repeat(1_600),
+      '-----END RSA PRIVATE KEY-----',
+      '',
+    ].join('\n');
+
+    expect(githubAppSecretSchema.parse({ appId: '12345', privateKey }).privateKey).toBe(
+      privateKey.trim(),
+    );
+  });
+
   it('rejects malformed private-key material and extra secret fields', () => {
     expect(() =>
       githubAppSecretSchema.parse({
