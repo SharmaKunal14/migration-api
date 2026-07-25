@@ -14,6 +14,7 @@ const requiredVariables = [
   'TF_VAR_github_webhook_secret_kms_key_arn',
   'TF_VAR_github_app_secret_arn',
   'TF_VAR_github_app_secret_kms_key_arn',
+  'TF_VAR_github_app_slug',
   'TF_VAR_openai_identity_provider_id',
   'TF_VAR_openai_model',
   'TF_VAR_openai_project_alias',
@@ -65,6 +66,11 @@ if (
   process.env.TF_VAR_product_domain.endsWith('.localhost')
 ) {
   throw new Error('TF_VAR_product_domain must be a deployable hostname.');
+}
+if (
+  !/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/u.test(process.env.TF_VAR_github_app_slug)
+) {
+  throw new Error('TF_VAR_github_app_slug must be a valid GitHub App slug.');
 }
 
 process.stdout.write(`Validated ${requiredVariables.length} deployment variables.\n`);

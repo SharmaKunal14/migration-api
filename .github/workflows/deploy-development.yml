@@ -60,6 +60,7 @@ jobs:
       TF_VAR_github_app_secret_arn: ${{ vars.MIGRATION_GITHUB_APP_SECRET_ARN }}
       TF_VAR_github_app_secret_kms_key_arn:
         ${{ vars.MIGRATION_GITHUB_APP_SECRET_KMS_KEY_ARN }}
+      TF_VAR_github_app_slug: ${{ vars.MIGRATION_GITHUB_APP_SLUG }}
       TF_VAR_openai_identity_provider_id: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
       TF_VAR_openai_service_account_id: ${{ vars.OPENAI_SERVICE_ACCOUNT_ID }}
       TF_VAR_openai_model: ${{ vars.OPENAI_MODEL }}
@@ -375,6 +376,7 @@ jobs:
       TF_VAR_github_app_secret_arn: ${{ vars.MIGRATION_GITHUB_APP_SECRET_ARN }}
       TF_VAR_github_app_secret_kms_key_arn:
         ${{ vars.MIGRATION_GITHUB_APP_SECRET_KMS_KEY_ARN }}
+      TF_VAR_github_app_slug: ${{ vars.MIGRATION_GITHUB_APP_SLUG }}
       TF_VAR_openai_identity_provider_id: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
       TF_VAR_openai_service_account_id: ${{ vars.OPENAI_SERVICE_ACCOUNT_ID }}
       TF_VAR_openai_model: ${{ vars.OPENAI_MODEL }}

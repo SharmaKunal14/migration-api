@@ -82,3 +82,17 @@ resource "aws_iam_role_policy" "github_token_broker_runtime" {
   role   = aws_iam_role.github_token_broker.id
   policy = data.aws_iam_policy_document.github_token_broker_runtime.json
 }
+
+data "aws_iam_policy_document" "api_github_token_broker" {
+  statement {
+    sid       = "VerifyGitHubInstallation"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.github_token_broker.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "api_github_token_broker" {
+  name   = "verify-github-installation"
+  role   = aws_iam_role.api.id
+  policy = data.aws_iam_policy_document.api_github_token_broker.json
+}

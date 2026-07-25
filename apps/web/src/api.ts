@@ -1,4 +1,10 @@
-import type { PublicAgentRun, PublicOrganisation } from '@migration/contracts';
+import type {
+  PublicAgentRun,
+  PublicGithubInstallation,
+  PublicGithubInstallLink,
+  PublicGithubSetupCompletion,
+  PublicOrganisation,
+} from '@migration/contracts';
 
 import { browserConfiguration } from './config.js';
 
@@ -56,6 +62,33 @@ export async function createOrganisation(
   input: { readonly name: string; readonly slug: string },
 ): Promise<{ organisation: PublicOrganisation }> {
   return request(token, '/v1/organisations', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  });
+}
+
+export async function loadGithubInstallations(
+  token: string,
+  organisationId: string,
+): Promise<{ installations: PublicGithubInstallation[] }> {
+  return request(token, `/v1/organisations/${organisationId}/github/installations`);
+}
+
+export async function createGithubInstallLink(
+  token: string,
+  organisationId: string,
+): Promise<{ installLink: PublicGithubInstallLink }> {
+  return request(token, `/v1/organisations/${organisationId}/github/install-link`, {
+    method: 'POST',
+    body: JSON.stringify({}),
+  });
+}
+
+export async function completeGithubSetup(
+  token: string,
+  input: { readonly installationId: string; readonly state: string },
+): Promise<PublicGithubSetupCompletion> {
+  return request(token, '/v1/github/setup/callback', {
     method: 'POST',
     body: JSON.stringify(input),
   });

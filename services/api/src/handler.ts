@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { z } from 'zod';
@@ -12,6 +13,10 @@ import {
 import {
   agentResultEnvelopeSchema,
   demoRunRequestSchema,
+  githubInstallLinkRequestSchema,
+  githubInstallationVerificationSchema,
+  githubSetupCompletionRequestSchema,
+  type GithubInstallationVerification,
   type MigrationPlan,
   type PublicAgentRun,
 } from '@migration/contracts';
@@ -41,7 +46,19 @@ export interface ApiDependencies {
   readonly config: ApiConfig;
   readonly repository: ApiRepositoryPort;
   readonly tokenVerifier: TokenVerifier;
+  readonly installationVerifier: GithubInstallationVerifier;
   readonly s3: S3Client;
+}
+
+export interface GithubInstallationVerifier {
+  verify(installationId: string): Promise<GithubInstallationVerification>;
+}
+
+interface LambdaInvoker {
+  send(command: InvokeCommand): Promise<{
+    readonly FunctionError?: string;
+    readonly Payload?: Uint8Array;
+  }>;
 }
 
 let cachedDependencies: ApiDependencies | undefined;
@@ -52,6 +69,7 @@ async function dependencies(): Promise<ApiDependencies> {
   }
   const config = parseConfig(apiConfigSchema);
   const database = await createDatabase(config.AWS_REGION, config.DATABASE_SECRET_ARN);
+  const lambda = new LambdaClient({ region: config.AWS_REGION });
   cachedDependencies = {
     config,
     repository: new ApiRepository(database),
@@ -60,6 +78,10 @@ async function dependencies(): Promise<ApiDependencies> {
       issuer: config.SUPABASE_JWT_ISSUER,
       jwksUrl: config.SUPABASE_JWKS_URL,
     }),
+    installationVerifier: createGithubInstallationVerifier(
+      lambda,
+      config.GITHUB_TOKEN_BROKER_FUNCTION_NAME,
+    ),
     s3: new S3Client({ region: config.AWS_REGION }),
   };
   return cachedDependencies;
@@ -116,6 +138,10 @@ export async function handleRequest(
         method === 'GET'
           ? /^\/v1\/organisations\/([0-9a-f-]{36})\/github\/installations$/u.exec(path)
           : null;
+      const installLinkMatch =
+        method === 'POST'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/github\/install-link$/u.exec(path)
+          : null;
       const repositoriesMatch =
         method === 'GET'
           ? /^\/v1\/organisations\/([0-9a-f-]{36})\/repositories$/u.exec(path)
@@ -126,7 +152,34 @@ export async function handleRequest(
               path,
             )
           : null;
-      if (installationsMatch?.[1]) {
+      if (method === 'POST' && path === '/v1/github/setup/callback') {
+        const input = githubSetupCompletionRequestSchema.parse(parseBody(event));
+        await repository.validateGithubInstallState(userId, input.state);
+        const verified = await dependency.installationVerifier.verify(
+          input.installationId,
+        );
+        response = json(
+          200,
+          await repository.completeGithubInstallation(userId, {
+            ...input,
+            requestId,
+            verified,
+          }),
+        );
+      } else if (installLinkMatch?.[1]) {
+        githubInstallLinkRequestSchema.parse(parseBody(event));
+        const organisationId = z.uuid().parse(installLinkMatch[1]);
+        const link = await repository.createGithubInstallLink(userId, organisationId);
+        response = json(201, {
+          installLink: {
+            installationUrl: githubInstallationUrl(
+              dependency.config.GITHUB_APP_SLUG,
+              link.state,
+            ),
+            expiresAt: link.expiresAt.toISOString(),
+          },
+        });
+      } else if (installationsMatch?.[1]) {
         const organisationId = z.uuid().parse(installationsMatch[1]);
         response = json(200, {
           installations: await repository.listGithubInstallations(
@@ -212,6 +265,61 @@ export async function handleRequest(
       requestId,
     );
   }
+}
+
+export function createGithubInstallationVerifier(
+  lambda: LambdaInvoker,
+  functionName: string,
+): GithubInstallationVerifier {
+  return {
+    async verify(installationId): Promise<GithubInstallationVerification> {
+      let response;
+      try {
+        response = await lambda.send(
+          new InvokeCommand({
+            FunctionName: functionName,
+            InvocationType: 'RequestResponse',
+            Payload: Buffer.from(
+              JSON.stringify({
+                operation: 'verify_installation',
+                installationId,
+              }),
+            ),
+          }),
+        );
+      } catch {
+        throw new DomainError(
+          'GITHUB_INSTALLATION_VERIFICATION_FAILED',
+          'The GitHub installation could not be verified.',
+          502,
+        );
+      }
+      if (response.FunctionError || !response.Payload) {
+        throw new DomainError(
+          'GITHUB_INSTALLATION_VERIFICATION_FAILED',
+          'The GitHub installation could not be verified.',
+          502,
+        );
+      }
+      try {
+        return githubInstallationVerificationSchema.parse(
+          JSON.parse(Buffer.from(response.Payload).toString('utf8')),
+        );
+      } catch {
+        throw new DomainError(
+          'GITHUB_INSTALLATION_VERIFICATION_FAILED',
+          'The GitHub installation could not be verified.',
+          502,
+        );
+      }
+    },
+  };
+}
+
+function githubInstallationUrl(appSlug: string, state: string): string {
+  const url = new URL(`https://github.com/apps/${appSlug}/installations/new`);
+  url.searchParams.set('state', state);
+  return url.toString();
 }
 
 async function publicRun(

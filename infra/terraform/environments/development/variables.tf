@@ -82,6 +82,16 @@ variable "github_app_secret_kms_key_arn" {
   type        = string
 }
 
+variable "github_app_slug" {
+  description = "Public URL slug of the GitHub App."
+  type        = string
+
+  validation {
+    condition     = can(regex("^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$", var.github_app_slug))
+    error_message = "github_app_slug must be a valid lowercase GitHub App slug."
+  }
+}
+
 variable "openai_identity_provider_id" {
   description = "Development OpenAI WIF provider ID; not a secret."
   type        = string

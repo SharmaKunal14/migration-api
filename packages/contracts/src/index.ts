@@ -6,6 +6,29 @@ export const uuidSchema = z.uuid();
 export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
 export const githubIdSchema = z.string().regex(/^[1-9][0-9]{0,19}$/u);
 export const commitShaSchema = z.string().regex(/^[a-f0-9]{40}$/u);
+export const githubInstallationStateSchema = z
+  .string()
+  .length(43)
+  .regex(/^[A-Za-z0-9_-]{43}$/u);
+
+export const githubInstallLinkRequestSchema = z.object({}).strict();
+
+export const githubSetupCompletionRequestSchema = z
+  .object({
+    installationId: githubIdSchema,
+    state: githubInstallationStateSchema,
+  })
+  .strict();
+
+export const githubInstallationVerificationSchema = z
+  .object({
+    installationId: githubIdSchema,
+    accountId: githubIdSchema,
+    accountLogin: z.string().min(1).max(255),
+    accountType: z.enum(['Organisation', 'User']),
+    status: z.enum(['active', 'suspended']),
+  })
+  .strict();
 
 export const repositoryScanWorkflowInputSchema = z
   .object({
@@ -196,6 +219,12 @@ export type RepositoryScanWorkflowInput = z.infer<
   typeof repositoryScanWorkflowInputSchema
 >;
 export type GithubWebhookEnvelope = z.infer<typeof githubWebhookEnvelopeSchema>;
+export type GithubSetupCompletionRequest = z.infer<
+  typeof githubSetupCompletionRequestSchema
+>;
+export type GithubInstallationVerification = z.infer<
+  typeof githubInstallationVerificationSchema
+>;
 
 export interface PublicOrganisation {
   readonly id: string;
@@ -224,6 +253,16 @@ export interface PublicGithubInstallation {
   readonly accountType: 'Organisation' | 'User';
   readonly status: 'active' | 'suspended' | 'removed';
   readonly lastReconciledAt: string | null;
+}
+
+export interface PublicGithubInstallLink {
+  readonly installationUrl: string;
+  readonly expiresAt: string;
+}
+
+export interface PublicGithubSetupCompletion {
+  readonly organisationId: string;
+  readonly installation: PublicGithubInstallation;
 }
 
 export interface PublicRepository {

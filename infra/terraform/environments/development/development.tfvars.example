@@ -16,6 +16,7 @@ github_webhook_secret_arn              = "arn:aws:secretsmanager:region:account:
 github_webhook_secret_kms_key_arn      = "arn:aws:kms:region:account:key/github-webhook-secret-key"
 github_app_secret_arn                  = "arn:aws:secretsmanager:region:account:secret:github-app"
 github_app_secret_kms_key_arn          = "arn:aws:kms:region:account:key/github-app-secret-key"
+github_app_slug                        = "replace-with-github-app-slug"
 
 openai_identity_provider_id = "replace-with-development-wif-provider-id"
 openai_service_account_id   = "replace-with-development-service-account-id"

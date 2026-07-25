@@ -58,6 +58,8 @@ export const apiConfigSchema = commonSchema.extend({
   ARTIFACT_BUCKET: nonEmpty,
   ARTIFACT_KMS_KEY_ARN: awsArn,
   DATABASE_SECRET_ARN: awsArn,
+  GITHUB_APP_SLUG: z.string().regex(/^[a-z0-9](?:[a-z0-9-]{0,98}[a-z0-9])?$/u),
+  GITHUB_TOKEN_BROKER_FUNCTION_NAME: z.string().regex(/^[A-Za-z0-9-_]{1,64}$/u),
   OPENAI_MODEL: nonEmpty.default('gpt-5.6-sol'),
   SUPABASE_JWT_AUDIENCE: nonEmpty,
   SUPABASE_JWT_ISSUER: z.url(),

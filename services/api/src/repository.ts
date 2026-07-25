@@ -1,9 +1,10 @@
-import { createHash, randomUUID } from 'node:crypto';
+import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
 import type { Transaction } from 'kysely';
 
 import type { AppDatabase, Database } from '@migration/database';
 import type {
+  GithubInstallationVerification,
   PublicDependencyObservation,
   PublicGithubInstallation,
   PublicRepository,
@@ -49,6 +50,30 @@ export interface CreateDemoRunInput {
   readonly requestedModel: string;
 }
 
+export interface InstallationLinkRecord {
+  readonly state: string;
+  readonly expiresAt: Date;
+}
+
+export interface CompleteGithubInstallationInput {
+  readonly installationId: string;
+  readonly requestId: string;
+  readonly state: string;
+  readonly verified: GithubInstallationVerification;
+}
+
+export interface CompletedGithubInstallation {
+  readonly organisationId: string;
+  readonly installation: PublicGithubInstallation;
+}
+
+export interface InstallationLinkStateRecord {
+  readonly organisationId: string;
+  readonly userId: string;
+  readonly expiresAt: Date;
+  readonly consumedAt: Date | null;
+}
+
 export interface ApiRepositoryPort {
   ensureUser(actor: Actor): Promise<string>;
   listOrganisations(userId: string): Promise<OrganisationRecord[]>;
@@ -72,6 +97,15 @@ export interface ApiRepositoryPort {
     organisationId: string,
     repositoryId: string,
   ): Promise<PublicDependencyObservation[]>;
+  createGithubInstallLink(
+    userId: string,
+    organisationId: string,
+  ): Promise<InstallationLinkRecord>;
+  validateGithubInstallState(userId: string, state: string): Promise<void>;
+  completeGithubInstallation(
+    userId: string,
+    input: CompleteGithubInstallationInput,
+  ): Promise<CompletedGithubInstallation>;
 }
 
 function digestJson(value: unknown): string {
@@ -218,6 +252,168 @@ export class ApiRepository implements ApiRepositoryPort {
       ...row,
       lastReconciledAt: row.lastReconciledAt?.toISOString() ?? null,
     }));
+  }
+
+  public async createGithubInstallLink(
+    userId: string,
+    organisationId: string,
+  ): Promise<InstallationLinkRecord> {
+    return this.database.transaction().execute(async transaction => {
+      const membership = await transaction
+        .selectFrom('organisationMemberships as membership')
+        .innerJoin(
+          'organisations as organisation',
+          'organisation.id',
+          'membership.organisationId',
+        )
+        .select(['membership.organisationId', 'membership.userId', 'membership.role'])
+        .where('membership.organisationId', '=', organisationId)
+        .where('membership.userId', '=', userId)
+        .where('organisation.status', '=', 'active')
+        .forUpdate()
+        .executeTakeFirst();
+      requireAction(membership, 'github_installation:manage');
+
+      const state = randomBytes(32).toString('base64url');
+      const now = new Date();
+      const expiresAt = new Date(now.getTime() + 10 * 60 * 1_000);
+      await transaction
+        .insertInto('installationLinkStates')
+        .values({
+          stateDigest: createHash('sha256').update(state).digest('hex'),
+          organisationId,
+          userId,
+          expiresAt,
+          consumedAt: null,
+          returnPath: `/organisations/${organisationId}/settings/github`,
+          createdAt: now,
+        })
+        .executeTakeFirstOrThrow();
+      return { state, expiresAt };
+    });
+  }
+
+  public async completeGithubInstallation(
+    userId: string,
+    input: CompleteGithubInstallationInput,
+  ): Promise<CompletedGithubInstallation> {
+    if (input.verified.installationId !== input.installationId) {
+      throw new DomainError(
+        'GITHUB_INSTALLATION_MISMATCH',
+        'The GitHub installation could not be linked.',
+        409,
+      );
+    }
+    const stateDigest = createHash('sha256').update(input.state).digest('hex');
+    return this.database.transaction().execute(async transaction => {
+      const now = new Date();
+      const linkState = await transaction
+        .selectFrom('installationLinkStates')
+        .select(['organisationId', 'userId', 'expiresAt', 'consumedAt'])
+        .where('stateDigest', '=', stateDigest)
+        .forUpdate()
+        .executeTakeFirst();
+      const validLinkState = validateInstallationLinkState(linkState, userId, now);
+
+      const membership = await transaction
+        .selectFrom('organisationMemberships as membership')
+        .innerJoin(
+          'organisations as organisation',
+          'organisation.id',
+          'membership.organisationId',
+        )
+        .select(['membership.organisationId', 'membership.userId', 'membership.role'])
+        .where('membership.organisationId', '=', validLinkState.organisationId)
+        .where('membership.userId', '=', userId)
+        .where('organisation.status', '=', 'active')
+        .forUpdate()
+        .executeTakeFirst();
+      requireAction(membership, 'github_installation:manage');
+
+      const existing = await transaction
+        .selectFrom('githubInstallations')
+        .select(['id', 'organisationId', 'lastReconciledAt'])
+        .where('githubInstallationId', '=', input.installationId)
+        .forUpdate()
+        .executeTakeFirst();
+      requireInstallationOrganisation(
+        existing?.organisationId,
+        validLinkState.organisationId,
+      );
+
+      const installationId = existing?.id ?? randomUUID();
+      const values = {
+        githubAccountId: input.verified.accountId,
+        accountLogin: input.verified.accountLogin,
+        accountType: input.verified.accountType,
+        status: input.verified.status,
+        suspendedAt: input.verified.status === 'suspended' ? now : null,
+        removedAt: null,
+        updatedAt: now,
+      } as const;
+      if (existing) {
+        await transaction
+          .updateTable('githubInstallations')
+          .set(values)
+          .where('id', '=', installationId)
+          .where('organisationId', '=', validLinkState.organisationId)
+          .executeTakeFirstOrThrow();
+      } else {
+        await transaction
+          .insertInto('githubInstallations')
+          .values({
+            id: installationId,
+            organisationId: validLinkState.organisationId,
+            githubInstallationId: input.installationId,
+            ...values,
+            lastReconciledAt: null,
+            createdAt: now,
+          })
+          .executeTakeFirstOrThrow();
+      }
+
+      await transaction
+        .updateTable('installationLinkStates')
+        .set({ consumedAt: now })
+        .where('stateDigest', '=', stateDigest)
+        .where('consumedAt', 'is', null)
+        .executeTakeFirstOrThrow();
+      await writeAudit(transaction, {
+        organisationId: validLinkState.organisationId,
+        actorId: userId,
+        action: 'github_installation.linked',
+        resourceType: 'github_installation',
+        resourceId: installationId,
+        requestId: input.requestId,
+      });
+      return {
+        organisationId: validLinkState.organisationId,
+        installation: {
+          id: installationId,
+          accountLogin: input.verified.accountLogin,
+          accountType: input.verified.accountType,
+          status: input.verified.status,
+          lastReconciledAt: existing?.lastReconciledAt?.toISOString() ?? null,
+        },
+      };
+    });
+  }
+
+  public async validateGithubInstallState(
+    userId: string,
+    state: string,
+  ): Promise<void> {
+    const stateDigest = createHash('sha256').update(state).digest('hex');
+    const linkState = await this.database
+      .selectFrom('installationLinkStates')
+      .select(['organisationId', 'userId', 'expiresAt', 'consumedAt'])
+      .where('stateDigest', '=', stateDigest)
+      .executeTakeFirst();
+    const validLinkState = validateInstallationLinkState(linkState, userId, new Date());
+    requireAction(
+      await this.membership(validLinkState.organisationId, userId),
+      'github_installation:manage',
+    );
   }
 
   public async listRepositories(
@@ -475,6 +671,41 @@ interface AuditInput {
   readonly resourceType: string;
   readonly resourceId: string;
   readonly requestId: string;
+}
+
+export function validateInstallationLinkState(
+  state: InstallationLinkStateRecord | undefined,
+  userId: string,
+  now: Date,
+): InstallationLinkStateRecord {
+  if (
+    state?.userId !== userId ||
+    state.consumedAt !== null ||
+    state.expiresAt.getTime() <= now.getTime()
+  ) {
+    throw new DomainError(
+      'GITHUB_INSTALLATION_STATE_INVALID',
+      'The GitHub installation link is invalid or expired.',
+      409,
+    );
+  }
+  return state;
+}
+
+export function requireInstallationOrganisation(
+  existingOrganisationId: string | undefined,
+  requestedOrganisationId: string,
+): void {
+  if (
+    existingOrganisationId !== undefined &&
+    existingOrganisationId !== requestedOrganisationId
+  ) {
+    throw new DomainError(
+      'GITHUB_INSTALLATION_ALREADY_LINKED',
+      'The GitHub installation is already linked to another organisation.',
+      409,
+    );
+  }
 }
 
 async function writeAudit(

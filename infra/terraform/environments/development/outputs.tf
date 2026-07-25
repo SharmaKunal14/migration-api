@@ -16,6 +16,11 @@ output "github_webhook_url" {
   value       = "${aws_apigatewayv2_api.control.api_endpoint}/v1/github/webhooks"
 }
 
+output "github_setup_url" {
+  description = "GitHub App setup callback URL."
+  value       = "https://${var.product_domain}/github/setup/callback"
+}
+
 output "github_token_broker_function_name" {
   description = "Function name for IAM-authorized trusted callers."
   value       = aws_lambda_function.github_token_broker.function_name

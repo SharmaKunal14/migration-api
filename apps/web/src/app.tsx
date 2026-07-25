@@ -1,9 +1,22 @@
-import { useEffect, useRef, useState, type SyntheticEvent } from 'react';
+import { useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react';
 import { Navigate, Outlet, Route, Routes, useNavigate, useParams } from 'react-router';
 
-import type { PublicAgentRun, PublicOrganisation } from '@migration/contracts';
+import type {
+  PublicAgentRun,
+  PublicGithubInstallation,
+  PublicOrganisation,
+} from '@migration/contracts';
 
-import { ApiError, createDemoRun, createOrganisation, loadMe, loadRun } from './api.js';
+import {
+  ApiError,
+  completeGithubSetup,
+  createDemoRun,
+  createGithubInstallLink,
+  createOrganisation,
+  loadGithubInstallations,
+  loadMe,
+  loadRun,
+} from './api.js';
 import { useAuth } from './auth.js';
 import { supabase } from './supabase.js';
 
@@ -14,6 +27,11 @@ export function App(): React.JSX.Element {
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route element={<ProtectedLayout />}>
         <Route path="/onboarding" element={<OnboardingPage />} />
+        <Route path="/github/setup/callback" element={<GithubSetupCallbackPage />} />
+        <Route
+          path="/organisations/:orgId/settings/github"
+          element={<GithubSettingsPage />}
+        />
         <Route path="/organisations/:orgId/demo" element={<DemoPage />} />
         <Route path="/organisations/:orgId/runs/:runId" element={<RunPage />} />
       </Route>
@@ -93,17 +111,17 @@ function LoginPage(): React.JSX.Element {
         </button>
         {error && <p className="error-message">{error}</p>}
         <p className="fine-print">
-          Stage 1 uses synthetic OrbitChat evidence only. It does not access a
-          repository or create a pull request.
+          Stage 2A can connect a GitHub App installation. Repository content is not
+          accessed until a later, explicit scan.
         </p>
       </section>
-      <aside className="login-aside" aria-label="Stage 1 boundaries">
+      <aside className="login-aside" aria-label="Current product boundaries">
         <span>01</span>
         <p>Authenticated control plane</p>
         <span>02</span>
-        <p>Bounded agent execution</p>
+        <p>Verified GitHub installation</p>
         <span>03</span>
-        <p>Inspectable evidence</p>
+        <p>Explicit repository access</p>
       </aside>
     </main>
   );
@@ -143,7 +161,7 @@ function OnboardingPage(): React.JSX.Element {
         name,
         slug,
       });
-      await navigate(`/organisations/${organisation.id}/demo`);
+      await navigate(`/organisations/${organisation.id}/settings/github`);
     } catch (caught) {
       setError(errorText(caught));
     }
@@ -165,7 +183,9 @@ function OnboardingPage(): React.JSX.Element {
               className="organisation-card"
               key={organisation.id}
               type="button"
-              onClick={() => navigate(`/organisations/${organisation.id}/demo`)}
+              onClick={() =>
+                navigate(`/organisations/${organisation.id}/settings/github`)
+              }
             >
               <span>{organisation.name}</span>
               <small>
@@ -204,6 +224,159 @@ function OnboardingPage(): React.JSX.Element {
       {error && <p className="error-message">{error}</p>}
     </div>
   );
+}
+
+function GithubSettingsPage(): React.JSX.Element {
+  const { session } = useAuth();
+  const { orgId } = useParams();
+  const [installations, setInstallations] = useState<PublicGithubInstallation[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [starting, setStarting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!session || !orgId) return;
+    let active = true;
+    void loadGithubInstallations(session.access_token, orgId)
+      .then(data => {
+        if (active) setInstallations(data.installations);
+      })
+      .catch((caught: unknown) => {
+        if (active) setError(errorText(caught));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [orgId, session]);
+
+  async function startInstallation(): Promise<void> {
+    if (!session || !orgId) return;
+    setStarting(true);
+    setError(null);
+    try {
+      const { installLink } = await createGithubInstallLink(
+        session.access_token,
+        orgId,
+      );
+      const destination = new URL(installLink.installationUrl);
+      if (
+        destination.origin !== 'https://github.com' ||
+        !/^\/apps\/[a-z0-9-]+\/installations\/new$/u.test(destination.pathname)
+      ) {
+        throw new Error('The installation destination is invalid.');
+      }
+      window.location.assign(destination);
+    } catch (caught) {
+      setError(errorText(caught));
+      setStarting(false);
+    }
+  }
+
+  return (
+    <div className="page page-narrow">
+      <p className="eyebrow">GitHub connection</p>
+      <h1>Connect repository access</h1>
+      <p className="lede">
+        Install the Migration API GitHub App on an organisation or account. Choose only
+        the repositories you want this workspace to see.
+      </p>
+      <section className="panel">
+        <h2>What you are authorising</h2>
+        <ul>
+          <li>Read repository metadata and selected repository contents.</li>
+          <li>
+            Grant contents and pull-request write permission for later, explicitly
+            approved migrations.
+          </li>
+          <li>Receive installation and repository-selection webhooks.</li>
+          <li>Stage 2A does not use those write permissions or change code.</li>
+        </ul>
+        <button
+          className="primary-button"
+          type="button"
+          disabled={starting}
+          onClick={() => void startInstallation()}
+        >
+          {starting ? 'Opening GitHub…' : 'Install or update GitHub App'}
+        </button>
+        {error && <p className="error-message">{error}</p>}
+      </section>
+      <section className="panel settings-section">
+        <h2>Connected installations</h2>
+        {loading ? (
+          <p>Loading installations…</p>
+        ) : installations.length === 0 ? (
+          <p>No GitHub installation is connected to this workspace yet.</p>
+        ) : (
+          <div className="installation-list">
+            {installations.map(installation => (
+              <article key={installation.id}>
+                <div>
+                  <strong>{installation.accountLogin}</strong>
+                  <p>{installation.accountType} account</p>
+                </div>
+                <span className={`status status-${installation.status}`}>
+                  {installation.status}
+                </span>
+              </article>
+            ))}
+          </div>
+        )}
+      </section>
+      {orgId && (
+        <p className="fine-print">
+          <a href={`/organisations/${orgId}/demo`}>
+            Open the Stage 1 OrbitChat evidence demo
+          </a>
+        </p>
+      )}
+    </div>
+  );
+}
+
+function GithubSetupCallbackPage(): React.JSX.Element {
+  const { session } = useAuth();
+  const navigate = useNavigate();
+  const started = useRef(false);
+  const callback = useMemo(() => readGithubSetupCallback(), []);
+  const [error, setError] = useState<string | null>(
+    callback ? null : 'GitHub did not return the required installation details.',
+  );
+
+  useEffect(() => {
+    if (!session || !callback || started.current) return;
+    started.current = true;
+    void completeGithubSetup(session.access_token, callback)
+      .then(result =>
+        navigate(`/organisations/${result.organisationId}/settings/github`, {
+          replace: true,
+        }),
+      )
+      .catch((caught: unknown) => setError(errorText(caught)));
+  }, [callback, navigate, session]);
+
+  if (error) {
+    return (
+      <div className="page page-narrow">
+        <p className="eyebrow">GitHub connection</p>
+        <h1>Connection not completed</h1>
+        <p className="error-message">{error}</p>
+        <a href="/onboarding">Return to your workspaces</a>
+      </div>
+    );
+  }
+  return <FullPageMessage>Verifying the GitHub installation…</FullPageMessage>;
+}
+
+function readGithubSetupCallback():
+  { readonly installationId: string; readonly state: string } | undefined {
+  const parameters = new URLSearchParams(window.location.search);
+  const installationId = parameters.get('installation_id');
+  const state = parameters.get('state');
+  return installationId && state ? { installationId, state } : undefined;
 }
 
 function DemoPage(): React.JSX.Element {

@@ -151,15 +151,17 @@ resource "aws_lambda_function" "api" {
 
   environment {
     variables = {
-      APP_ENVIRONMENT       = "development"
-      ARTIFACT_BUCKET       = aws_s3_bucket.artifacts.bucket
-      ARTIFACT_KMS_KEY_ARN  = aws_kms_key.artifacts.arn
-      DATABASE_SECRET_ARN   = var.database_secret_arn
-      OPENAI_MODEL          = var.openai_model
-      SUPABASE_JWT_AUDIENCE = var.supabase_jwt_audience
-      SUPABASE_JWT_ISSUER   = var.supabase_jwt_issuer
-      SUPABASE_JWKS_URL     = var.supabase_jwks_url
-      NODE_OPTIONS          = "--enable-source-maps"
+      APP_ENVIRONMENT                   = "development"
+      ARTIFACT_BUCKET                   = aws_s3_bucket.artifacts.bucket
+      ARTIFACT_KMS_KEY_ARN              = aws_kms_key.artifacts.arn
+      DATABASE_SECRET_ARN               = var.database_secret_arn
+      GITHUB_APP_SLUG                   = var.github_app_slug
+      GITHUB_TOKEN_BROKER_FUNCTION_NAME = aws_lambda_function.github_token_broker.function_name
+      OPENAI_MODEL                      = var.openai_model
+      SUPABASE_JWT_AUDIENCE             = var.supabase_jwt_audience
+      SUPABASE_JWT_ISSUER               = var.supabase_jwt_issuer
+      SUPABASE_JWKS_URL                 = var.supabase_jwks_url
+      NODE_OPTIONS                      = "--enable-source-maps"
     }
   }
 

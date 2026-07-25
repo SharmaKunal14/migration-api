@@ -14,8 +14,11 @@ import type {
 import type {
   AgentRunRecord,
   ApiRepositoryPort,
+  CompleteGithubInstallationInput,
+  CompletedGithubInstallation,
   CreateDemoRunInput,
   CreateOrganisationInput,
+  InstallationLinkRecord,
   OrganisationRecord,
 } from '../services/api/src/repository.js';
 
@@ -33,6 +36,8 @@ const config: ApiConfig = {
   SUPABASE_JWT_AUDIENCE: 'authenticated',
   SUPABASE_JWT_ISSUER: 'https://project.supabase.co/auth/v1',
   SUPABASE_JWKS_URL: 'https://project.supabase.co/auth/v1/.well-known/jwks.json',
+  GITHUB_APP_SLUG: 'migration-api-development',
+  GITHUB_TOKEN_BROKER_FUNCTION_NAME: 'migration-api-development-github-token-broker',
 };
 
 const queuedRun: AgentRunRecord = {
@@ -56,6 +61,34 @@ class FakeRepository implements ApiRepositoryPort {
   public readonly createDemoRunMock = vi.fn<
     (userId: string, input: CreateDemoRunInput) => Promise<AgentRunRecord>
   >(() => Promise.resolve(queuedRun));
+  public readonly createGithubInstallLinkMock = vi.fn<
+    (userId: string, organisationId: string) => Promise<InstallationLinkRecord>
+  >(() =>
+    Promise.resolve({
+      state: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      expiresAt: new Date('2026-07-24T00:10:00.000Z'),
+    }),
+  );
+  public readonly completeGithubInstallationMock = vi.fn<
+    (
+      userId: string,
+      input: CompleteGithubInstallationInput,
+    ) => Promise<CompletedGithubInstallation>
+  >(() =>
+    Promise.resolve({
+      organisationId,
+      installation: {
+        id: runId,
+        accountLogin: 'SharmaKunal14',
+        accountType: 'User',
+        status: 'active',
+        lastReconciledAt: null,
+      },
+    }),
+  );
+  public readonly validateGithubInstallStateMock = vi.fn<
+    (userId: string, state: string) => Promise<void>
+  >(() => Promise.resolve());
 
   public ensureUser(_actor: Actor): Promise<string> {
     return Promise.resolve(userId);
@@ -113,6 +146,24 @@ class FakeRepository implements ApiRepositoryPort {
   ): Promise<PublicDependencyObservation[]> {
     return Promise.resolve([]);
   }
+
+  public createGithubInstallLink(
+    requestedBy: string,
+    requestedOrganisationId: string,
+  ): Promise<InstallationLinkRecord> {
+    return this.createGithubInstallLinkMock(requestedBy, requestedOrganisationId);
+  }
+
+  public validateGithubInstallState(requestedBy: string, state: string): Promise<void> {
+    return this.validateGithubInstallStateMock(requestedBy, state);
+  }
+
+  public completeGithubInstallation(
+    requestedBy: string,
+    input: CompleteGithubInstallationInput,
+  ): Promise<CompletedGithubInstallation> {
+    return this.completeGithubInstallationMock(requestedBy, input);
+  }
 }
 
 function dependencies(repository = new FakeRepository()): ApiDependencies {
@@ -123,6 +174,23 @@ function dependencies(repository = new FakeRepository()): ApiDependencies {
     tokenVerifier: {
       verify(): Promise<Actor> {
         return Promise.resolve({ userId, subject: userId });
+      },
+    },
+    installationVerifier: {
+      verify(installationId): Promise<{
+        installationId: string;
+        accountId: string;
+        accountLogin: string;
+        accountType: 'User';
+        status: 'active';
+      }> {
+        return Promise.resolve({
+          installationId,
+          accountId: '104818699',
+          accountLogin: 'SharmaKunal14',
+          accountType: 'User',
+          status: 'active',
+        });
       },
     },
   };
@@ -268,5 +336,96 @@ describe('API handler trust boundary', () => {
     );
     expect(response.statusCode).toBe(200);
     expect(parsedBody(response)).toEqual({ [key]: [] });
+  });
+
+  it('creates a short-lived GitHub App installation URL', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event('POST', `/api/v1/organisations/${organisationId}/github/install-link`, {}),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(201);
+    expect(repository.createGithubInstallLinkMock).toHaveBeenCalledWith(
+      userId,
+      organisationId,
+    );
+    expect(parsedBody(response)).toEqual({
+      installLink: {
+        installationUrl:
+          'https://github.com/apps/migration-api-development/installations/new?state=AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+        expiresAt: '2026-07-24T00:10:00.000Z',
+      },
+    });
+  });
+
+  it('verifies and links a GitHub App callback', async () => {
+    const repository = new FakeRepository();
+    const dependency = dependencies(repository);
+    const verify = vi.spyOn(dependency.installationVerifier, 'verify');
+    const response = await handleRequest(
+      event('POST', '/api/v1/github/setup/callback', {
+        installationId: '123456789',
+        state: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      }),
+      dependency,
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(repository.validateGithubInstallStateMock).toHaveBeenCalledWith(
+      userId,
+      'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+    );
+    expect(verify).toHaveBeenCalledWith('123456789');
+    expect(repository.completeGithubInstallationMock).toHaveBeenCalledOnce();
+    expect(repository.completeGithubInstallationMock.mock.calls[0]?.[0]).toBe(userId);
+    expect(repository.completeGithubInstallationMock.mock.calls[0]?.[1]).toMatchObject({
+      installationId: '123456789',
+      state: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      verified: { accountId: '104818699' },
+    });
+    expect(parsedBody(response)).toMatchObject({
+      organisationId,
+      installation: { accountLogin: 'SharmaKunal14', status: 'active' },
+    });
+  });
+
+  it('rejects a malformed callback state before invoking the broker', async () => {
+    const dependency = dependencies();
+    const verify = vi.spyOn(dependency.installationVerifier, 'verify');
+    const response = await handleRequest(
+      event('POST', '/api/v1/github/setup/callback', {
+        installationId: '123456789',
+        state: 'predictable',
+      }),
+      dependency,
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(verify).not.toHaveBeenCalled();
+  });
+
+  it('rejects an invalid or unauthorized state before invoking the broker', async () => {
+    const repository = new FakeRepository();
+    repository.validateGithubInstallStateMock.mockRejectedValueOnce(
+      new DomainError(
+        'GITHUB_INSTALLATION_STATE_INVALID',
+        'The GitHub installation link is invalid or expired.',
+        409,
+      ),
+    );
+    const dependency = dependencies(repository);
+    const verify = vi.spyOn(dependency.installationVerifier, 'verify');
+    const response = await handleRequest(
+      event('POST', '/api/v1/github/setup/callback', {
+        installationId: '123456789',
+        state: 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA',
+      }),
+      dependency,
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(verify).not.toHaveBeenCalled();
+    expect(repository.completeGithubInstallationMock).not.toHaveBeenCalled();
   });
 });

@@ -71,6 +71,7 @@ configuration, not secret credential values:
 | `MIGRATION_GITHUB_WEBHOOK_SECRET_KMS_KEY_ARN` | GitHub webhook secret KMS-key ARN |
 | `MIGRATION_GITHUB_APP_SECRET_ARN` | GitHub App ID/private-key secret ARN only |
 | `MIGRATION_GITHUB_APP_SECRET_KMS_KEY_ARN` | GitHub App secret KMS-key ARN |
+| `MIGRATION_GITHUB_APP_SLUG` | Public GitHub App URL slug, not its display name |
 | `OPENAI_IDENTITY_PROVIDER_ID` | OpenAI AWS WIF provider ID |
 | `OPENAI_SERVICE_ACCOUNT_ID` | Mapped OpenAI service-account ID |
 | `OPENAI_MODEL` | Reviewed model alias or snapshot |
