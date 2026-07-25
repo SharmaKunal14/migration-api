@@ -23,6 +23,10 @@ export default defineConfig({
       ).pathname,
       '@migration/domain': new URL('./packages/domain/src/index.ts', import.meta.url)
         .pathname,
+      '@migration/model-gateway': new URL(
+        './packages/model-gateway/src/index.ts',
+        import.meta.url,
+      ).pathname,
       '@migration/observability': new URL(
         './packages/observability/src/index.ts',
         import.meta.url,

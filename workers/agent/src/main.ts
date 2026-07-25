@@ -31,6 +31,7 @@ async function main(): Promise<void> {
       audience: config.OPENAI_WIF_AUDIENCE,
       model: config.OPENAI_MODEL,
       organisationId: config.ORGANISATION_ID,
+      agentRunId: config.AGENT_RUN_ID,
     });
     const evidenceKey = `env/${config.APP_ENVIRONMENT}/synthetic/orbitchat/stage-1-evidence.json`;
     const tools = new AgentTools(s3, config.ARTIFACT_BUCKET, evidenceKey);

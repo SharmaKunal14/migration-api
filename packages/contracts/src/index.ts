@@ -33,7 +33,7 @@ const migrationChangeSchema = z
     changeId: z.string().regex(/^C-0[1-7]$/u),
     category: z.enum(['request', 'response', 'runtime', 'behavior']),
     summary: z.string().min(1).max(512),
-    certainty: z.enum(['vendor_confirmed', 'unresolved']),
+    certainty: z.literal('vendor_confirmed'),
     evidenceIds: z
       .array(z.string().regex(/^C-0[1-7]$/u))
       .min(1)
@@ -68,11 +68,15 @@ export const migrationPlanSchema = z
         path: ['changes'],
       });
     }
-    if (!plan.changes.some(change => change.certainty === 'unresolved')) {
+    const actualEvidence = new Set(plan.evidence.map(item => item.evidenceId));
+    if (
+      actualEvidence.size !== expected.size ||
+      [...expected].some(id => !actualEvidence.has(id))
+    ) {
       context.addIssue({
         code: 'custom',
-        message: 'The notification default ambiguity must remain unresolved.',
-        path: ['changes'],
+        message: 'The plan must contain evidence C-01 through C-07.',
+        path: ['evidence'],
       });
     }
   });

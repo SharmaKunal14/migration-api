@@ -5,7 +5,7 @@ import type {
 
 import type { AgentResultEnvelope, MigrationPlan } from '@migration/contracts';
 import type { AgentToolAction, AgentTools } from '@migration/agent-tools';
-import type { ModelGateway } from '@migration/model-gateway';
+import { InvalidModelOutputError, type ModelGateway } from '@migration/model-gateway';
 
 const budgets = {
   maxModelCalls: 4,
@@ -76,8 +76,13 @@ export class AgentKernel {
         let plan: MigrationPlan;
         try {
           plan = this.gateway.parseTerminal(turn.response);
-        } catch {
-          return failure('invalid_model_output', 'INVALID_MODEL_OUTPUT');
+        } catch (error) {
+          return failure(
+            'invalid_model_output',
+            error instanceof InvalidModelOutputError
+              ? error.safeCode
+              : 'INVALID_MODEL_OUTPUT',
+          );
         }
         return envelope('completed', null, plan);
       }

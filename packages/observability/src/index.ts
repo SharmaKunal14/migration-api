@@ -16,6 +16,10 @@ export interface LogContext {
   readonly httpStatus?: number;
   readonly upstreamErrorCode?: string;
   readonly upstreamRequestId?: string;
+  readonly failureReason?: string;
+  readonly responseStatus?: string;
+  readonly incompleteReason?: string;
+  readonly validationIssuePaths?: readonly string[];
 }
 
 const forbiddenKeys =
