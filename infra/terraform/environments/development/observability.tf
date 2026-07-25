@@ -170,3 +170,31 @@ resource "aws_cloudwatch_metric_alarm" "github_reconciliation_failure" {
   comparison_operator = "GreaterThanOrEqualToThreshold"
   treat_missing_data  = "notBreaching"
 }
+
+resource "aws_cloudwatch_metric_alarm" "repository_scan_control_errors" {
+  alarm_name          = "migration-api-development-repository-scan-control-errors"
+  alarm_description   = "Repository scan control returned an unhandled Lambda error."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.repository_scan_control.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "repository_scan_workflow_failures" {
+  alarm_name          = "migration-api-development-repository-scan-workflow-failures"
+  alarm_description   = "Repository scan workflow reached an unhandled failed execution."
+  namespace           = "AWS/States"
+  metric_name         = "ExecutionsFailed"
+  dimensions          = { StateMachineArn = aws_sfn_state_machine.repository_scan.arn }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}

@@ -10,6 +10,7 @@ import type {
   PublicDependencyObservation,
   PublicGithubInstallation,
   PublicRepository,
+  PublicRepositoryScan,
 } from '@migration/contracts';
 import type {
   AgentRunRecord,
@@ -17,6 +18,7 @@ import type {
   CompleteGithubInstallationInput,
   CompletedGithubInstallation,
   CreateDemoRunInput,
+  CreateRepositoryScanInput,
   CreateOrganisationInput,
   InstallationLinkRecord,
   OrganisationRecord,
@@ -58,6 +60,22 @@ const queuedRun: AgentRunRecord = {
 };
 
 class FakeRepository implements ApiRepositoryPort {
+  public readonly createRepositoryScanMock = vi.fn<
+    (userId: string, input: CreateRepositoryScanInput) => Promise<PublicRepositoryScan>
+  >((_userId, input) =>
+    Promise.resolve({
+      id: runId,
+      organisationId: input.organisationId,
+      repositoryId: input.repositoryId,
+      requestedCommit: null,
+      status: 'queued',
+      safeErrorCode: null,
+      version: 1,
+      createdAt: '2026-07-24T00:00:00.000Z',
+      startedAt: null,
+      completedAt: null,
+    }),
+  );
   public readonly createDemoRunMock = vi.fn<
     (userId: string, input: CreateDemoRunInput) => Promise<AgentRunRecord>
   >(() => Promise.resolve(queuedRun));
@@ -145,6 +163,13 @@ class FakeRepository implements ApiRepositoryPort {
     _repositoryId: string,
   ): Promise<PublicDependencyObservation[]> {
     return Promise.resolve([]);
+  }
+
+  public createRepositoryScan(
+    requestedBy: string,
+    input: CreateRepositoryScanInput,
+  ): Promise<PublicRepositoryScan> {
+    return this.createRepositoryScanMock(requestedBy, input);
   }
 
   public createGithubInstallLink(
@@ -319,6 +344,34 @@ describe('API handler trust boundary', () => {
     );
     expect(parsedBody(response)).toMatchObject({
       run: { id: runId, status: 'queued', result: null },
+    });
+  });
+
+  it('starts an idempotent repository scan with identifier-only input', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/organisations/${organisationId}/repositories/${runId}/scans`,
+        {},
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'scan:01J7Y5ABCD',
+        },
+      ),
+      dependencies(repository),
+    );
+    expect(response.statusCode).toBe(202);
+    expect(repository.createRepositoryScanMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        organisationId,
+        repositoryId: runId,
+        idempotencyKey: 'scan:01J7Y5ABCD',
+      }),
+    );
+    expect(parsedBody(response)).toMatchObject({
+      scan: { id: runId, repositoryId: runId, status: 'queued' },
     });
   });
 

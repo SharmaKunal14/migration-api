@@ -47,6 +47,18 @@ output "migrator_ecr_repository_url" {
   value = data.aws_ecr_repository.migrator.repository_url
 }
 
+output "source_fetcher_ecr_repository_url" {
+  value = data.aws_ecr_repository.source_fetcher.repository_url
+}
+
+output "source_fetcher_task_definition_arn" {
+  value = aws_ecs_task_definition.source_fetcher.arn
+}
+
+output "repository_scan_state_machine_arn" {
+  value = aws_sfn_state_machine.repository_scan.arn
+}
+
 output "migrator_task_definition_arn" {
   value = aws_ecs_task_definition.migrator.arn
 }

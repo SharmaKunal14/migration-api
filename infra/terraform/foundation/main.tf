@@ -64,6 +64,28 @@ resource "aws_ecr_lifecycle_policy" "migrator" {
   policy     = local.image_lifecycle_policy
 }
 
+resource "aws_ecr_repository" "source_fetcher" {
+  name                 = "migration-api-development-source-fetcher"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = false
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.container_images.arn
+  }
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = { Stage = "2" }
+}
+
+resource "aws_ecr_lifecycle_policy" "source_fetcher" {
+  repository = aws_ecr_repository.source_fetcher.name
+  policy     = local.image_lifecycle_policy
+}
+
 locals {
   image_lifecycle_policy = jsonencode({
     rules = [

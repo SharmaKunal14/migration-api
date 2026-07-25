@@ -8,6 +8,8 @@ export interface LogContext {
   readonly correlationId?: string;
   readonly organisationId?: string;
   readonly agentRunId?: string;
+  readonly repositoryId?: string;
+  readonly repositoryScanId?: string;
   readonly outcome?: string;
   readonly durationMs?: number;
   readonly safeErrorCode?: string;

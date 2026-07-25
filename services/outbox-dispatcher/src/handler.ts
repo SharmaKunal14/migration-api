@@ -7,7 +7,12 @@ import {
 } from '@aws-sdk/client-sfn';
 import type { ScheduledEvent } from 'aws-lambda';
 
-import { workflowInputSchema, type WorkflowInput } from '@migration/contracts';
+import {
+  repositoryScanWorkflowInputSchema,
+  workflowInputSchema,
+  type RepositoryScanWorkflowInput,
+  type WorkflowInput,
+} from '@migration/contracts';
 import {
   dispatcherConfigSchema,
   parseConfig,
@@ -26,11 +31,19 @@ interface DispatcherDependencies {
   readonly stepFunctions: SFNClient;
 }
 
-interface ClaimedEvent {
-  readonly id: string;
-  readonly payload: WorkflowInput;
-  readonly attempts: number;
-}
+type ClaimedEvent =
+  | {
+      readonly kind: 'agent';
+      readonly id: string;
+      readonly payload: WorkflowInput;
+      readonly attempts: number;
+    }
+  | {
+      readonly kind: 'repository_scan';
+      readonly id: string;
+      readonly payload: RepositoryScanWorkflowInput;
+      readonly attempts: number;
+    };
 
 let cachedDependencies: DispatcherDependencies | undefined;
 
@@ -60,60 +73,41 @@ export async function dispatchOutbox(
     try {
       await dependency.stepFunctions.send(
         new StartExecutionCommand({
-          stateMachineArn: dependency.config.STATE_MACHINE_ARN,
-          name: `agent-${event.payload.agentRunId}`,
+          stateMachineArn:
+            event.kind === 'agent'
+              ? dependency.config.STATE_MACHINE_ARN
+              : dependency.config.REPOSITORY_SCAN_STATE_MACHINE_ARN,
+          name:
+            event.kind === 'agent'
+              ? `agent-${event.payload.agentRunId}`
+              : `repository-scan-${event.payload.repositoryScanId}`,
           input: JSON.stringify(event.payload),
         }),
       );
-      await dependency.database
-        .updateTable('workflowOutbox')
-        .set({
-          deliveredAt: new Date(),
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          safeErrorCode: null,
-        })
-        .where('id', '=', event.id)
-        .where('leaseOwner', '=', leaseOwner)
-        .executeTakeFirstOrThrow();
+      await markDelivered(dependency.database, event, leaseOwner);
       writeLog('info', {
         event: 'outbox_event_delivered',
         correlationId: event.payload.correlationId,
         organisationId: event.payload.organisationId,
-        agentRunId: event.payload.agentRunId,
+        ...(event.kind === 'agent'
+          ? { agentRunId: event.payload.agentRunId }
+          : { repositoryScanId: event.payload.repositoryScanId }),
       });
     } catch (error) {
       if (error instanceof ExecutionAlreadyExists) {
-        await dependency.database
-          .updateTable('workflowOutbox')
-          .set({
-            deliveredAt: new Date(),
-            leaseOwner: null,
-            leaseExpiresAt: null,
-            safeErrorCode: null,
-          })
-          .where('id', '=', event.id)
-          .executeTakeFirstOrThrow();
+        await markDelivered(dependency.database, event, leaseOwner);
         continue;
       }
       const terminal = event.attempts >= MAX_ATTEMPTS;
       const backoffSeconds = Math.min(300, 2 ** event.attempts);
-      await dependency.database
-        .updateTable('workflowOutbox')
-        .set({
-          availableAt: new Date(Date.now() + backoffSeconds * 1000),
-          leaseOwner: null,
-          leaseExpiresAt: null,
-          safeErrorCode: terminal ? 'OUTBOX_DELIVERY_FAILED' : 'OUTBOX_RETRY_PENDING',
-        })
-        .where('id', '=', event.id)
-        .where('leaseOwner', '=', leaseOwner)
-        .executeTakeFirstOrThrow();
+      await markRetry(dependency.database, event, leaseOwner, backoffSeconds, terminal);
       writeLog(terminal ? 'error' : 'warn', {
         event: terminal ? 'outbox_event_failed' : 'outbox_event_retry_scheduled',
         correlationId: event.payload.correlationId,
         organisationId: event.payload.organisationId,
-        agentRunId: event.payload.agentRunId,
+        ...(event.kind === 'agent'
+          ? { agentRunId: event.payload.agentRunId }
+          : { repositoryScanId: event.payload.repositoryScanId }),
         safeErrorCode: terminal ? 'OUTBOX_DELIVERY_FAILED' : 'OUTBOX_RETRY_PENDING',
       });
     }
@@ -124,7 +118,7 @@ async function claimEvents(
   database: AppDatabase,
   leaseOwner: string,
 ): Promise<ClaimedEvent[]> {
-  return database.transaction().execute(async transaction => {
+  const agentEvents = await database.transaction().execute(async transaction => {
     const candidates = await transaction
       .selectFrom('workflowOutbox')
       .select(['id', 'payload', 'attempts'])
@@ -154,8 +148,113 @@ async function claimEvents(
         })
         .where('id', '=', candidate.id)
         .executeTakeFirstOrThrow();
-      claimed.push({ id: candidate.id, payload, attempts: candidate.attempts + 1 });
+      claimed.push({
+        kind: 'agent',
+        id: candidate.id,
+        payload,
+        attempts: candidate.attempts + 1,
+      });
     }
     return claimed;
   });
+  const remaining = BATCH_SIZE - agentEvents.length;
+  if (remaining === 0) return agentEvents;
+  const scanEvents = await database.transaction().execute(async transaction => {
+    const candidates = await transaction
+      .selectFrom('repositoryScanOutbox')
+      .select(['id', 'payload', 'attempts'])
+      .where('deliveredAt', 'is', null)
+      .where('availableAt', '<=', new Date())
+      .where(builder =>
+        builder.or([
+          builder('leaseExpiresAt', 'is', null),
+          builder('leaseExpiresAt', '<', new Date()),
+        ]),
+      )
+      .where('attempts', '<', MAX_ATTEMPTS)
+      .orderBy('createdAt', 'asc')
+      .limit(remaining)
+      .forUpdate()
+      .skipLocked()
+      .execute();
+    const claimed: ClaimedEvent[] = [];
+    for (const candidate of candidates) {
+      const payload = repositoryScanWorkflowInputSchema.parse(candidate.payload);
+      await transaction
+        .updateTable('repositoryScanOutbox')
+        .set({
+          leaseOwner,
+          leaseExpiresAt: new Date(Date.now() + LEASE_MILLISECONDS),
+          attempts: candidate.attempts + 1,
+        })
+        .where('id', '=', candidate.id)
+        .executeTakeFirstOrThrow();
+      claimed.push({
+        kind: 'repository_scan',
+        id: candidate.id,
+        payload,
+        attempts: candidate.attempts + 1,
+      });
+    }
+    return claimed;
+  });
+  return [...agentEvents, ...scanEvents];
+}
+
+async function markDelivered(
+  database: AppDatabase,
+  event: ClaimedEvent,
+  leaseOwner: string,
+): Promise<void> {
+  const values = {
+    deliveredAt: new Date(),
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    safeErrorCode: null,
+  };
+  if (event.kind === 'agent') {
+    await database
+      .updateTable('workflowOutbox')
+      .set(values)
+      .where('id', '=', event.id)
+      .where('leaseOwner', '=', leaseOwner)
+      .executeTakeFirstOrThrow();
+    return;
+  }
+  await database
+    .updateTable('repositoryScanOutbox')
+    .set(values)
+    .where('id', '=', event.id)
+    .where('leaseOwner', '=', leaseOwner)
+    .executeTakeFirstOrThrow();
+}
+
+async function markRetry(
+  database: AppDatabase,
+  event: ClaimedEvent,
+  leaseOwner: string,
+  backoffSeconds: number,
+  terminal: boolean,
+): Promise<void> {
+  const values = {
+    availableAt: new Date(Date.now() + backoffSeconds * 1000),
+    leaseOwner: null,
+    leaseExpiresAt: null,
+    safeErrorCode: terminal ? 'OUTBOX_DELIVERY_FAILED' : 'OUTBOX_RETRY_PENDING',
+  };
+  if (event.kind === 'agent') {
+    await database
+      .updateTable('workflowOutbox')
+      .set(values)
+      .where('id', '=', event.id)
+      .where('leaseOwner', '=', leaseOwner)
+      .executeTakeFirstOrThrow();
+    return;
+  }
+  await database
+    .updateTable('repositoryScanOutbox')
+    .set(values)
+    .where('id', '=', event.id)
+    .where('leaseOwner', '=', leaseOwner)
+    .executeTakeFirstOrThrow();
 }

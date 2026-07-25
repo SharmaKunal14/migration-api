@@ -120,7 +120,7 @@ not need permission to create arbitrary service-linked roles.
 
 ### One-time ECR foundation
 
-The two ECR repositories must exist before the deployment workflow can build
+The three ECR repositories must exist before the deployment workflow can build
 and push images. They are owned by the isolated `infra/terraform/foundation`
 root so its plan requires only the recorded AWS region and owner tag, not image
 digests or application-provider configuration.
@@ -134,6 +134,9 @@ aws ecr describe-repositories \
 aws ecr describe-repositories \
   --region ap-southeast-2 \
   --repository-names migration-api-development-database-migrator
+aws ecr describe-repositories \
+  --region ap-southeast-2 \
+  --repository-names migration-api-development-source-fetcher
 ```
 
 `RepositoryNotFoundException` is expected on the first deployment. If either
@@ -178,8 +181,10 @@ terraform -chdir=infra/terraform/foundation apply \
 terraform -chdir=infra/terraform/foundation output
 ```
 
-The reviewed plan must contain only the dedicated container-image KMS key and
-alias, the two immutable ECR repositories, and their lifecycle policies.
+On a new environment, the reviewed plan must contain only the dedicated
+container-image KMS key and alias, the three immutable ECR repositories, and
+their lifecycle policies. When adding Stage 2C to an existing environment, it
+must add only the source-fetcher repository and lifecycle policy.
 Do not use `-auto-approve`.
 
 After applying the foundation, build and push both images as documented above,

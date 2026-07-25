@@ -4,7 +4,9 @@ import type {
   PublicGithubInstallLink,
   PublicGithubSetupCompletion,
   PublicOrganisation,
+  PublicDependencyObservation,
   PublicRepository,
+  PublicRepositoryScan,
 } from '@migration/contracts';
 
 import { browserConfiguration } from './config.js';
@@ -100,6 +102,34 @@ export async function loadRepositories(
   organisationId: string,
 ): Promise<{ repositories: PublicRepository[] }> {
   return request(token, `/v1/organisations/${organisationId}/repositories`);
+}
+
+export async function startRepositoryScan(
+  token: string,
+  organisationId: string,
+  repositoryId: string,
+  idempotencyKey: string,
+): Promise<{ scan: PublicRepositoryScan }> {
+  return request(
+    token,
+    `/v1/organisations/${organisationId}/repositories/${repositoryId}/scans`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify({}),
+    },
+  );
+}
+
+export async function loadDependencies(
+  token: string,
+  organisationId: string,
+  repositoryId: string,
+): Promise<{ dependencies: PublicDependencyObservation[] }> {
+  return request(
+    token,
+    `/v1/organisations/${organisationId}/repositories/${repositoryId}/dependencies`,
+  );
 }
 
 export async function createDemoRun(

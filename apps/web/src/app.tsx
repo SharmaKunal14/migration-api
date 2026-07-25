@@ -3,6 +3,7 @@ import { Navigate, Outlet, Route, Routes, useNavigate, useParams } from 'react-r
 
 import type {
   PublicAgentRun,
+  PublicDependencyObservation,
   PublicGithubInstallation,
   PublicOrganisation,
   PublicRepository,
@@ -15,9 +16,11 @@ import {
   createGithubInstallLink,
   createOrganisation,
   loadGithubInstallations,
+  loadDependencies,
   loadMe,
   loadRepositories,
   loadRun,
+  startRepositoryScan,
 } from './api.js';
 import { useAuth } from './auth.js';
 import { supabase } from './supabase.js';
@@ -233,8 +236,13 @@ function GithubSettingsPage(): React.JSX.Element {
   const { orgId } = useParams();
   const [installations, setInstallations] = useState<PublicGithubInstallation[]>([]);
   const [repositories, setRepositories] = useState<PublicRepository[]>([]);
+  const [dependencies, setDependencies] = useState<
+    Record<string, PublicDependencyObservation[]>
+  >({});
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+  const [scanningRepositoryId, setScanningRepositoryId] = useState<string | null>(null);
+  const [scanGeneration, setScanGeneration] = useState(0);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
@@ -251,6 +259,22 @@ function GithubSettingsPage(): React.JSX.Element {
         if (!active) return;
         setInstallations(installationData.installations);
         setRepositories(repositoryData.repositories);
+        const completedRepositories = repositoryData.repositories.filter(
+          repository => repository.latestScanStatus === 'succeeded',
+        );
+        const dependencyResults = await Promise.all(
+          completedRepositories.map(async repository => ({
+            repositoryId: repository.id,
+            dependencies: (
+              await loadDependencies(session.access_token, orgId, repository.id)
+            ).dependencies,
+          })),
+        );
+        setDependencies(
+          Object.fromEntries(
+            dependencyResults.map(result => [result.repositoryId, result.dependencies]),
+          ),
+        );
         setError(null);
         setLoading(false);
         attempts += 1;
@@ -258,8 +282,13 @@ function GithubSettingsPage(): React.JSX.Element {
           installation =>
             installation.status === 'active' && installation.lastReconciledAt === null,
         );
-        if (reconciliationPending && attempts < 15) {
+        const scanPending = repositoryData.repositories.some(repository =>
+          ['queued', 'running'].includes(repository.latestScanStatus ?? ''),
+        );
+        if ((reconciliationPending || scanPending) && attempts < 60) {
           timer = window.setTimeout(() => void refresh(), 2_000);
+        } else if (!scanPending) {
+          setScanningRepositoryId(null);
         }
       } catch (caught) {
         if (active) {
@@ -273,7 +302,7 @@ function GithubSettingsPage(): React.JSX.Element {
       active = false;
       if (timer !== undefined) window.clearTimeout(timer);
     };
-  }, [orgId, session]);
+  }, [orgId, scanGeneration, session]);
 
   async function startInstallation(): Promise<void> {
     if (!session || !orgId) return;
@@ -298,6 +327,24 @@ function GithubSettingsPage(): React.JSX.Element {
     }
   }
 
+  async function startScan(repositoryId: string): Promise<void> {
+    if (!session || !orgId) return;
+    setScanningRepositoryId(repositoryId);
+    setError(null);
+    try {
+      await startRepositoryScan(
+        session.access_token,
+        orgId,
+        repositoryId,
+        crypto.randomUUID(),
+      );
+      setScanGeneration(value => value + 1);
+    } catch (caught) {
+      setError(errorText(caught));
+      setScanningRepositoryId(null);
+    }
+  }
+
   return (
     <div className="page page-narrow">
       <p className="eyebrow">GitHub connection</p>
@@ -315,7 +362,7 @@ function GithubSettingsPage(): React.JSX.Element {
             approved migrations.
           </li>
           <li>Receive installation and repository-selection webhooks.</li>
-          <li>Stage 2B does not use those write permissions or change code.</li>
+          <li>Stage 2C scans an exact commit without executing repository code.</li>
         </ul>
         <button
           className="primary-button"
@@ -345,18 +392,68 @@ function GithubSettingsPage(): React.JSX.Element {
                   <p>
                     {repository.visibility} · default branch {repository.defaultBranch}
                   </p>
+                  {repository.latestScannedCommit && (
+                    <p>
+                      Inventoried commit{' '}
+                      <code>{repository.latestScannedCommit.slice(0, 12)}</code>
+                    </p>
+                  )}
+                  {repository.latestScanStatus &&
+                    repository.latestScanStatus !== 'succeeded' && (
+                      <p>
+                        Scan status: {repository.latestScanStatus}
+                        {repository.latestScanSafeErrorCode
+                          ? ` · ${repository.latestScanSafeErrorCode}`
+                          : ''}
+                      </p>
+                    )}
+                  {(dependencies[repository.id] ?? []).length > 0 && (
+                    <ul className="dependency-list">
+                      {(dependencies[repository.id] ?? [])
+                        .slice(0, 200)
+                        .map(dependency => (
+                          <li
+                            key={`${dependency.manifestPath}:${dependency.packageName}:${dependency.dependencyKind}`}
+                          >
+                            <code>{dependency.packageName}</code>{' '}
+                            {dependency.resolvedVersion ?? dependency.declaredRange}{' '}
+                            <small>({dependency.dependencyKind})</small>
+                          </li>
+                        ))}
+                    </ul>
+                  )}
                 </div>
-                <span
-                  className={`status status-${
-                    repository.enabled ? 'active' : 'removed'
-                  }`}
-                >
-                  {repository.archived
-                    ? 'archived'
-                    : repository.selected
-                      ? 'selected'
-                      : 'removed'}
-                </span>
+                <div className="repository-actions">
+                  <span
+                    className={`status status-${
+                      repository.enabled ? 'active' : 'removed'
+                    }`}
+                  >
+                    {repository.archived
+                      ? 'archived'
+                      : repository.selected
+                        ? 'selected'
+                        : 'removed'}
+                  </span>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={
+                      !repository.enabled ||
+                      ['queued', 'running'].includes(
+                        repository.latestScanStatus ?? '',
+                      ) ||
+                      scanningRepositoryId === repository.id
+                    }
+                    onClick={() => void startScan(repository.id)}
+                  >
+                    {['queued', 'running'].includes(
+                      repository.latestScanStatus ?? '',
+                    ) || scanningRepositoryId === repository.id
+                      ? 'Scanning…'
+                      : 'Scan dependencies'}
+                  </button>
+                </div>
               </article>
             ))}
           </div>

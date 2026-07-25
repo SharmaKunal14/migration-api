@@ -34,8 +34,20 @@ resource "aws_cloudwatch_log_group" "github_reconciler" {
   kms_key_id        = aws_kms_key.logs.arn
 }
 
+resource "aws_cloudwatch_log_group" "repository_scan_control" {
+  name              = "/aws/lambda/migration-api-development-repository-scan-control"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
 resource "aws_cloudwatch_log_group" "agent" {
   name              = "/migration-api/development/agent"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
+resource "aws_cloudwatch_log_group" "source_fetcher" {
+  name              = "/migration-api/development/source-fetcher"
   retention_in_days = 30
   kms_key_id        = aws_kms_key.logs.arn
 }
@@ -77,6 +89,10 @@ locals {
     github_reconciler = {
       role = aws_iam_role.github_reconciler.id
       arn  = aws_cloudwatch_log_group.github_reconciler.arn
+    }
+    repository_scan_control = {
+      role = aws_iam_role.repository_scan_control.id
+      arn  = aws_cloudwatch_log_group.repository_scan_control.arn
     }
   }
 }
@@ -153,6 +169,16 @@ data "archive_file" "github_reconciler" {
 
   source {
     content  = file("${var.service_build_directory}/github-reconciler.js")
+    filename = "index.mjs"
+  }
+}
+
+data "archive_file" "repository_scan_control" {
+  type        = "zip"
+  output_path = "${path.module}/.terraform/repository-scan-control.zip"
+
+  source {
+    content  = file("${var.service_build_directory}/repository-scan-control.js")
     filename = "index.mjs"
   }
 }
@@ -309,6 +335,44 @@ resource "aws_lambda_event_source_mapping" "github_reconciler" {
   depends_on = [aws_iam_role_policy.github_reconciler_runtime]
 }
 
+resource "aws_lambda_function" "repository_scan_control" {
+  function_name                  = "migration-api-development-repository-scan-control"
+  role                           = aws_iam_role.repository_scan_control.arn
+  handler                        = "index.handler"
+  runtime                        = "nodejs22.x"
+  architectures                  = ["arm64"]
+  filename                       = data.archive_file.repository_scan_control.output_path
+  source_code_hash               = data.archive_file.repository_scan_control.output_base64sha256
+  memory_size                    = 512
+  timeout                        = 30
+  reserved_concurrent_executions = 5
+
+  environment {
+    variables = {
+      APP_ENVIRONMENT     = "development"
+      ARTIFACT_BUCKET     = aws_s3_bucket.artifacts.bucket
+      DATABASE_SECRET_ARN = var.database_secret_arn
+      NODE_OPTIONS        = "--enable-source-maps"
+    }
+  }
+
+  vpc_config {
+    security_group_ids = [aws_security_group.control.id]
+    subnet_ids         = [for subnet in aws_subnet.control : subnet.id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.repository_scan_control,
+    aws_iam_role_policy.repository_scan_control_database,
+    aws_iam_role_policy.repository_scan_control_artifacts,
+    aws_iam_role_policy.lambda_vpc["repository_scan_control"]
+  ]
+}
+
 resource "aws_lambda_function" "outbox" {
   function_name                  = "migration-api-development-outbox"
   role                           = aws_iam_role.outbox.arn
@@ -323,10 +387,11 @@ resource "aws_lambda_function" "outbox" {
 
   environment {
     variables = {
-      APP_ENVIRONMENT     = "development"
-      DATABASE_SECRET_ARN = var.database_secret_arn
-      STATE_MACHINE_ARN   = aws_sfn_state_machine.agent.arn
-      NODE_OPTIONS        = "--enable-source-maps"
+      APP_ENVIRONMENT                   = "development"
+      DATABASE_SECRET_ARN               = var.database_secret_arn
+      STATE_MACHINE_ARN                 = aws_sfn_state_machine.agent.arn
+      REPOSITORY_SCAN_STATE_MACHINE_ARN = aws_sfn_state_machine.repository_scan.arn
+      NODE_OPTIONS                      = "--enable-source-maps"
     }
   }
 
@@ -440,6 +505,68 @@ resource "aws_ecs_task_definition" "agent" {
   ])
 }
 
+resource "aws_ecs_task_definition" "source_fetcher" {
+  family                   = "migration-api-development-source-fetcher"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 1024
+  memory                   = 2048
+  execution_role_arn       = aws_iam_role.source_fetcher_execution.arn
+  task_role_arn            = aws_iam_role.source_fetcher_task.arn
+
+  ephemeral_storage {
+    size_in_gib = 21
+  }
+
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
+  volume {
+    name = "workspace"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name                   = "source-fetcher"
+      image                  = "${data.aws_ecr_repository.source_fetcher.repository_url}@${var.source_fetcher_image_digest}"
+      essential              = true
+      readonlyRootFilesystem = true
+      user                   = "1000:1000"
+      stopTimeout            = 30
+      linuxParameters = {
+        initProcessEnabled = true
+        capabilities       = { drop = ["ALL"] }
+      }
+      mountPoints = [
+        {
+          sourceVolume  = "workspace"
+          containerPath = "/workspace"
+          readOnly      = false
+        }
+      ]
+      environment = [
+        { name = "APP_ENVIRONMENT", value = "development" },
+        { name = "AWS_REGION", value = var.aws_region },
+        { name = "AWS_STS_REGIONAL_ENDPOINTS", value = "regional" },
+        { name = "ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.bucket },
+        { name = "ARTIFACT_KMS_KEY_ARN", value = aws_kms_key.artifacts.arn },
+        { name = "GITHUB_TOKEN_BROKER_FUNCTION_NAME", value = aws_lambda_function.github_token_broker.function_name },
+        { name = "WORKSPACE_DIRECTORY", value = "/workspace" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.source_fetcher.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "source-fetcher"
+        }
+      }
+    }
+  ])
+}
+
 resource "aws_ecs_task_definition" "migrator" {
   family                   = "migration-api-development-database-migrator"
   requires_compatibilities = ["FARGATE"]
@@ -500,15 +627,21 @@ resource "aws_iam_role" "step_functions" {
 
 data "aws_iam_policy_document" "step_functions" {
   statement {
-    sid       = "WorkflowControl"
-    actions   = ["lambda:InvokeFunction"]
-    resources = [aws_lambda_function.workflow_control.arn]
+    sid     = "WorkflowControl"
+    actions = ["lambda:InvokeFunction"]
+    resources = [
+      aws_lambda_function.workflow_control.arn,
+      aws_lambda_function.repository_scan_control.arn
+    ]
   }
 
   statement {
-    sid       = "RunAgentTask"
-    actions   = ["ecs:RunTask"]
-    resources = [aws_ecs_task_definition.agent.arn]
+    sid     = "RunAgentTask"
+    actions = ["ecs:RunTask"]
+    resources = [
+      aws_ecs_task_definition.agent.arn,
+      aws_ecs_task_definition.source_fetcher.arn
+    ]
 
     condition {
       test     = "ArnEquals"
@@ -524,9 +657,14 @@ data "aws_iam_policy_document" "step_functions" {
   }
 
   statement {
-    sid       = "PassExactAgentRoles"
-    actions   = ["iam:PassRole"]
-    resources = [aws_iam_role.agent_execution.arn, aws_iam_role.agent_task.arn]
+    sid     = "PassExactAgentRoles"
+    actions = ["iam:PassRole"]
+    resources = [
+      aws_iam_role.agent_execution.arn,
+      aws_iam_role.agent_task.arn,
+      aws_iam_role.source_fetcher_execution.arn,
+      aws_iam_role.source_fetcher_task.arn
+    ]
   }
 
   # Step Functions .sync uses service-managed EventBridge rules whose ARNs are
@@ -667,10 +805,126 @@ resource "aws_sfn_state_machine" "agent" {
   })
 }
 
+resource "aws_sfn_state_machine" "repository_scan" {
+  name     = "migration-api-development-repository-scan"
+  role_arn = aws_iam_role.step_functions.arn
+  type     = "STANDARD"
+
+  logging_configuration {
+    include_execution_data = false
+    level                  = "ERROR"
+    log_destination        = "${aws_cloudwatch_log_group.workflow.arn}:*"
+  }
+
+  tracing_configuration {
+    enabled = true
+  }
+
+  definition = jsonencode({
+    Comment = "Stage 2C exact-commit repository acquisition and npm inventory"
+    StartAt = "MarkStarted"
+    States = {
+      MarkStarted = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.repository_scan_control.arn
+          Payload = {
+            operation    = "mark_started"
+            "workflow.$" = "$"
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{ ErrorEquals = ["States.ALL"], Next = "MarkInfrastructureFailure", ResultPath = null }]
+        Next  = "AcquireSnapshot"
+      }
+      AcquireSnapshot = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::ecs:runTask.sync"
+        TimeoutSeconds = 600
+        Parameters = {
+          Cluster        = aws_ecs_cluster.agent.arn
+          TaskDefinition = aws_ecs_task_definition.source_fetcher.arn
+          LaunchType     = "FARGATE"
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              AssignPublicIp = "DISABLED"
+              SecurityGroups = [aws_security_group.source_fetcher.id]
+              Subnets        = [for subnet in aws_subnet.source_fetcher : subnet.id]
+            }
+          }
+          Overrides = {
+            ContainerOverrides = [{
+              Name = "source-fetcher"
+              Environment = [
+                { Name = "ORGANISATION_ID", "Value.$" = "$.organisationId" },
+                { Name = "REPOSITORY_ID", "Value.$" = "$.repositoryId" },
+                { Name = "REPOSITORY_SCAN_ID", "Value.$" = "$.repositoryScanId" }
+              ]
+            }]
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["ECS.AmazonECSException", "ECS.ThrottlingException"]
+          IntervalSeconds = 5
+          BackoffRate     = 2
+          MaxAttempts     = 2
+        }]
+        Catch = [{ ErrorEquals = ["States.ALL"], Next = "MarkInfrastructureFailure", ResultPath = null }]
+        Next  = "IngestResult"
+      }
+      IngestResult = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.repository_scan_control.arn
+          Payload = {
+            operation    = "ingest_result"
+            "workflow.$" = "$"
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{ ErrorEquals = ["States.ALL"], Next = "MarkInfrastructureFailure", ResultPath = null }]
+        End   = true
+      }
+      MarkInfrastructureFailure = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.repository_scan_control.arn
+          Payload = {
+            operation     = "mark_failed"
+            "workflow.$"  = "$"
+            safeErrorCode = "REPOSITORY_SCAN_INFRASTRUCTURE_FAILED"
+          }
+        }
+        ResultPath = null
+        End        = true
+      }
+    }
+  })
+}
+
 data "aws_iam_policy_document" "outbox_workflow" {
   statement {
-    actions   = ["states:StartExecution"]
-    resources = [aws_sfn_state_machine.agent.arn]
+    actions = ["states:StartExecution"]
+    resources = [
+      aws_sfn_state_machine.agent.arn,
+      aws_sfn_state_machine.repository_scan.arn
+    ]
   }
 }
 

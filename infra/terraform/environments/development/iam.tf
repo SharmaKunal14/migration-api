@@ -48,6 +48,11 @@ resource "aws_iam_role" "github_reconciler" {
   assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
 }
 
+resource "aws_iam_role" "repository_scan_control" {
+  name               = "migration-api-development-repository-scan-control"
+  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+}
+
 resource "aws_iam_role" "agent_execution" {
   name               = "migration-api-development-agent-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
@@ -55,6 +60,16 @@ resource "aws_iam_role" "agent_execution" {
 
 resource "aws_iam_role" "agent_task" {
   name               = "migration-api-development-agent-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
+resource "aws_iam_role" "source_fetcher_execution" {
+  name               = "migration-api-development-source-fetcher-execution"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
+resource "aws_iam_role" "source_fetcher_task" {
+  name               = "migration-api-development-source-fetcher-task"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
 }
 
@@ -70,11 +85,12 @@ resource "aws_iam_role" "migrator_task" {
 
 locals {
   lambda_roles = {
-    api                 = aws_iam_role.api.id
-    outbox              = aws_iam_role.outbox.id
-    workflow_control    = aws_iam_role.workflow_control.id
-    github_token_broker = aws_iam_role.github_token_broker.id
-    github_reconciler   = aws_iam_role.github_reconciler.id
+    api                     = aws_iam_role.api.id
+    outbox                  = aws_iam_role.outbox.id
+    workflow_control        = aws_iam_role.workflow_control.id
+    github_token_broker     = aws_iam_role.github_token_broker.id
+    github_reconciler       = aws_iam_role.github_reconciler.id
+    repository_scan_control = aws_iam_role.repository_scan_control.id
   }
 }
 
@@ -132,6 +148,12 @@ resource "aws_iam_role_policy" "workflow_database" {
 resource "aws_iam_role_policy" "github_reconciler_database" {
   name   = "runtime-database"
   role   = aws_iam_role.github_reconciler.id
+  policy = data.aws_iam_policy_document.database_secret.json
+}
+
+resource "aws_iam_role_policy" "repository_scan_control_database" {
+  name   = "runtime-database"
+  role   = aws_iam_role.repository_scan_control.id
   policy = data.aws_iam_policy_document.database_secret.json
 }
 
@@ -254,6 +276,83 @@ resource "aws_iam_role_policy" "agent_task" {
   name   = "bounded-agent-runtime"
   role   = aws_iam_role.agent_task.id
   policy = data.aws_iam_policy_document.agent_task.json
+}
+
+data "aws_iam_policy_document" "source_fetcher_execution" {
+  statement {
+    sid = "PullSourceFetcherImage"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer"
+    ]
+    resources = [data.aws_ecr_repository.source_fetcher.arn]
+  }
+
+  # ECR authorization tokens do not support resource-level permissions.
+  statement {
+    sid       = "EcrAuthorization"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "WriteSourceFetcherLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.source_fetcher.arn}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "source_fetcher_execution" {
+  name   = "source-fetcher-image-and-logs"
+  role   = aws_iam_role.source_fetcher_execution.id
+  policy = data.aws_iam_policy_document.source_fetcher_execution.json
+}
+
+data "aws_iam_policy_document" "source_fetcher_task" {
+  statement {
+    sid       = "IssueExactRepositoryToken"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.github_token_broker.arn]
+  }
+
+  statement {
+    sid       = "WriteRepositoryScanArtifacts"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/org/*/repository/*/scan/*"]
+  }
+
+  statement {
+    sid       = "EncryptRepositoryScanArtifacts"
+    actions   = ["kms:Encrypt", "kms:GenerateDataKey"]
+    resources = [aws_kms_key.artifacts.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "source_fetcher_task" {
+  name   = "bounded-source-acquisition"
+  role   = aws_iam_role.source_fetcher_task.id
+  policy = data.aws_iam_policy_document.source_fetcher_task.json
+}
+
+data "aws_iam_policy_document" "repository_scan_control_artifacts" {
+  statement {
+    sid       = "ReadRepositoryScanEvidence"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/org/*/repository/*/scan/*"]
+  }
+
+  statement {
+    sid       = "DecryptRepositoryScanEvidence"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.artifacts.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "repository_scan_control_artifacts" {
+  name   = "read-repository-scan-evidence"
+  role   = aws_iam_role.repository_scan_control.id
+  policy = data.aws_iam_policy_document.repository_scan_control_artifacts.json
 }
 
 data "aws_iam_policy_document" "migrator_execution" {

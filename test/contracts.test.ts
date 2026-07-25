@@ -7,6 +7,7 @@ import {
   githubWebhookEnvelopeSchema,
   migrationPlanSchema,
   repositoryScanWorkflowInputSchema,
+  repositoryAcquisitionResultSchema,
   workflowInputSchema,
 } from '@migration/contracts';
 
@@ -66,6 +67,46 @@ describe('runtime contracts', () => {
         expectedVersion: 1,
       }),
     ).toBeDefined();
+  });
+
+  it('requires exact snapshot evidence only for successful repository acquisition', () => {
+    const result = {
+      schemaVersion: '1.0',
+      organisationId: '6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624',
+      repositoryId: 'e4e2d9db-bd1c-4eef-b685-231128724583',
+      repositoryScanId: '12a906c7-f7df-4c65-9137-70bcf17eec86',
+      status: 'succeeded',
+      safeErrorCode: null,
+      snapshot: {
+        commitSha: 'a'.repeat(40),
+        objectKey: 'env/development/org/example/snapshot.tar.gz',
+        digest: 'b'.repeat(64),
+        bytes: 1024,
+        fileCount: 2,
+        expiresAt: '2026-08-02T00:00:00.000Z',
+      },
+      inventory: {
+        manifests: ['package.json'],
+        lockfiles: [],
+        observations: [],
+      },
+    } as const;
+    expect(repositoryAcquisitionResultSchema.parse(result)).toEqual(result);
+    expect(() =>
+      repositoryAcquisitionResultSchema.parse({
+        ...result,
+        status: 'failed',
+        safeErrorCode: 'SOURCE_FETCHER_FAILED',
+      }),
+    ).toThrow();
+    expect(() =>
+      repositoryAcquisitionResultSchema.parse({
+        ...result,
+        status: 'succeeded',
+        snapshot: null,
+        inventory: null,
+      }),
+    ).toThrow();
   });
 
   it('constrains webhook envelopes to allowlisted GitHub events', () => {

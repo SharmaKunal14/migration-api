@@ -8,6 +8,7 @@ import type {
   PublicDependencyObservation,
   PublicGithubInstallation,
   PublicRepository,
+  PublicRepositoryScan,
 } from '@migration/contracts';
 import type { Actor, Membership } from '@migration/domain';
 import { DomainError, requireAction, type OrganisationRole } from '@migration/domain';
@@ -48,6 +49,13 @@ export interface CreateDemoRunInput {
   readonly requestId: string;
   readonly scenarioId: 'orbitchat-typescript-v1-v2';
   readonly requestedModel: string;
+}
+
+export interface CreateRepositoryScanInput {
+  readonly organisationId: string;
+  readonly repositoryId: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
 }
 
 export interface InstallationLinkRecord {
@@ -99,6 +107,10 @@ export interface ApiRepositoryPort {
     organisationId: string,
     repositoryId: string,
   ): Promise<PublicDependencyObservation[]>;
+  createRepositoryScan(
+    userId: string,
+    input: CreateRepositoryScanInput,
+  ): Promise<PublicRepositoryScan>;
   createGithubInstallLink(
     userId: string,
     organisationId: string,
@@ -223,8 +235,9 @@ export class ApiRepository implements ApiRepositoryPort {
   public async membership(
     organisationId: string,
     userId: string,
+    database: AppDatabase | Transaction<Database> = this.database,
   ): Promise<Membership | undefined> {
-    return this.database
+    return database
       .selectFrom('organisationMemberships as membership')
       .innerJoin(
         'organisations as organisation',
@@ -430,11 +443,6 @@ export class ApiRepository implements ApiRepositoryPort {
           .onRef('scan.repositoryId', '=', 'repository.id')
           .onRef('scan.organisationId', '=', 'repository.organisationId'),
       )
-      .leftJoin(
-        'repositorySnapshots as snapshot',
-        'snapshot.repositoryScanId',
-        'scan.id',
-      )
       .distinctOn('repository.id')
       .select([
         'repository.id',
@@ -446,7 +454,8 @@ export class ApiRepository implements ApiRepositoryPort {
         'repository.archived',
         'repository.enabled',
         'scan.status as latestScanStatus',
-        'snapshot.commitSha as latestScannedCommit',
+        'scan.safeErrorCode as latestScanSafeErrorCode',
+        'scan.requestedCommit as latestScannedCommit',
       ])
       .where('repository.organisationId', '=', organisationId)
       .orderBy('repository.id', 'asc')
@@ -502,6 +511,166 @@ export class ApiRepository implements ApiRepositoryPort {
       .orderBy('dependencyKind', 'asc')
       .limit(10_000)
       .execute();
+  }
+
+  public async createRepositoryScan(
+    userId: string,
+    input: CreateRepositoryScanInput,
+  ): Promise<PublicRepositoryScan> {
+    const requestDigest = digestJson({
+      organisationId: input.organisationId,
+      repositoryId: input.repositoryId,
+    });
+    return this.database.transaction().execute(async transaction => {
+      requireAction(
+        await this.membership(input.organisationId, userId, transaction),
+        'repository:scan',
+      );
+      const repository = await transaction
+        .selectFrom('repositories as repository')
+        .innerJoin(
+          'githubInstallations as installation',
+          'installation.id',
+          'repository.installationId',
+        )
+        .select([
+          'repository.id',
+          'repository.selected',
+          'repository.enabled',
+          'repository.archived',
+          'installation.status as installationStatus',
+        ])
+        .where('repository.id', '=', input.repositoryId)
+        .where('repository.organisationId', '=', input.organisationId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!repository) {
+        throw new DomainError(
+          'REPOSITORY_NOT_FOUND',
+          'The repository was not found.',
+          404,
+        );
+      }
+      if (
+        !repository.selected ||
+        !repository.enabled ||
+        repository.archived ||
+        repository.installationStatus !== 'active'
+      ) {
+        throw new DomainError(
+          'REPOSITORY_SCAN_NOT_ALLOWED',
+          'The repository is not available for scanning.',
+          409,
+        );
+      }
+
+      const previous = await transaction
+        .selectFrom('apiIdempotencyKeys')
+        .select(['requestDigest', 'resultResourceId'])
+        .where('actorId', '=', userId)
+        .where('action', '=', 'repository:scan')
+        .where('idempotencyKey', '=', input.idempotencyKey)
+        .executeTakeFirst();
+      if (previous) {
+        if (previous.requestDigest !== requestDigest) {
+          throw new DomainError(
+            'IDEMPOTENCY_CONFLICT',
+            'The idempotency key was already used for another request.',
+            409,
+          );
+        }
+        return publicRepositoryScan(
+          await transaction
+            .selectFrom('repositoryScans')
+            .selectAll()
+            .where('id', '=', previous.resultResourceId)
+            .where('organisationId', '=', input.organisationId)
+            .executeTakeFirstOrThrow(),
+        );
+      }
+
+      const active = await transaction
+        .selectFrom('repositoryScans')
+        .selectAll()
+        .where('repositoryId', '=', input.repositoryId)
+        .where('status', 'in', ['queued', 'running'])
+        .executeTakeFirst();
+      if (active) {
+        throw new DomainError(
+          'REPOSITORY_SCAN_IN_PROGRESS',
+          'A repository scan is already in progress.',
+          409,
+        );
+      }
+
+      const scanId = randomUUID();
+      const correlationId = randomUUID();
+      const now = new Date();
+      const scan = await transaction
+        .insertInto('repositoryScans')
+        .values({
+          id: scanId,
+          organisationId: input.organisationId,
+          repositoryId: input.repositoryId,
+          requestedCommit: null,
+          status: 'queued',
+          triggerSource: 'manual',
+          attempt: 0,
+          safeErrorCode: null,
+          version: 1,
+          createdAt: now,
+          startedAt: null,
+          completedAt: null,
+          updatedAt: now,
+        })
+        .returningAll()
+        .executeTakeFirstOrThrow();
+      await transaction
+        .insertInto('repositoryScanOutbox')
+        .values({
+          id: randomUUID(),
+          repositoryScanId: scanId,
+          aggregateVersion: 1,
+          idempotencyKey: `repository-scan:${scanId}`,
+          payload: {
+            schemaVersion: '1.0',
+            organisationId: input.organisationId,
+            repositoryId: input.repositoryId,
+            repositoryScanId: scanId,
+            correlationId,
+            expectedVersion: 1,
+          },
+          availableAt: now,
+          leaseOwner: null,
+          leaseExpiresAt: null,
+          attempts: 0,
+          deliveredAt: null,
+          safeErrorCode: null,
+          createdAt: now,
+        })
+        .executeTakeFirstOrThrow();
+      await transaction
+        .insertInto('apiIdempotencyKeys')
+        .values({
+          actorId: userId,
+          action: 'repository:scan',
+          idempotencyKey: input.idempotencyKey,
+          requestDigest,
+          resultResourceId: scanId,
+          createdAt: now,
+          expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+        })
+        .executeTakeFirstOrThrow();
+      await writeAudit(transaction, {
+        organisationId: input.organisationId,
+        actorId: userId,
+        action: 'repository.scan_requested',
+        resourceType: 'repository_scan',
+        resourceId: scanId,
+        requestId: input.requestId,
+      });
+      return publicRepositoryScan(scan);
+    });
   }
 
   public async createDemoRun(
@@ -738,4 +907,24 @@ function isUniqueViolation(error: unknown): boolean {
     'code' in error &&
     error.code === '23505'
   );
+}
+
+function publicRepositoryScan(scan: {
+  readonly id: string;
+  readonly organisationId: string;
+  readonly repositoryId: string;
+  readonly requestedCommit: string | null;
+  readonly status: PublicRepositoryScan['status'];
+  readonly safeErrorCode: string | null;
+  readonly version: number;
+  readonly createdAt: Date;
+  readonly startedAt: Date | null;
+  readonly completedAt: Date | null;
+}): PublicRepositoryScan {
+  return {
+    ...scan,
+    createdAt: scan.createdAt.toISOString(),
+    startedAt: scan.startedAt?.toISOString() ?? null,
+    completedAt: scan.completedAt?.toISOString() ?? null,
+  };
 }

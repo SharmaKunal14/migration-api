@@ -27,10 +27,16 @@ function dependencies(
   ): Promise<{
     githubInstallationId: string;
     githubRepositoryId: string;
+    owner: string;
+    name: string;
+    defaultBranch: string;
   }> =>
     Promise.resolve({
       githubInstallationId: '12345',
       githubRepositoryId: '67890',
+      owner: 'acme',
+      name: 'widgets',
+      defaultBranch: 'main',
     }),
   lookupInstallationAccess: BrokerDependencies['lookupInstallationAccess'] = (
     _linkedInstallationId,
@@ -131,6 +137,10 @@ describe('GitHub token broker', () => {
     expect(result).toEqual({
       token: 'github-installation-token-not-real',
       expiresAt: '2026-07-25T01:00:00.000Z',
+      githubRepositoryId: '67890',
+      owner: 'acme',
+      name: 'widgets',
+      defaultBranch: 'main',
     });
   });
 

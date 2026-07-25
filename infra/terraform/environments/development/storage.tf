@@ -217,3 +217,7 @@ data "aws_ecr_repository" "agent" {
 data "aws_ecr_repository" "migrator" {
   name = "migration-api-development-database-migrator"
 }
+
+data "aws_ecr_repository" "source_fetcher" {
+  name = "migration-api-development-source-fetcher"
+}

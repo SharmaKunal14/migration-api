@@ -35,6 +35,10 @@ export default defineConfig({
         './packages/repository-inventory/src/index.ts',
         import.meta.url,
       ).pathname,
+      '@migration/source-acquisition': new URL(
+        './packages/source-acquisition/src/index.ts',
+        import.meta.url,
+      ).pathname,
     },
   },
   test: {
@@ -45,6 +49,7 @@ export default defineConfig({
         'packages/contracts/src/**/*.ts',
         'packages/domain/src/**/*.ts',
         'packages/repository-inventory/src/**/*.ts',
+        'packages/source-acquisition/src/**/*.ts',
       ],
       provider: 'v8',
       reporter: ['text', 'json-summary'],

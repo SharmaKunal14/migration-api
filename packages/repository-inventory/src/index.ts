@@ -7,6 +7,8 @@ const MAX_INVENTORY_BYTES = 16 * 1024 * 1024;
 const MAX_MANIFEST_BYTES = 1024 * 1024;
 const MAX_LOCKFILE_BYTES = 8 * 1024 * 1024;
 const MAX_PATH_BYTES = 1_024;
+const MAX_MANIFESTS = 200;
+const MAX_OBSERVATIONS = 10_000;
 export type DependencyKind = 'dependency' | 'development' | 'optional' | 'peer';
 
 export interface InventoryFile {
@@ -100,6 +102,9 @@ export function inventoryRepository(
   const lockfiles = [...files.keys()]
     .filter(path => posix.basename(path) === 'package-lock.json')
     .sort();
+  if (manifests.length > MAX_MANIFESTS || lockfiles.length > MAX_MANIFESTS) {
+    throw new InventoryError('INVENTORY_LIMIT_EXCEEDED');
+  }
   const observations: DependencyObservation[] = [];
 
   for (const manifestPath of manifests) {
@@ -154,6 +159,9 @@ export function inventoryRepository(
       .join('\0')
       .localeCompare([right.manifestPath, right.packageName, right.kind].join('\0')),
   );
+  if (observations.length > MAX_OBSERVATIONS) {
+    throw new InventoryError('INVENTORY_LIMIT_EXCEEDED');
+  }
   return { manifests, lockfiles, observations };
 }
 
@@ -232,6 +240,9 @@ function appendDependencies(
 ): void {
   if (!dependencies) return;
   for (const [packageName, declaredRange] of Object.entries(dependencies)) {
+    if (output.length >= MAX_OBSERVATIONS) {
+      throw new InventoryError('INVENTORY_LIMIT_EXCEEDED');
+    }
     const resolvedVersion = resolveNpmVersion(lockfile, manifestPath, packageName);
     output.push({
       packageName,

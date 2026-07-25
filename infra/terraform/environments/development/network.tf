@@ -48,6 +48,15 @@ resource "aws_subnet" "agent" {
   tags              = { Name = "${local.name_prefix}-agent-${each.value + 1}" }
 }
 
+resource "aws_subnet" "source_fetcher" {
+  for_each = { for index, az in local.azs : az => index }
+
+  vpc_id            = aws_vpc.main.id
+  availability_zone = each.key
+  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, 64 + each.value)
+  tags              = { Name = "${local.name_prefix}-source-fetcher-${each.value + 1}" }
+}
+
 resource "aws_eip" "nat" {
   for_each = aws_subnet.public
   domain   = "vpc"
@@ -133,8 +142,10 @@ resource "aws_networkfirewall_rule_group" "openai_egress" {
 
     rules_source {
       rules_string = <<-RULES
-        pass tls $HOME_NET any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"api.openai.com"; nocase; startswith; endswith; sid:1; rev:1;)
-        pass tls $HOME_NET any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"auth.openai.com"; nocase; startswith; endswith; sid:2; rev:1;)
+        pass tls [${join(",", [for subnet in aws_subnet.agent : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"api.openai.com"; nocase; startswith; endswith; sid:1; rev:1;)
+        pass tls [${join(",", [for subnet in aws_subnet.agent : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"auth.openai.com"; nocase; startswith; endswith; sid:2; rev:1;)
+        pass tls [${join(",", [for subnet in aws_subnet.source_fetcher : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"api.github.com"; nocase; startswith; endswith; sid:3; rev:1;)
+        pass tls [${join(",", [for subnet in aws_subnet.source_fetcher : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"codeload.github.com"; nocase; startswith; endswith; sid:4; rev:1;)
       RULES
     }
   }
@@ -190,6 +201,13 @@ resource "aws_route" "public_agent_return" {
   vpc_endpoint_id        = local.firewall_endpoints[each.key]
 }
 
+resource "aws_route" "public_source_fetcher_return" {
+  for_each               = aws_route_table.public
+  route_table_id         = each.value.id
+  destination_cidr_block = aws_subnet.source_fetcher[each.key].cidr_block
+  vpc_endpoint_id        = local.firewall_endpoints[each.key]
+}
+
 resource "aws_route_table" "agent" {
   for_each = aws_subnet.agent
   vpc_id   = aws_vpc.main.id
@@ -207,6 +225,25 @@ resource "aws_route_table_association" "agent" {
   for_each       = aws_subnet.agent
   subnet_id      = each.value.id
   route_table_id = aws_route_table.agent[each.key].id
+}
+
+resource "aws_route_table" "source_fetcher" {
+  for_each = aws_subnet.source_fetcher
+  vpc_id   = aws_vpc.main.id
+  tags     = { Name = "${local.name_prefix}-source-fetcher-${each.key}" }
+}
+
+resource "aws_route" "source_fetcher_default" {
+  for_each               = aws_route_table.source_fetcher
+  route_table_id         = each.value.id
+  destination_cidr_block = "0.0.0.0/0"
+  vpc_endpoint_id        = local.firewall_endpoints[each.key]
+}
+
+resource "aws_route_table_association" "source_fetcher" {
+  for_each       = aws_subnet.source_fetcher
+  subnet_id      = each.value.id
+  route_table_id = aws_route_table.source_fetcher[each.key].id
 }
 
 resource "aws_cloudwatch_log_group" "network_firewall" {
@@ -235,13 +272,14 @@ resource "aws_security_group" "vpc_endpoints" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "TLS from control and agent subnets"
+    description = "TLS from control, agent, and source-fetcher subnets"
     protocol    = "tcp"
     from_port   = 443
     to_port     = 443
     cidr_blocks = concat(
       [for subnet in aws_subnet.control : subnet.cidr_block],
-      [for subnet in aws_subnet.agent : subnet.cidr_block]
+      [for subnet in aws_subnet.agent : subnet.cidr_block],
+      [for subnet in aws_subnet.source_fetcher : subnet.cidr_block]
     )
   }
 
@@ -298,13 +336,28 @@ resource "aws_security_group" "agent" {
   }
 }
 
+resource "aws_security_group" "source_fetcher" {
+  name        = "${local.name_prefix}-source-fetcher"
+  description = "Source-fetcher TLS egress through inspected routes"
+  vpc_id      = aws_vpc.main.id
+
+  egress {
+    description = "TLS only; Network Firewall restricts GitHub and AWS destinations"
+    protocol    = "tcp"
+    from_port   = 443
+    to_port     = 443
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.main.id
   service_name      = "com.amazonaws.${var.aws_region}.s3"
   vpc_endpoint_type = "Gateway"
   route_table_ids = concat(
     [for route_table in aws_route_table.control : route_table.id],
-    [for route_table in aws_route_table.agent : route_table.id]
+    [for route_table in aws_route_table.agent : route_table.id],
+    [for route_table in aws_route_table.source_fetcher : route_table.id]
   )
 }
 
@@ -314,6 +367,7 @@ locals {
     "ecr.dkr",
     "logs",
     "kms",
+    "lambda",
     "secretsmanager",
     "sts"
   ])

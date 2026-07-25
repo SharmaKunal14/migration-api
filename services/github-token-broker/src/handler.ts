@@ -99,6 +99,9 @@ const tokenResponseSchema = z
 interface RepositoryAccess {
   readonly githubInstallationId: string;
   readonly githubRepositoryId: string;
+  readonly owner: string;
+  readonly name: string;
+  readonly defaultBranch: string;
 }
 
 interface InstallationAccess {
@@ -220,7 +223,14 @@ export async function handleBrokerCommand(
     requestId,
     outcome: 'issued',
   });
-  return { token: token.token, expiresAt: token.expires_at };
+  return {
+    token: token.token,
+    expiresAt: token.expires_at,
+    githubRepositoryId: access.githubRepositoryId,
+    owner: access.owner,
+    name: access.name,
+    defaultBranch: access.defaultBranch,
+  };
 }
 
 async function getInstallationInventory(
@@ -371,7 +381,13 @@ async function lookupRepositoryAccess(
       'installation.id',
       'repository.installationId',
     )
-    .select(['installation.githubInstallationId', 'repository.githubRepositoryId'])
+    .select([
+      'installation.githubInstallationId',
+      'repository.githubRepositoryId',
+      'repository.owner',
+      'repository.name',
+      'repository.defaultBranch',
+    ])
     .where('scan.id', '=', repositoryScanId)
     .where('scan.repositoryId', '=', repositoryId)
     .where('scan.status', 'in', ['queued', 'running'])

@@ -95,6 +95,74 @@ export const repositoryScanWorkflowInputSchema = z
   })
   .strict();
 
+export const repositoryScanRequestSchema = z.object({}).strict();
+
+const dependencyObservationSchema = z
+  .object({
+    packageName: z.string().min(1).max(214),
+    kind: z.enum(['dependency', 'development', 'optional', 'peer']),
+    manifestPath: z.string().min(1).max(1_024),
+    lockfilePath: z.string().min(1).max(1_024).nullable(),
+    declaredRange: z.string().min(1).max(1_024),
+    resolvedVersion: z.string().min(1).max(1_024).nullable(),
+    discoveryMethod: z.enum(['manifest', 'npm_lockfile']),
+  })
+  .strict();
+
+export const repositoryAcquisitionResultSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    organisationId: uuidSchema,
+    repositoryId: uuidSchema,
+    repositoryScanId: uuidSchema,
+    status: z.enum(['succeeded', 'unsupported', 'failed']),
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+    snapshot: z
+      .object({
+        commitSha: commitShaSchema,
+        objectKey: z.string().min(1).max(1_024),
+        digest: sha256Schema,
+        bytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(256 * 1024 * 1024),
+        fileCount: z.number().int().min(1).max(20_000),
+        expiresAt: z.iso.datetime(),
+      })
+      .strict()
+      .nullable(),
+    inventory: z
+      .object({
+        manifests: z.array(z.string().min(1).max(1_024)).max(200),
+        lockfiles: z.array(z.string().min(1).max(1_024)).max(200),
+        observations: z.array(dependencyObservationSchema).max(10_000),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    const succeeded = result.status === 'succeeded';
+    if (succeeded !== (result.snapshot !== null && result.inventory !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Successful acquisition requires snapshot and inventory evidence.',
+        path: ['status'],
+      });
+    }
+    if (succeeded === (result.safeErrorCode !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only unsuccessful acquisition results require a safe error code.',
+        path: ['safeErrorCode'],
+      });
+    }
+  });
+
 export const githubWebhookEnvelopeSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -272,6 +340,9 @@ export type AgentResultEnvelope = z.infer<typeof agentResultEnvelopeSchema>;
 export type RepositoryScanWorkflowInput = z.infer<
   typeof repositoryScanWorkflowInputSchema
 >;
+export type RepositoryAcquisitionResult = z.infer<
+  typeof repositoryAcquisitionResultSchema
+>;
 export type GithubWebhookEnvelope = z.infer<typeof githubWebhookEnvelopeSchema>;
 export type GithubSetupCompletionRequest = z.infer<
   typeof githubSetupCompletionRequestSchema
@@ -334,6 +405,7 @@ export interface PublicRepository {
   readonly enabled: boolean;
   readonly latestScanStatus:
     'queued' | 'running' | 'succeeded' | 'failed' | 'unsupported' | null;
+  readonly latestScanSafeErrorCode: string | null;
   readonly latestScannedCommit: string | null;
 }
 
@@ -345,4 +417,17 @@ export interface PublicDependencyObservation {
   readonly declaredRange: string;
   readonly resolvedVersion: string | null;
   readonly discoveryMethod: 'manifest' | 'npm_lockfile';
+}
+
+export interface PublicRepositoryScan {
+  readonly id: string;
+  readonly organisationId: string;
+  readonly repositoryId: string;
+  readonly requestedCommit: string | null;
+  readonly status: 'queued' | 'running' | 'succeeded' | 'failed' | 'unsupported';
+  readonly safeErrorCode: string | null;
+  readonly version: number;
+  readonly createdAt: string;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
 }

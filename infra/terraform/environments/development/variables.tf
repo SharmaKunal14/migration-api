@@ -145,3 +145,13 @@ variable "migrator_image_digest" {
     error_message = "migrator_image_digest must be an immutable sha256 digest."
   }
 }
+
+variable "source_fetcher_image_digest" {
+  description = "Immutable sha256 digest of the reviewed repository source-fetcher image."
+  type        = string
+
+  validation {
+    condition     = can(regex("^sha256:[a-f0-9]{64}$", var.source_fetcher_image_digest))
+    error_message = "source_fetcher_image_digest must be an immutable sha256 digest."
+  }
+}

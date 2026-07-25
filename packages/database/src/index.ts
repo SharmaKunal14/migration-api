@@ -103,6 +103,21 @@ export interface WorkflowOutboxTable {
   createdAt: Timestamp;
 }
 
+export interface RepositoryScanOutboxTable {
+  id: string;
+  repositoryScanId: string;
+  aggregateVersion: number;
+  idempotencyKey: string;
+  payload: unknown;
+  availableAt: Timestamp;
+  leaseOwner: string | null;
+  leaseExpiresAt: Timestamp | null;
+  attempts: number;
+  deliveredAt: Timestamp | null;
+  safeErrorCode: string | null;
+  createdAt: Timestamp;
+}
+
 export interface ApiIdempotencyKeyTable {
   actorId: string;
   action: string;
@@ -238,6 +253,7 @@ export interface Database {
   agentActions: AgentActionTable;
   artifacts: ArtifactTable;
   workflowOutbox: WorkflowOutboxTable;
+  repositoryScanOutbox: RepositoryScanOutboxTable;
   apiIdempotencyKeys: ApiIdempotencyKeyTable;
   auditEvents: AuditEventTable;
   githubInstallations: GithubInstallationTable;

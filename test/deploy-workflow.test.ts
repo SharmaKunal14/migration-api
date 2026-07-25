@@ -16,8 +16,16 @@ describe('development deployment artifact contract', () => {
       'github-reconciler.zip',
       'github-token-broker.zip',
       'github-webhook.zip',
+      'repository-scan-control.zip',
     ]) {
       expect(deploymentWorkflow.split(archive)).toHaveLength(3);
     }
+  });
+
+  it('builds, scans, and passes an immutable source-fetcher image digest', () => {
+    expect(deploymentWorkflow).toContain('workers/source-fetcher/Dockerfile');
+    expect(deploymentWorkflow).toContain('migration-api-development-source-fetcher');
+    expect(deploymentWorkflow).toContain('TF_VAR_source_fetcher_image_digest');
+    expect(deploymentWorkflow).toContain('SOURCE_FETCHER_SCAN_DIGEST');
   });
 });

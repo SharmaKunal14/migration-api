@@ -8,10 +8,12 @@ const serviceBundles = [
   'dist/services/github-webhook.js',
   'dist/services/github-token-broker.js',
   'dist/services/github-reconciler.js',
+  'dist/services/repository-scan-control.js',
 ];
 const workerBundles = [
   'dist/workers/agent/main.js',
   'dist/workers/database-migrator/main.js',
+  'dist/workers/source-fetcher/main.js',
 ];
 
 for (const bundle of serviceBundles) {

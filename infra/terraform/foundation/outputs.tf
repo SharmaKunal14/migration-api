@@ -9,3 +9,7 @@ output "migrator_ecr_repository_url" {
 output "container_images_kms_key_arn" {
   value = aws_kms_key.container_images.arn
 }
+
+output "source_fetcher_ecr_repository_url" {
+  value = aws_ecr_repository.source_fetcher.repository_url
+}

@@ -16,6 +16,7 @@ import {
   githubInstallLinkRequestSchema,
   githubInstallationVerificationSchema,
   githubSetupCompletionRequestSchema,
+  repositoryScanRequestSchema,
   type GithubInstallationVerification,
   type MigrationPlan,
   type PublicAgentRun,
@@ -152,6 +153,12 @@ export async function handleRequest(
               path,
             )
           : null;
+      const scanMatch =
+        method === 'POST'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/repositories\/([0-9a-f-]{36})\/scans$/u.exec(
+              path,
+            )
+          : null;
       if (method === 'POST' && path === '/v1/github/setup/callback') {
         const input = githubSetupCompletionRequestSchema.parse(parseBody(event));
         await repository.validateGithubInstallState(userId, input.state);
@@ -202,6 +209,15 @@ export async function handleRequest(
             repositoryId,
           ),
         });
+      } else if (scanMatch?.[1] && scanMatch[2]) {
+        repositoryScanRequestSchema.parse(parseBody(event));
+        const scan = await repository.createRepositoryScan(userId, {
+          organisationId: z.uuid().parse(scanMatch[1]),
+          repositoryId: z.uuid().parse(scanMatch[2]),
+          idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+          requestId,
+        });
+        response = json(202, { scan });
       } else if (createMatch?.[1]) {
         const input = demoRunRequestSchema.parse(parseBody(event));
         const run = await repository.createDemoRun(userId, {

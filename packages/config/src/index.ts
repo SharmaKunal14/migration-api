@@ -69,6 +69,7 @@ export const apiConfigSchema = commonSchema.extend({
 
 export const dispatcherConfigSchema = commonSchema.extend({
   DATABASE_SECRET_ARN: awsArn,
+  REPOSITORY_SCAN_STATE_MACHINE_ARN: awsArn,
   STATE_MACHINE_ARN: awsArn,
 });
 
@@ -109,6 +110,21 @@ export const githubReconcilerConfigSchema = commonSchema.extend({
   GITHUB_TOKEN_BROKER_FUNCTION_NAME: z.string().regex(/^[A-Za-z0-9-_]{1,64}$/u),
 });
 
+export const repositoryScanControlConfigSchema = commonSchema.extend({
+  ARTIFACT_BUCKET: nonEmpty,
+  DATABASE_SECRET_ARN: awsArn,
+});
+
+export const sourceFetcherConfigSchema = commonSchema.extend({
+  ARTIFACT_BUCKET: nonEmpty,
+  ARTIFACT_KMS_KEY_ARN: awsArn,
+  GITHUB_TOKEN_BROKER_FUNCTION_NAME: z.string().regex(/^[A-Za-z0-9-_]{1,64}$/u),
+  ORGANISATION_ID: z.uuid(),
+  REPOSITORY_ID: z.uuid(),
+  REPOSITORY_SCAN_ID: z.uuid(),
+  WORKSPACE_DIRECTORY: z.literal('/workspace'),
+});
+
 export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type DispatcherConfig = z.infer<typeof dispatcherConfigSchema>;
 export type WorkflowControlConfig = z.infer<typeof workflowControlConfigSchema>;
@@ -117,6 +133,10 @@ export type MigratorConfig = z.infer<typeof migratorConfigSchema>;
 export type GithubWebhookConfig = z.infer<typeof githubWebhookConfigSchema>;
 export type GithubTokenBrokerConfig = z.infer<typeof githubTokenBrokerConfigSchema>;
 export type GithubReconcilerConfig = z.infer<typeof githubReconcilerConfigSchema>;
+export type RepositoryScanControlConfig = z.infer<
+  typeof repositoryScanControlConfigSchema
+>;
+export type SourceFetcherConfig = z.infer<typeof sourceFetcherConfigSchema>;
 export type DatabaseCredential = z.infer<typeof databaseCredentialSchema>;
 
 export function parseConfig<T>(

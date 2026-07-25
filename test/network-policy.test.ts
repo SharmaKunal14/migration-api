@@ -10,8 +10,8 @@ const networkConfiguration = readFileSync(
   'utf8',
 );
 
-describe('agent outbound network policy', () => {
-  it('allows only the required OpenAI HTTPS hostnames and denies other established traffic', () => {
+describe('workload outbound network policy', () => {
+  it('separates agent OpenAI egress from source-fetcher GitHub egress', () => {
     const rules = /rules_string = <<-RULES(?<rules>[\s\S]*?)\n\s*RULES/u.exec(
       networkConfiguration,
     )?.groups?.rules;
@@ -21,7 +21,23 @@ describe('agent outbound network policy', () => {
       [...rules!.matchAll(/content:"(?<hostname>[^"]+)"/gu)].map(
         match => match.groups?.hostname,
       ),
-    ).toEqual(['api.openai.com', 'auth.openai.com']);
+    ).toEqual([
+      'api.openai.com',
+      'auth.openai.com',
+      'api.github.com',
+      'codeload.github.com',
+    ]);
+    const ruleLines = rules!.split('\n');
+    expect(
+      ruleLines
+        .filter(line => line.includes('openai.com'))
+        .every(line => line.includes('aws_subnet.agent')),
+    ).toBe(true);
+    expect(
+      ruleLines
+        .filter(line => line.includes('github.com'))
+        .every(line => line.includes('aws_subnet.source_fetcher')),
+    ).toBe(true);
     expect(rules).not.toContain('drop ip $HOME_NET');
     expect(networkConfiguration).toContain(
       'stateful_default_actions           = ["aws:drop_established", "aws:alert_established"]',

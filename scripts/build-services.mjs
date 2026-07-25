@@ -19,6 +19,7 @@ const common = {
 await mkdir('dist/services', { recursive: true });
 await mkdir('dist/workers/agent', { recursive: true });
 await mkdir('dist/workers/database-migrator', { recursive: true });
+await mkdir('dist/workers/source-fetcher', { recursive: true });
 
 await Promise.all([
   build({
@@ -53,6 +54,11 @@ await Promise.all([
   }),
   build({
     ...common,
+    entryPoints: ['services/repository-scan-control/src/handler.ts'],
+    outfile: 'dist/services/repository-scan-control.js',
+  }),
+  build({
+    ...common,
     entryPoints: ['workers/agent/src/main.ts'],
     outfile: 'dist/workers/agent/main.js',
   }),
@@ -60,5 +66,10 @@ await Promise.all([
     ...common,
     entryPoints: ['workers/database-migrator/src/main.ts'],
     outfile: 'dist/workers/database-migrator/main.js',
+  }),
+  build({
+    ...common,
+    entryPoints: ['workers/source-fetcher/src/main.ts'],
+    outfile: 'dist/workers/source-fetcher/main.js',
   }),
 ]);

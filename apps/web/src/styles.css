@@ -145,6 +145,20 @@ h2 {
   opacity: 0.6;
 }
 
+.secondary-button {
+  padding: 0.55rem 0.85rem;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text);
+  cursor: pointer;
+}
+
+.secondary-button:disabled {
+  cursor: progress;
+  opacity: 0.55;
+}
+
 .login-page {
   display: grid;
   grid-template-columns: minmax(0, 1fr) 340px;
@@ -244,6 +258,24 @@ h2 {
 .repository-list p {
   margin: 0.25rem 0 0;
   color: var(--muted);
+}
+
+.repository-actions {
+  display: flex;
+  align-items: flex-end;
+  flex-direction: column;
+  gap: 0.65rem;
+}
+
+.dependency-list {
+  columns: 2;
+  margin: 0.75rem 0 0;
+  padding-left: 1.25rem;
+}
+
+.dependency-list li {
+  break-inside: avoid;
+  margin-bottom: 0.3rem;
 }
 
 .fine-print a,
