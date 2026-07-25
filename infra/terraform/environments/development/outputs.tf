@@ -11,6 +11,16 @@ output "api_endpoint" {
   value = aws_apigatewayv2_api.control.api_endpoint
 }
 
+output "github_webhook_url" {
+  description = "Dedicated raw-body GitHub App webhook endpoint."
+  value       = "${aws_apigatewayv2_api.control.api_endpoint}/v1/github/webhooks"
+}
+
+output "github_token_broker_function_name" {
+  description = "Function name for IAM-authorized trusted callers."
+  value       = aws_lambda_function.github_token_broker.function_name
+}
+
 output "artifact_bucket" {
   value = aws_s3_bucket.artifacts.bucket
 }

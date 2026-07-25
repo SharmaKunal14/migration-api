@@ -7,6 +7,11 @@ import { DomainError, type Actor } from '@migration/domain';
 
 import { handleRequest, type ApiDependencies } from '../services/api/src/handler.js';
 import type {
+  PublicDependencyObservation,
+  PublicGithubInstallation,
+  PublicRepository,
+} from '@migration/contracts';
+import type {
   AgentRunRecord,
   ApiRepositoryPort,
   CreateDemoRunInput,
@@ -85,6 +90,28 @@ class FakeRepository implements ApiRepositoryPort {
     _runId: string,
   ): Promise<AgentRunRecord> {
     return Promise.resolve(queuedRun);
+  }
+
+  public listGithubInstallations(
+    _userId: string,
+    _organisationId: string,
+  ): Promise<PublicGithubInstallation[]> {
+    return Promise.resolve([]);
+  }
+
+  public listRepositories(
+    _userId: string,
+    _organisationId: string,
+  ): Promise<PublicRepository[]> {
+    return Promise.resolve([]);
+  }
+
+  public listDependencies(
+    _userId: string,
+    _organisationId: string,
+    _repositoryId: string,
+  ): Promise<PublicDependencyObservation[]> {
+    return Promise.resolve([]);
   }
 }
 
@@ -225,5 +252,21 @@ describe('API handler trust boundary', () => {
     expect(parsedBody(response)).toMatchObject({
       run: { id: runId, status: 'queued', result: null },
     });
+  });
+
+  it.each([
+    [`/api/v1/organisations/${organisationId}/github/installations`, 'installations'],
+    [`/api/v1/organisations/${organisationId}/repositories`, 'repositories'],
+    [
+      `/api/v1/organisations/${organisationId}/repositories/${runId}/dependencies`,
+      'dependencies',
+    ],
+  ])('returns a tenant-scoped Stage 2 collection from %s', async (path, key) => {
+    const response = await handleRequest(
+      event('GET', path),
+      dependencies(new FakeRepository()),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(parsedBody(response)).toEqual({ [key]: [] });
   });
 });

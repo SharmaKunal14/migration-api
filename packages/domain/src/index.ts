@@ -42,7 +42,13 @@ export interface Membership {
 }
 
 export type OrganisationAction =
-  'organisation:read' | 'organisation:create' | 'demo_run:create' | 'demo_run:read';
+  | 'organisation:read'
+  | 'organisation:create'
+  | 'demo_run:create'
+  | 'demo_run:read'
+  | 'github_installation:manage'
+  | 'repository:read'
+  | 'repository:scan';
 
 const allowedActions: Readonly<
   Record<OrganisationRole, readonly OrganisationAction[]>
@@ -52,10 +58,26 @@ const allowedActions: Readonly<
     'organisation:create',
     'demo_run:create',
     'demo_run:read',
+    'github_installation:manage',
+    'repository:read',
+    'repository:scan',
   ],
-  admin: ['organisation:read', 'demo_run:create', 'demo_run:read'],
-  reviewer: ['organisation:read', 'demo_run:create', 'demo_run:read'],
-  viewer: ['organisation:read', 'demo_run:read'],
+  admin: [
+    'organisation:read',
+    'demo_run:create',
+    'demo_run:read',
+    'github_installation:manage',
+    'repository:read',
+    'repository:scan',
+  ],
+  reviewer: [
+    'organisation:read',
+    'demo_run:create',
+    'demo_run:read',
+    'repository:read',
+    'repository:scan',
+  ],
+  viewer: ['organisation:read', 'demo_run:read', 'repository:read'],
 };
 
 export function requireAction(

@@ -12,6 +12,10 @@ database_secret_arn                   = "arn:aws:secretsmanager:region:account:s
 database_secret_kms_key_arn           = "arn:aws:kms:region:account:key/runtime-secret-key"
 database_migration_secret_arn         = "arn:aws:secretsmanager:region:account:secret:migration-db"
 database_migration_secret_kms_key_arn = "arn:aws:kms:region:account:key/migration-secret-key"
+github_webhook_secret_arn              = "arn:aws:secretsmanager:region:account:secret:github-webhook"
+github_webhook_secret_kms_key_arn      = "arn:aws:kms:region:account:key/github-webhook-secret-key"
+github_app_secret_arn                  = "arn:aws:secretsmanager:region:account:secret:github-app"
+github_app_secret_kms_key_arn          = "arn:aws:kms:region:account:key/github-app-secret-key"
 
 openai_identity_provider_id = "replace-with-development-wif-provider-id"
 openai_service_account_id   = "replace-with-development-service-account-id"

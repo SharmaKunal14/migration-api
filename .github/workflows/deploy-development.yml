@@ -54,6 +54,11 @@ jobs:
       TF_VAR_database_migration_secret_arn: ${{ vars.DATABASE_MIGRATION_SECRET_ARN }}
       TF_VAR_database_migration_secret_kms_key_arn:
         ${{ vars.DATABASE_MIGRATION_SECRET_KMS_KEY_ARN }}
+      TF_VAR_github_webhook_secret_arn: ${{ vars.GITHUB_WEBHOOK_SECRET_ARN }}
+      TF_VAR_github_webhook_secret_kms_key_arn:
+        ${{ vars.GITHUB_WEBHOOK_SECRET_KMS_KEY_ARN }}
+      TF_VAR_github_app_secret_arn: ${{ vars.GITHUB_APP_SECRET_ARN }}
+      TF_VAR_github_app_secret_kms_key_arn: ${{ vars.GITHUB_APP_SECRET_KMS_KEY_ARN }}
       TF_VAR_openai_identity_provider_id: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
       TF_VAR_openai_service_account_id: ${{ vars.OPENAI_SERVICE_ACCOUNT_ID }}
       TF_VAR_openai_model: ${{ vars.OPENAI_MODEL }}
@@ -311,6 +316,8 @@ jobs:
           tar -czf deployment-plan-payload.tar.gz \
             infra/terraform/environments/development/stage-1.tfplan \
             infra/terraform/environments/development/.terraform/api.zip \
+            infra/terraform/environments/development/.terraform/github-token-broker.zip \
+            infra/terraform/environments/development/.terraform/github-webhook.zip \
             infra/terraform/environments/development/.terraform/outbox.zip \
             infra/terraform/environments/development/.terraform/workflow-control.zip \
             dist/services \
@@ -361,6 +368,11 @@ jobs:
       TF_VAR_database_migration_secret_arn: ${{ vars.DATABASE_MIGRATION_SECRET_ARN }}
       TF_VAR_database_migration_secret_kms_key_arn:
         ${{ vars.DATABASE_MIGRATION_SECRET_KMS_KEY_ARN }}
+      TF_VAR_github_webhook_secret_arn: ${{ vars.GITHUB_WEBHOOK_SECRET_ARN }}
+      TF_VAR_github_webhook_secret_kms_key_arn:
+        ${{ vars.GITHUB_WEBHOOK_SECRET_KMS_KEY_ARN }}
+      TF_VAR_github_app_secret_arn: ${{ vars.GITHUB_APP_SECRET_ARN }}
+      TF_VAR_github_app_secret_kms_key_arn: ${{ vars.GITHUB_APP_SECRET_KMS_KEY_ARN }}
       TF_VAR_openai_identity_provider_id: ${{ vars.OPENAI_IDENTITY_PROVIDER_ID }}
       TF_VAR_openai_service_account_id: ${{ vars.OPENAI_SERVICE_ACCOUNT_ID }}
       TF_VAR_openai_model: ${{ vars.OPENAI_MODEL }}
@@ -429,6 +441,8 @@ jobs:
           tar -xzf deployment-plan-payload.tar.gz
           test -s infra/terraform/environments/development/stage-1.tfplan
           test -s infra/terraform/environments/development/.terraform/api.zip
+          test -s infra/terraform/environments/development/.terraform/github-token-broker.zip
+          test -s infra/terraform/environments/development/.terraform/github-webhook.zip
           test -s infra/terraform/environments/development/.terraform/outbox.zip
           test -s infra/terraform/environments/development/.terraform/workflow-control.zip
 

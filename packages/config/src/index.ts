@@ -11,6 +11,15 @@ const pemCertificate = z
     /^-----BEGIN CERTIFICATE-----\r?\n[A-Za-z0-9+/=\r\n]+-----END CERTIFICATE-----$/u,
     'Expected a PEM-encoded certificate',
   );
+const privateKeyPattern = new RegExp(
+  [
+    '^(?:-----BEGIN ',
+    'PRIVATE KEY-----\\r?\\n[\\s\\S]+-----END PRIVATE KEY-----|',
+    '-----BEGIN RSA ',
+    'PRIVATE KEY-----\\r?\\n[\\s\\S]+-----END RSA PRIVATE KEY-----)$',
+  ].join(''),
+  'u',
+);
 
 const commonSchema = z.object({
   APP_ENVIRONMENT: z.enum(['development', 'staging', 'production']),
@@ -25,6 +34,23 @@ export const databaseCredentialSchema = z
     username: nonEmpty,
     password: z.string().min(1),
     sslCaCertificate: pemCertificate,
+  })
+  .strict();
+
+export const githubWebhookSecretSchema = z
+  .object({
+    webhookSecret: z.string().min(32).max(256),
+  })
+  .strict();
+
+export const githubAppSecretSchema = z
+  .object({
+    appId: z.string().regex(/^[1-9][0-9]{0,19}$/u),
+    privateKey: z
+      .string()
+      .min(256)
+      .max(16 * 1024)
+      .regex(privateKeyPattern),
   })
   .strict();
 
@@ -65,11 +91,23 @@ export const migratorConfigSchema = commonSchema.extend({
   MIGRATIONS_DIRECTORY: z.string().regex(/^\/app\/migrations$/u),
 });
 
+export const githubWebhookConfigSchema = commonSchema.extend({
+  GITHUB_WEBHOOK_QUEUE_URL: z.url(),
+  GITHUB_WEBHOOK_SECRET_ARN: awsArn,
+});
+
+export const githubTokenBrokerConfigSchema = commonSchema.extend({
+  DATABASE_SECRET_ARN: awsArn,
+  GITHUB_APP_SECRET_ARN: awsArn,
+});
+
 export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type DispatcherConfig = z.infer<typeof dispatcherConfigSchema>;
 export type WorkflowControlConfig = z.infer<typeof workflowControlConfigSchema>;
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
 export type MigratorConfig = z.infer<typeof migratorConfigSchema>;
+export type GithubWebhookConfig = z.infer<typeof githubWebhookConfigSchema>;
+export type GithubTokenBrokerConfig = z.infer<typeof githubTokenBrokerConfigSchema>;
 export type DatabaseCredential = z.infer<typeof databaseCredentialSchema>;
 
 export function parseConfig<T>(

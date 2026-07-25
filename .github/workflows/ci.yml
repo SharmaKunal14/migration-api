@@ -70,6 +70,8 @@ jobs:
           touch dist/services/api.js
           touch dist/services/outbox-dispatcher.js
           touch dist/services/workflow-control.js
+          touch dist/services/github-webhook.js
+          touch dist/services/github-token-broker.js
           printf '<!doctype html><title>validation only</title>' > dist/web/index.html
 
       - name: Initialize application providers

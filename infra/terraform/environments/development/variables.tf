@@ -60,6 +60,28 @@ variable "database_migration_secret_kms_key_arn" {
   type        = string
 }
 
+variable "github_webhook_secret_arn" {
+  description = "Existing Secrets Manager ARN containing only the GitHub webhook secret."
+  type        = string
+  sensitive   = false
+}
+
+variable "github_webhook_secret_kms_key_arn" {
+  description = "KMS key encrypting the GitHub webhook secret."
+  type        = string
+}
+
+variable "github_app_secret_arn" {
+  description = "Existing Secrets Manager ARN containing the GitHub App ID and private key."
+  type        = string
+  sensitive   = false
+}
+
+variable "github_app_secret_kms_key_arn" {
+  description = "KMS key encrypting the GitHub App secret."
+  type        = string
+}
+
 variable "openai_identity_provider_id" {
   description = "Development OpenAI WIF provider ID; not a secret."
   type        = string

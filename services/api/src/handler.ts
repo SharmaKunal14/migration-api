@@ -112,7 +112,44 @@ export async function handleRequest(
         method === 'GET'
           ? /^\/v1\/organisations\/([0-9a-f-]{36})\/runs\/([0-9a-f-]{36})$/u.exec(path)
           : null;
-      if (createMatch?.[1]) {
+      const installationsMatch =
+        method === 'GET'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/github\/installations$/u.exec(path)
+          : null;
+      const repositoriesMatch =
+        method === 'GET'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/repositories$/u.exec(path)
+          : null;
+      const dependenciesMatch =
+        method === 'GET'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/repositories\/([0-9a-f-]{36})\/dependencies$/u.exec(
+              path,
+            )
+          : null;
+      if (installationsMatch?.[1]) {
+        const organisationId = z.uuid().parse(installationsMatch[1]);
+        response = json(200, {
+          installations: await repository.listGithubInstallations(
+            userId,
+            organisationId,
+          ),
+        });
+      } else if (repositoriesMatch?.[1]) {
+        const organisationId = z.uuid().parse(repositoriesMatch[1]);
+        response = json(200, {
+          repositories: await repository.listRepositories(userId, organisationId),
+        });
+      } else if (dependenciesMatch?.[1] && dependenciesMatch[2]) {
+        const organisationId = z.uuid().parse(dependenciesMatch[1]);
+        const repositoryId = z.uuid().parse(dependenciesMatch[2]);
+        response = json(200, {
+          dependencies: await repository.listDependencies(
+            userId,
+            organisationId,
+            repositoryId,
+          ),
+        });
+      } else if (createMatch?.[1]) {
         const input = demoRunRequestSchema.parse(parseBody(event));
         const run = await repository.createDemoRun(userId, {
           organisationId: z.uuid().parse(createMatch[1]),

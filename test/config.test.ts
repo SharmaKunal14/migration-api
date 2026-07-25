@@ -3,6 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   agentConfigSchema,
   databaseCredentialSchema,
+  githubAppSecretSchema,
+  githubWebhookConfigSchema,
+  githubWebhookSecretSchema,
   parseConfig,
 } from '@migration/config';
 
@@ -79,6 +82,63 @@ describe('database credential validation', () => {
       databaseCredentialSchema.parse({
         ...validDatabaseCredential,
         ...replacement,
+      }),
+    ).toThrow();
+  });
+});
+
+describe('GitHub webhook configuration', () => {
+  it('accepts resource identifiers separately from the webhook secret', () => {
+    expect(
+      parseConfig(githubWebhookConfigSchema, {
+        APP_ENVIRONMENT: 'development',
+        AWS_REGION: 'ap-southeast-2',
+        GITHUB_WEBHOOK_QUEUE_URL:
+          'https://sqs.ap-southeast-2.amazonaws.com/123456789012/github-webhooks',
+        GITHUB_WEBHOOK_SECRET_ARN:
+          'arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:webhook',
+      }),
+    ).toBeDefined();
+    expect(
+      githubWebhookSecretSchema.parse({
+        webhookSecret: 'a-non-production-secret-with-32-characters',
+      }),
+    ).toBeDefined();
+  });
+
+  it('rejects short secrets and non-HTTPS queue identifiers', () => {
+    expect(() =>
+      githubWebhookSecretSchema.parse({ webhookSecret: 'too-short' }),
+    ).toThrow();
+    expect(() =>
+      parseConfig(githubWebhookConfigSchema, {
+        APP_ENVIRONMENT: 'development',
+        AWS_REGION: 'ap-southeast-2',
+        GITHUB_WEBHOOK_QUEUE_URL: 'not-a-url',
+        GITHUB_WEBHOOK_SECRET_ARN:
+          'arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:webhook',
+      }),
+    ).toThrow('Invalid service configuration: GITHUB_WEBHOOK_QUEUE_URL');
+  });
+});
+
+describe('GitHub App secret validation', () => {
+  it('rejects malformed private-key material and extra secret fields', () => {
+    expect(() =>
+      githubAppSecretSchema.parse({
+        appId: '12345',
+        privateKey: 'not-a-private-key',
+      }),
+    ).toThrow();
+    expect(() =>
+      githubAppSecretSchema.parse({
+        appId: '12345',
+        privateKey: [
+          ['-----BEGIN ', 'PRIVATE KEY-----'].join(''),
+          'A'.repeat(256),
+          '-----END PRIVATE KEY-----',
+        ].join('\n'),
+        token: 'must-not-be-stored-here',
       }),
     ).toThrow();
   });

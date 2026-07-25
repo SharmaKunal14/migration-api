@@ -235,6 +235,23 @@ data "aws_iam_policy_document" "github_deploy" {
   }
 
   statement {
+    sid = "StageTwoWebhookQueues"
+    actions = [
+      "sqs:CreateQueue",
+      "sqs:DeleteQueue",
+      "sqs:GetQueueAttributes",
+      "sqs:GetQueueUrl",
+      "sqs:ListQueueTags",
+      "sqs:SetQueueAttributes",
+      "sqs:TagQueue",
+      "sqs:UntagQueue"
+    ]
+    resources = [
+      "arn:aws:sqs:${var.aws_region}:${data.aws_caller_identity.current.account_id}:migration-api-development-github-webhooks*"
+    ]
+  }
+
+  statement {
     sid = "StageOneInfrastructure"
     actions = [
       "acm:DescribeCertificate",

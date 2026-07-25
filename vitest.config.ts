@@ -31,6 +31,10 @@ export default defineConfig({
         './packages/observability/src/index.ts',
         import.meta.url,
       ).pathname,
+      '@migration/repository-inventory': new URL(
+        './packages/repository-inventory/src/index.ts',
+        import.meta.url,
+      ).pathname,
     },
   },
   test: {
@@ -40,6 +44,7 @@ export default defineConfig({
         'packages/config/src/**/*.ts',
         'packages/contracts/src/**/*.ts',
         'packages/domain/src/**/*.ts',
+        'packages/repository-inventory/src/**/*.ts',
       ],
       provider: 'v8',
       reporter: ['text', 'json-summary'],

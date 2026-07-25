@@ -28,6 +28,14 @@ resource "aws_apigatewayv2_integration" "api" {
   timeout_milliseconds   = 15000
 }
 
+resource "aws_apigatewayv2_integration" "github_webhook" {
+  api_id                 = aws_apigatewayv2_api.control.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.github_webhook.invoke_arn
+  payload_format_version = "2.0"
+  timeout_milliseconds   = 10000
+}
+
 resource "aws_apigatewayv2_route" "me" {
   # API Gateway JWT authorizers accept only RSA signatures. The Lambda verifies
   # Supabase ES256 tokens before dispatching any route operation.
@@ -41,6 +49,13 @@ resource "aws_apigatewayv2_route" "v1" {
   api_id             = aws_apigatewayv2_api.control.id
   route_key          = "ANY /v1/{proxy+}"
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"
+  authorization_type = "NONE"
+}
+
+resource "aws_apigatewayv2_route" "github_webhook" {
+  api_id             = aws_apigatewayv2_api.control.id
+  route_key          = "POST /v1/github/webhooks"
+  target             = "integrations/${aws_apigatewayv2_integration.github_webhook.id}"
   authorization_type = "NONE"
 }
 
@@ -79,6 +94,14 @@ resource "aws_lambda_permission" "api_gateway" {
   function_name = aws_lambda_function.api.function_name
   principal     = "apigateway.amazonaws.com"
   source_arn    = "${aws_apigatewayv2_api.control.execution_arn}/*/*"
+}
+
+resource "aws_lambda_permission" "api_gateway_github_webhook" {
+  statement_id  = "AllowApiGatewayInvoke"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.github_webhook.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "${aws_apigatewayv2_api.control.execution_arn}/*/POST/v1/github/webhooks"
 }
 
 resource "aws_cloudfront_origin_access_control" "web" {

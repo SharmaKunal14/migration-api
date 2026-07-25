@@ -3,6 +3,11 @@ import { createHash, randomUUID } from 'node:crypto';
 import type { Transaction } from 'kysely';
 
 import type { AppDatabase, Database } from '@migration/database';
+import type {
+  PublicDependencyObservation,
+  PublicGithubInstallation,
+  PublicRepository,
+} from '@migration/contracts';
 import type { Actor, Membership } from '@migration/domain';
 import { DomainError, requireAction, type OrganisationRole } from '@migration/domain';
 
@@ -57,6 +62,16 @@ export interface ApiRepositoryPort {
     organisationId: string,
     runId: string,
   ): Promise<AgentRunRecord>;
+  listGithubInstallations(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicGithubInstallation[]>;
+  listRepositories(userId: string, organisationId: string): Promise<PublicRepository[]>;
+  listDependencies(
+    userId: string,
+    organisationId: string,
+    repositoryId: string,
+  ): Promise<PublicDependencyObservation[]>;
 }
 
 function digestJson(value: unknown): string {
@@ -185,6 +200,110 @@ export class ApiRepository implements ApiRepositoryPort {
       .where('membership.userId', '=', userId)
       .where('organisation.status', '=', 'active')
       .executeTakeFirst();
+  }
+
+  public async listGithubInstallations(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicGithubInstallation[]> {
+    requireAction(await this.membership(organisationId, userId), 'organisation:read');
+    const rows = await this.database
+      .selectFrom('githubInstallations')
+      .select(['id', 'accountLogin', 'accountType', 'status', 'lastReconciledAt'])
+      .where('organisationId', '=', organisationId)
+      .orderBy('createdAt', 'asc')
+      .limit(100)
+      .execute();
+    return rows.map(row => ({
+      ...row,
+      lastReconciledAt: row.lastReconciledAt?.toISOString() ?? null,
+    }));
+  }
+
+  public async listRepositories(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicRepository[]> {
+    requireAction(await this.membership(organisationId, userId), 'repository:read');
+    const rows = await this.database
+      .selectFrom('repositories as repository')
+      .leftJoin('repositoryScans as scan', join =>
+        join
+          .onRef('scan.repositoryId', '=', 'repository.id')
+          .onRef('scan.organisationId', '=', 'repository.organisationId'),
+      )
+      .leftJoin(
+        'repositorySnapshots as snapshot',
+        'snapshot.repositoryScanId',
+        'scan.id',
+      )
+      .distinctOn('repository.id')
+      .select([
+        'repository.id',
+        'repository.installationId',
+        'repository.fullName',
+        'repository.defaultBranch',
+        'repository.visibility',
+        'repository.selected',
+        'repository.archived',
+        'repository.enabled',
+        'scan.status as latestScanStatus',
+        'snapshot.commitSha as latestScannedCommit',
+      ])
+      .where('repository.organisationId', '=', organisationId)
+      .orderBy('repository.id', 'asc')
+      .orderBy('scan.createdAt', 'desc')
+      .limit(500)
+      .execute();
+    return rows.sort((left, right) => left.fullName.localeCompare(right.fullName));
+  }
+
+  public async listDependencies(
+    userId: string,
+    organisationId: string,
+    repositoryId: string,
+  ): Promise<PublicDependencyObservation[]> {
+    requireAction(await this.membership(organisationId, userId), 'repository:read');
+    const repository = await this.database
+      .selectFrom('repositories')
+      .select('id')
+      .where('id', '=', repositoryId)
+      .where('organisationId', '=', organisationId)
+      .executeTakeFirst();
+    if (!repository) {
+      throw new DomainError(
+        'REPOSITORY_NOT_FOUND',
+        'The repository was not found.',
+        404,
+      );
+    }
+    const snapshot = await this.database
+      .selectFrom('repositorySnapshots')
+      .select('id')
+      .where('repositoryId', '=', repositoryId)
+      .where('organisationId', '=', organisationId)
+      .where('status', '=', 'available')
+      .orderBy('createdAt', 'desc')
+      .executeTakeFirst();
+    if (!snapshot) return [];
+    return this.database
+      .selectFrom('dependencyObservations')
+      .select([
+        'packageName',
+        'dependencyKind',
+        'manifestPath',
+        'lockfilePath',
+        'declaredRange',
+        'resolvedVersion',
+        'discoveryMethod',
+      ])
+      .where('organisationId', '=', organisationId)
+      .where('repositorySnapshotId', '=', snapshot.id)
+      .orderBy('manifestPath', 'asc')
+      .orderBy('packageName', 'asc')
+      .orderBy('dependencyKind', 'asc')
+      .limit(10_000)
+      .execute();
   }
 
   public async createDemoRun(

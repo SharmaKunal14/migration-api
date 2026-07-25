@@ -126,6 +126,110 @@ export interface AuditEventTable {
   createdAt: Timestamp;
 }
 
+export interface GithubInstallationTable {
+  id: string;
+  organisationId: string;
+  githubInstallationId: string;
+  githubAccountId: string;
+  accountLogin: string;
+  accountType: 'Organisation' | 'User';
+  status: 'active' | 'suspended' | 'removed';
+  suspendedAt: Timestamp | null;
+  removedAt: Timestamp | null;
+  lastReconciledAt: Timestamp | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface InstallationLinkStateTable {
+  stateDigest: string;
+  organisationId: string;
+  userId: string;
+  expiresAt: Timestamp;
+  consumedAt: Timestamp | null;
+  returnPath: string;
+  createdAt: Timestamp;
+}
+
+export interface RepositoryTable {
+  id: string;
+  organisationId: string;
+  installationId: string;
+  githubRepositoryId: string;
+  owner: string;
+  name: string;
+  fullName: string;
+  defaultBranch: string;
+  visibility: 'public' | 'private' | 'internal';
+  selected: boolean;
+  archived: boolean;
+  enabled: boolean;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface GithubWebhookDeliveryTable {
+  deliveryId: string;
+  eventName: string;
+  action: string | null;
+  payloadDigest: string;
+  processingState: 'received' | 'processing' | 'processed' | 'failed';
+  attempts: number;
+  safeErrorCode: string | null;
+  receivedAt: Timestamp;
+  processedAt: Timestamp | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface RepositoryScanTable {
+  id: string;
+  organisationId: string;
+  repositoryId: string;
+  requestedCommit: string | null;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'unsupported';
+  triggerSource: 'installation' | 'webhook' | 'manual';
+  attempt: number;
+  safeErrorCode: string | null;
+  version: number;
+  createdAt: Timestamp;
+  startedAt: Timestamp | null;
+  completedAt: Timestamp | null;
+  updatedAt: Timestamp;
+}
+
+export interface RepositorySnapshotTable {
+  id: string;
+  organisationId: string;
+  repositoryId: string;
+  repositoryScanId: string;
+  commitSha: string;
+  acquisitionPurpose: 'inventory';
+  status: 'available' | 'expired' | 'deleted';
+  objectKey: string;
+  digest: string;
+  bytes: ColumnType<string, number, never>;
+  fileCount: number;
+  expiresAt: Timestamp;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface DependencyObservationTable {
+  id: string;
+  organisationId: string;
+  repositorySnapshotId: string;
+  packageName: string;
+  dependencyKind: 'dependency' | 'development' | 'optional' | 'peer';
+  manifestPath: string;
+  lockfilePath: string | null;
+  declaredRange: string;
+  resolvedVersion: string | null;
+  discoveryMethod: 'manifest' | 'npm_lockfile';
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
 export interface Database {
   appUsers: AppUserTable;
   organisations: OrganisationTable;
@@ -136,6 +240,13 @@ export interface Database {
   workflowOutbox: WorkflowOutboxTable;
   apiIdempotencyKeys: ApiIdempotencyKeyTable;
   auditEvents: AuditEventTable;
+  githubInstallations: GithubInstallationTable;
+  installationLinkStates: InstallationLinkStateTable;
+  repositories: RepositoryTable;
+  githubWebhookDeliveries: GithubWebhookDeliveryTable;
+  repositoryScans: RepositoryScanTable;
+  repositorySnapshots: RepositorySnapshotTable;
+  dependencyObservations: DependencyObservationTable;
 }
 
 export type AppDatabase = Kysely<Database>;

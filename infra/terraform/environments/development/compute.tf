@@ -16,6 +16,18 @@ resource "aws_cloudwatch_log_group" "workflow_control" {
   kms_key_id        = aws_kms_key.logs.arn
 }
 
+resource "aws_cloudwatch_log_group" "github_webhook" {
+  name              = "/aws/lambda/migration-api-development-github-webhook"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
+resource "aws_cloudwatch_log_group" "github_token_broker" {
+  name              = "/aws/lambda/migration-api-development-github-token-broker"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
 resource "aws_cloudwatch_log_group" "agent" {
   name              = "/migration-api/development/agent"
   retention_in_days = 30
@@ -47,6 +59,14 @@ locals {
     workflow_control = {
       role = aws_iam_role.workflow_control.id
       arn  = aws_cloudwatch_log_group.workflow_control.arn
+    }
+    github_webhook = {
+      role = aws_iam_role.github_webhook.id
+      arn  = aws_cloudwatch_log_group.github_webhook.arn
+    }
+    github_token_broker = {
+      role = aws_iam_role.github_token_broker.id
+      arn  = aws_cloudwatch_log_group.github_token_broker.arn
     }
   }
 }
@@ -97,6 +117,26 @@ data "archive_file" "workflow_control" {
   }
 }
 
+data "archive_file" "github_webhook" {
+  type        = "zip"
+  output_path = "${path.module}/.terraform/github-webhook.zip"
+
+  source {
+    content  = file("${var.service_build_directory}/github-webhook.js")
+    filename = "index.mjs"
+  }
+}
+
+data "archive_file" "github_token_broker" {
+  type        = "zip"
+  output_path = "${path.module}/.terraform/github-token-broker.zip"
+
+  source {
+    content  = file("${var.service_build_directory}/github-token-broker.js")
+    filename = "index.mjs"
+  }
+}
+
 resource "aws_lambda_function" "api" {
   function_name                  = "migration-api-development-api"
   role                           = aws_iam_role.api.arn
@@ -133,6 +173,67 @@ resource "aws_lambda_function" "api" {
   }
 
   depends_on = [aws_cloudwatch_log_group.api]
+}
+
+resource "aws_lambda_function" "github_webhook" {
+  function_name                  = "migration-api-development-github-webhook"
+  role                           = aws_iam_role.github_webhook.arn
+  handler                        = "index.handler"
+  runtime                        = "nodejs22.x"
+  architectures                  = ["arm64"]
+  filename                       = data.archive_file.github_webhook.output_path
+  source_code_hash               = data.archive_file.github_webhook.output_base64sha256
+  memory_size                    = 256
+  timeout                        = 10
+  reserved_concurrent_executions = 10
+
+  environment {
+    variables = {
+      APP_ENVIRONMENT           = "development"
+      GITHUB_WEBHOOK_QUEUE_URL  = aws_sqs_queue.github_webhooks.url
+      GITHUB_WEBHOOK_SECRET_ARN = var.github_webhook_secret_arn
+      NODE_OPTIONS              = "--enable-source-maps"
+    }
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  depends_on = [aws_cloudwatch_log_group.github_webhook]
+}
+
+resource "aws_lambda_function" "github_token_broker" {
+  function_name                  = "migration-api-development-github-token-broker"
+  role                           = aws_iam_role.github_token_broker.arn
+  handler                        = "index.handler"
+  runtime                        = "nodejs22.x"
+  architectures                  = ["arm64"]
+  filename                       = data.archive_file.github_token_broker.output_path
+  source_code_hash               = data.archive_file.github_token_broker.output_base64sha256
+  memory_size                    = 256
+  timeout                        = 15
+  reserved_concurrent_executions = 10
+
+  environment {
+    variables = {
+      APP_ENVIRONMENT       = "development"
+      DATABASE_SECRET_ARN   = var.database_secret_arn
+      GITHUB_APP_SECRET_ARN = var.github_app_secret_arn
+      NODE_OPTIONS          = "--enable-source-maps"
+    }
+  }
+
+  vpc_config {
+    security_group_ids = [aws_security_group.control.id]
+    subnet_ids         = [for subnet in aws_subnet.control : subnet.id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  depends_on = [aws_cloudwatch_log_group.github_token_broker]
 }
 
 resource "aws_lambda_function" "outbox" {

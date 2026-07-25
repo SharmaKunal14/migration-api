@@ -38,6 +38,16 @@ await Promise.all([
   }),
   build({
     ...common,
+    entryPoints: ['services/github-webhook/src/handler.ts'],
+    outfile: 'dist/services/github-webhook.js',
+  }),
+  build({
+    ...common,
+    entryPoints: ['services/github-token-broker/src/handler.ts'],
+    outfile: 'dist/services/github-token-broker.js',
+  }),
+  build({
+    ...common,
     entryPoints: ['workers/agent/src/main.ts'],
     outfile: 'dist/workers/agent/main.js',
   }),

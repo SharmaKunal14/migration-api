@@ -3,7 +3,9 @@ import { describe, expect, it } from 'vitest';
 import {
   agentResultEnvelopeSchema,
   demoRunRequestSchema,
+  githubWebhookEnvelopeSchema,
   migrationPlanSchema,
+  repositoryScanWorkflowInputSchema,
   workflowInputSchema,
 } from '@migration/contracts';
 
@@ -49,6 +51,34 @@ describe('runtime contracts', () => {
         expectedVersion: 1,
         source: 'must not enter workflow history',
       }),
+    ).toThrow();
+  });
+
+  it('accepts identifier-only repository scan workflow input', () => {
+    expect(
+      repositoryScanWorkflowInputSchema.parse({
+        schemaVersion: '1.0',
+        organisationId: '6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624',
+        repositoryId: 'e4e2d9db-bd1c-4eef-b685-231128724583',
+        repositoryScanId: '12a906c7-f7df-4c65-9137-70bcf17eec86',
+        correlationId: '30a75bfd-6a69-4368-a341-10362df73007',
+        expectedVersion: 1,
+      }),
+    ).toBeDefined();
+  });
+
+  it('constrains webhook envelopes to allowlisted GitHub events', () => {
+    const envelope = {
+      schemaVersion: '1.0',
+      deliveryId: '6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624',
+      eventName: 'installation',
+      payloadDigest: 'a'.repeat(64),
+      receivedAt: '2026-07-25T00:00:00.000Z',
+      bodyBase64: 'e30=',
+    };
+    expect(githubWebhookEnvelopeSchema.parse(envelope)).toEqual(envelope);
+    expect(() =>
+      githubWebhookEnvelopeSchema.parse({ ...envelope, eventName: 'workflow_run' }),
     ).toThrow();
   });
 

@@ -4,6 +4,39 @@ import { terminalCodes } from '@migration/domain';
 
 export const uuidSchema = z.uuid();
 export const sha256Schema = z.string().regex(/^[a-f0-9]{64}$/u);
+export const githubIdSchema = z.string().regex(/^[1-9][0-9]{0,19}$/u);
+export const commitShaSchema = z.string().regex(/^[a-f0-9]{40}$/u);
+
+export const repositoryScanWorkflowInputSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    organisationId: uuidSchema,
+    repositoryId: uuidSchema,
+    repositoryScanId: uuidSchema,
+    correlationId: uuidSchema,
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
+
+export const githubWebhookEnvelopeSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    deliveryId: uuidSchema,
+    eventName: z.enum([
+      'installation',
+      'installation_repositories',
+      'repository',
+      'push',
+      'pull_request',
+    ]),
+    payloadDigest: sha256Schema,
+    receivedAt: z.iso.datetime(),
+    bodyBase64: z
+      .string()
+      .min(1)
+      .max(512 * 1024),
+  })
+  .strict();
 
 export const demoRunRequestSchema = z
   .object({
@@ -159,6 +192,10 @@ export type DemoRunRequest = z.infer<typeof demoRunRequestSchema>;
 export type WorkflowInput = z.infer<typeof workflowInputSchema>;
 export type MigrationPlan = z.infer<typeof migrationPlanSchema>;
 export type AgentResultEnvelope = z.infer<typeof agentResultEnvelopeSchema>;
+export type RepositoryScanWorkflowInput = z.infer<
+  typeof repositoryScanWorkflowInputSchema
+>;
+export type GithubWebhookEnvelope = z.infer<typeof githubWebhookEnvelopeSchema>;
 
 export interface PublicOrganisation {
   readonly id: string;
@@ -179,4 +216,36 @@ export interface PublicAgentRun {
   readonly createdAt: string;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+}
+
+export interface PublicGithubInstallation {
+  readonly id: string;
+  readonly accountLogin: string;
+  readonly accountType: 'Organisation' | 'User';
+  readonly status: 'active' | 'suspended' | 'removed';
+  readonly lastReconciledAt: string | null;
+}
+
+export interface PublicRepository {
+  readonly id: string;
+  readonly installationId: string;
+  readonly fullName: string;
+  readonly defaultBranch: string;
+  readonly visibility: 'public' | 'private' | 'internal';
+  readonly selected: boolean;
+  readonly archived: boolean;
+  readonly enabled: boolean;
+  readonly latestScanStatus:
+    'queued' | 'running' | 'succeeded' | 'failed' | 'unsupported' | null;
+  readonly latestScannedCommit: string | null;
+}
+
+export interface PublicDependencyObservation {
+  readonly packageName: string;
+  readonly dependencyKind: 'dependency' | 'development' | 'optional' | 'peer';
+  readonly manifestPath: string;
+  readonly lockfilePath: string | null;
+  readonly declaredRange: string;
+  readonly resolvedVersion: string | null;
+  readonly discoveryMethod: 'manifest' | 'npm_lockfile';
 }

@@ -33,6 +33,44 @@ describe('organisation authorization', () => {
   it('denies actors with no current membership', () => {
     expect(() => requireAction(undefined, 'demo_run:read')).toThrow(DomainError);
   });
+
+  it.each(['owner', 'admin'] as const)(
+    'allows %s to manage a GitHub installation',
+    role => {
+      expect(requireAction(membership(role), 'github_installation:manage').role).toBe(
+        role,
+      );
+    },
+  );
+
+  it.each(['reviewer', 'viewer'] as const)(
+    'denies %s from managing a GitHub installation',
+    role => {
+      expect(() =>
+        requireAction(membership(role), 'github_installation:manage'),
+      ).toThrow(
+        expect.objectContaining<Partial<DomainError>>({
+          safeCode: 'AUTHORIZATION_DENIED',
+          httpStatus: 403,
+        }),
+      );
+    },
+  );
+
+  it('allows a reviewer to request a read-only repository scan', () => {
+    expect(requireAction(membership('reviewer'), 'repository:scan').role).toBe(
+      'reviewer',
+    );
+  });
+
+  it('denies a viewer from requesting a repository scan', () => {
+    expect(() => requireAction(membership('viewer'), 'repository:scan')).toThrow(
+      expect.objectContaining<Partial<DomainError>>({
+        safeCode: 'AUTHORIZATION_DENIED',
+        httpStatus: 403,
+      }),
+    );
+  });
 });
 
 describe('idempotency keys', () => {

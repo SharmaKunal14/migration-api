@@ -5,6 +5,8 @@ const serviceBundles = [
   'dist/services/api.js',
   'dist/services/outbox-dispatcher.js',
   'dist/services/workflow-control.js',
+  'dist/services/github-webhook.js',
+  'dist/services/github-token-broker.js',
 ];
 const workerBundles = [
   'dist/workers/agent/main.js',

@@ -33,6 +33,16 @@ resource "aws_iam_role" "workflow_control" {
   assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
 }
 
+resource "aws_iam_role" "github_webhook" {
+  name               = "migration-api-development-github-webhook"
+  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+}
+
+resource "aws_iam_role" "github_token_broker" {
+  name               = "migration-api-development-github-token-broker"
+  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+}
+
 resource "aws_iam_role" "agent_execution" {
   name               = "migration-api-development-agent-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
@@ -55,9 +65,10 @@ resource "aws_iam_role" "migrator_task" {
 
 locals {
   lambda_roles = {
-    api              = aws_iam_role.api.id
-    outbox           = aws_iam_role.outbox.id
-    workflow_control = aws_iam_role.workflow_control.id
+    api                 = aws_iam_role.api.id
+    outbox              = aws_iam_role.outbox.id
+    workflow_control    = aws_iam_role.workflow_control.id
+    github_token_broker = aws_iam_role.github_token_broker.id
   }
 }
 

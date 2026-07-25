@@ -76,3 +76,44 @@ resource "aws_cloudwatch_metric_alarm" "wif_failure" {
   treat_missing_data  = "notBreaching"
 }
 
+resource "aws_cloudwatch_metric_alarm" "github_webhook_errors" {
+  alarm_name          = "migration-api-development-github-webhook-errors"
+  alarm_description   = "GitHub webhook ingress returned an unhandled Lambda error."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.github_webhook.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "github_webhook_dlq" {
+  alarm_name          = "migration-api-development-github-webhook-dlq"
+  alarm_description   = "A verified GitHub webhook exhausted reconciliation retries."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateNumberOfMessagesVisible"
+  dimensions          = { QueueName = aws_sqs_queue.github_webhooks_dlq.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "github_token_broker_errors" {
+  alarm_name          = "migration-api-development-github-token-broker-errors"
+  alarm_description   = "The isolated GitHub token broker returned an unhandled Lambda error."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.github_token_broker.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}

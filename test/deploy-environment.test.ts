@@ -29,6 +29,14 @@ const validEnvironment: NodeJS.ProcessEnv = {
     'arn:aws:secretsmanager:ap-southeast-2:393209814365:secret:runtime',
   TF_VAR_database_secret_kms_key_arn:
     'arn:aws:kms:ap-southeast-2:393209814365:key/00000000-0000-0000-0000-000000000001',
+  TF_VAR_github_webhook_secret_arn:
+    'arn:aws:secretsmanager:ap-southeast-2:393209814365:secret:github-webhook',
+  TF_VAR_github_webhook_secret_kms_key_arn:
+    'arn:aws:kms:ap-southeast-2:393209814365:key/00000000-0000-0000-0000-000000000003',
+  TF_VAR_github_app_secret_arn:
+    'arn:aws:secretsmanager:ap-southeast-2:393209814365:secret:github-app',
+  TF_VAR_github_app_secret_kms_key_arn:
+    'arn:aws:kms:ap-southeast-2:393209814365:key/00000000-0000-0000-0000-000000000004',
   TF_VAR_openai_identity_provider_id: 'provider-id',
   TF_VAR_openai_model: 'gpt-5.6-sol',
   TF_VAR_openai_project_alias: 'development-agent',
@@ -55,7 +63,7 @@ describe('deployment environment validation', () => {
     const result = validate(validEnvironment);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Validated 22 deployment variables.');
+    expect(result.stdout).toContain('Validated 26 deployment variables.');
   });
 
   it('rejects a product URL instead of a hostname', () => {
