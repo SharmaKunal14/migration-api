@@ -28,6 +28,12 @@ resource "aws_cloudwatch_log_group" "github_token_broker" {
   kms_key_id        = aws_kms_key.logs.arn
 }
 
+resource "aws_cloudwatch_log_group" "github_reconciler" {
+  name              = "/aws/lambda/migration-api-development-github-reconciler"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
 resource "aws_cloudwatch_log_group" "agent" {
   name              = "/migration-api/development/agent"
   retention_in_days = 30
@@ -67,6 +73,10 @@ locals {
     github_token_broker = {
       role = aws_iam_role.github_token_broker.id
       arn  = aws_cloudwatch_log_group.github_token_broker.arn
+    }
+    github_reconciler = {
+      role = aws_iam_role.github_reconciler.id
+      arn  = aws_cloudwatch_log_group.github_reconciler.arn
     }
   }
 }
@@ -133,6 +143,16 @@ data "archive_file" "github_token_broker" {
 
   source {
     content  = file("${var.service_build_directory}/github-token-broker.js")
+    filename = "index.mjs"
+  }
+}
+
+data "archive_file" "github_reconciler" {
+  type        = "zip"
+  output_path = "${path.module}/.terraform/github-reconciler.zip"
+
+  source {
+    content  = file("${var.service_build_directory}/github-reconciler.js")
     filename = "index.mjs"
   }
 }
@@ -236,6 +256,57 @@ resource "aws_lambda_function" "github_token_broker" {
   }
 
   depends_on = [aws_cloudwatch_log_group.github_token_broker]
+}
+
+resource "aws_lambda_function" "github_reconciler" {
+  function_name                  = "migration-api-development-github-reconciler"
+  role                           = aws_iam_role.github_reconciler.arn
+  handler                        = "index.handler"
+  runtime                        = "nodejs22.x"
+  architectures                  = ["arm64"]
+  filename                       = data.archive_file.github_reconciler.output_path
+  source_code_hash               = data.archive_file.github_reconciler.output_base64sha256
+  memory_size                    = 256
+  timeout                        = 60
+  reserved_concurrent_executions = 2
+
+  environment {
+    variables = {
+      APP_ENVIRONMENT                   = "development"
+      DATABASE_SECRET_ARN               = var.database_secret_arn
+      GITHUB_TOKEN_BROKER_FUNCTION_NAME = aws_lambda_function.github_token_broker.function_name
+      NODE_OPTIONS                      = "--enable-source-maps"
+    }
+  }
+
+  vpc_config {
+    security_group_ids = [aws_security_group.control.id]
+    subnet_ids         = [for subnet in aws_subnet.control : subnet.id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.github_reconciler,
+    aws_iam_role_policy.github_reconciler_database,
+    aws_iam_role_policy.lambda_vpc["github_reconciler"]
+  ]
+}
+
+resource "aws_lambda_event_source_mapping" "github_reconciler" {
+  event_source_arn                   = aws_sqs_queue.github_webhooks.arn
+  function_name                      = aws_lambda_function.github_reconciler.arn
+  batch_size                         = 5
+  maximum_batching_window_in_seconds = 1
+  function_response_types            = ["ReportBatchItemFailures"]
+
+  scaling_config {
+    maximum_concurrency = 2
+  }
+
+  depends_on = [aws_iam_role_policy.github_reconciler_runtime]
 }
 
 resource "aws_lambda_function" "outbox" {

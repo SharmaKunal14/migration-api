@@ -225,12 +225,14 @@ h2 {
   margin-top: 1.5rem;
 }
 
-.installation-list {
+.installation-list,
+.repository-list {
   display: grid;
   gap: 0.75rem;
 }
 
-.installation-list article {
+.installation-list article,
+.repository-list article {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -238,7 +240,8 @@ h2 {
   border-top: 1px solid var(--line);
 }
 
-.installation-list p {
+.installation-list p,
+.repository-list p {
   margin: 0.25rem 0 0;
   color: var(--muted);
 }

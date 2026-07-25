@@ -48,6 +48,11 @@ await Promise.all([
   }),
   build({
     ...common,
+    entryPoints: ['services/github-reconciler/src/handler.ts'],
+    outfile: 'dist/services/github-reconciler.js',
+  }),
+  build({
+    ...common,
     entryPoints: ['workers/agent/src/main.ts'],
     outfile: 'dist/workers/agent/main.js',
   }),

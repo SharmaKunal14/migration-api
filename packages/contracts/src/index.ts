@@ -30,6 +30,60 @@ export const githubInstallationVerificationSchema = z
   })
   .strict();
 
+export const githubInventoryRepositorySchema = z
+  .object({
+    githubRepositoryId: githubIdSchema,
+    owner: z.string().min(1).max(255),
+    name: z.string().min(1).max(255),
+    fullName: z.string().min(3).max(512),
+    defaultBranch: z.string().min(1).max(255),
+    visibility: z.enum(['public', 'private', 'internal']),
+    archived: z.boolean(),
+  })
+  .strict()
+  .refine(
+    repository => repository.fullName === `${repository.owner}/${repository.name}`,
+    {
+      message: 'Repository full name does not match its owner and name.',
+      path: ['fullName'],
+    },
+  );
+
+export const githubReconciliationInstallationSchema =
+  githubInstallationVerificationSchema.extend({
+    status: z.enum(['active', 'suspended', 'removed']),
+  });
+
+export const githubInstallationInventorySchema = z
+  .object({
+    installation: githubReconciliationInstallationSchema,
+    repositories: z.array(githubInventoryRepositorySchema).max(500),
+  })
+  .strict()
+  .superRefine((inventory, context) => {
+    if (
+      inventory.installation.status !== 'active' &&
+      inventory.repositories.length > 0
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Inactive installations cannot expose repositories.',
+        path: ['repositories'],
+      });
+    }
+    const ids = new Set<string>();
+    for (const [index, repository] of inventory.repositories.entries()) {
+      if (ids.has(repository.githubRepositoryId)) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Repository IDs must be unique.',
+          path: ['repositories', index, 'githubRepositoryId'],
+        });
+      }
+      ids.add(repository.githubRepositoryId);
+    }
+  });
+
 export const repositoryScanWorkflowInputSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -224,6 +278,10 @@ export type GithubSetupCompletionRequest = z.infer<
 >;
 export type GithubInstallationVerification = z.infer<
   typeof githubInstallationVerificationSchema
+>;
+export type GithubInventoryRepository = z.infer<typeof githubInventoryRepositorySchema>;
+export type GithubInstallationInventory = z.infer<
+  typeof githubInstallationInventorySchema
 >;
 
 export interface PublicOrganisation {

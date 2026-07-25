@@ -4,6 +4,7 @@ import type {
   PublicGithubInstallLink,
   PublicGithubSetupCompletion,
   PublicOrganisation,
+  PublicRepository,
 } from '@migration/contracts';
 
 import { browserConfiguration } from './config.js';
@@ -92,6 +93,13 @@ export async function completeGithubSetup(
     method: 'POST',
     body: JSON.stringify(input),
   });
+}
+
+export async function loadRepositories(
+  token: string,
+  organisationId: string,
+): Promise<{ repositories: PublicRepository[] }> {
+  return request(token, `/v1/organisations/${organisationId}/repositories`);
 }
 
 export async function createDemoRun(

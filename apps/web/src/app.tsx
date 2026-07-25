@@ -5,6 +5,7 @@ import type {
   PublicAgentRun,
   PublicGithubInstallation,
   PublicOrganisation,
+  PublicRepository,
 } from '@migration/contracts';
 
 import {
@@ -15,6 +16,7 @@ import {
   createOrganisation,
   loadGithubInstallations,
   loadMe,
+  loadRepositories,
   loadRun,
 } from './api.js';
 import { useAuth } from './auth.js';
@@ -111,7 +113,7 @@ function LoginPage(): React.JSX.Element {
         </button>
         {error && <p className="error-message">{error}</p>}
         <p className="fine-print">
-          Stage 2A can connect a GitHub App installation. Repository content is not
+          Stage 2B reconciles selected repository metadata. Repository contents are not
           accessed until a later, explicit scan.
         </p>
       </section>
@@ -230,6 +232,7 @@ function GithubSettingsPage(): React.JSX.Element {
   const { session } = useAuth();
   const { orgId } = useParams();
   const [installations, setInstallations] = useState<PublicGithubInstallation[]>([]);
+  const [repositories, setRepositories] = useState<PublicRepository[]>([]);
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -237,18 +240,38 @@ function GithubSettingsPage(): React.JSX.Element {
   useEffect(() => {
     if (!session || !orgId) return;
     let active = true;
-    void loadGithubInstallations(session.access_token, orgId)
-      .then(data => {
-        if (active) setInstallations(data.installations);
-      })
-      .catch((caught: unknown) => {
-        if (active) setError(errorText(caught));
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    let timer: number | undefined;
+    let attempts = 0;
+    const refresh = async (): Promise<void> => {
+      try {
+        const [installationData, repositoryData] = await Promise.all([
+          loadGithubInstallations(session.access_token, orgId),
+          loadRepositories(session.access_token, orgId),
+        ]);
+        if (!active) return;
+        setInstallations(installationData.installations);
+        setRepositories(repositoryData.repositories);
+        setError(null);
+        setLoading(false);
+        attempts += 1;
+        const reconciliationPending = installationData.installations.some(
+          installation =>
+            installation.status === 'active' && installation.lastReconciledAt === null,
+        );
+        if (reconciliationPending && attempts < 15) {
+          timer = window.setTimeout(() => void refresh(), 2_000);
+        }
+      } catch (caught) {
+        if (active) {
+          setError(errorText(caught));
+          setLoading(false);
+        }
+      }
+    };
+    void refresh();
     return (): void => {
       active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [orgId, session]);
 
@@ -292,7 +315,7 @@ function GithubSettingsPage(): React.JSX.Element {
             approved migrations.
           </li>
           <li>Receive installation and repository-selection webhooks.</li>
-          <li>Stage 2A does not use those write permissions or change code.</li>
+          <li>Stage 2B does not use those write permissions or change code.</li>
         </ul>
         <button
           className="primary-button"
@@ -303,6 +326,41 @@ function GithubSettingsPage(): React.JSX.Element {
           {starting ? 'Opening GitHub…' : 'Install or update GitHub App'}
         </button>
         {error && <p className="error-message">{error}</p>}
+      </section>
+      <section className="panel settings-section">
+        <h2>Selected repositories</h2>
+        {loading ? (
+          <p>Waiting for repository reconciliation…</p>
+        ) : repositories.length === 0 ? (
+          <p>
+            No selected repositories have been reconciled yet. GitHub webhook processing
+            can take a few seconds after installation or a selection change.
+          </p>
+        ) : (
+          <div className="repository-list">
+            {repositories.map(repository => (
+              <article key={repository.id}>
+                <div>
+                  <strong>{repository.fullName}</strong>
+                  <p>
+                    {repository.visibility} · default branch {repository.defaultBranch}
+                  </p>
+                </div>
+                <span
+                  className={`status status-${
+                    repository.enabled ? 'active' : 'removed'
+                  }`}
+                >
+                  {repository.archived
+                    ? 'archived'
+                    : repository.selected
+                      ? 'selected'
+                      : 'removed'}
+                </span>
+              </article>
+            ))}
+          </div>
+        )}
       </section>
       <section className="panel settings-section">
         <h2>Connected installations</h2>
@@ -316,7 +374,14 @@ function GithubSettingsPage(): React.JSX.Element {
               <article key={installation.id}>
                 <div>
                   <strong>{installation.accountLogin}</strong>
-                  <p>{installation.accountType} account</p>
+                  <p>
+                    {installation.accountType} account
+                    {installation.lastReconciledAt
+                      ? ` · reconciled ${new Date(
+                          installation.lastReconciledAt,
+                        ).toLocaleString()}`
+                      : ' · reconciliation pending'}
+                  </p>
                 </div>
                 <span className={`status status-${installation.status}`}>
                   {installation.status}

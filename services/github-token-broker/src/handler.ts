@@ -6,7 +6,12 @@ import type { Context } from 'aws-lambda';
 import { SignJWT } from 'jose';
 import { z } from 'zod';
 
-import { githubIdSchema, uuidSchema } from '@migration/contracts';
+import {
+  githubIdSchema,
+  githubInstallationInventorySchema,
+  type GithubInstallationInventory,
+  uuidSchema,
+} from '@migration/contracts';
 import {
   githubAppSecretSchema,
   githubTokenBrokerConfigSchema,
@@ -19,6 +24,9 @@ import { writeLog } from '@migration/observability';
 const GITHUB_API_ORIGIN = 'https://api.github.com';
 const GITHUB_API_VERSION = '2022-11-28';
 const REQUEST_TIMEOUT_MS = 5_000;
+const MAX_GITHUB_RESPONSE_BYTES = 2 * 1024 * 1024;
+const REPOSITORIES_PER_PAGE = 100;
+const MAX_INSTALLATION_REPOSITORIES = 500;
 
 const brokerCommandSchema = z.discriminatedUnion('operation', [
   z
@@ -34,19 +42,50 @@ const brokerCommandSchema = z.discriminatedUnion('operation', [
       repositoryId: uuidSchema,
     })
     .strict(),
+  z
+    .object({
+      operation: z.literal('get_installation_inventory'),
+      linkedInstallationId: uuidSchema,
+    })
+    .strict(),
 ]);
+
+const githubNumberSchema = z.number().int().positive().max(Number.MAX_SAFE_INTEGER);
 
 const installationResponseSchema = z
   .object({
-    id: z.number().int().positive(),
+    id: githubNumberSchema,
     account: z
       .object({
-        id: z.number().int().positive(),
+        id: githubNumberSchema,
         login: z.string().min(1).max(255),
         type: z.enum(['Organization', 'User']),
       })
       .loose(),
     suspended_at: z.string().nullable(),
+  })
+  .loose();
+
+const repositoryResponseSchema = z
+  .object({
+    id: githubNumberSchema,
+    owner: z
+      .object({
+        login: z.string().min(1).max(255),
+      })
+      .loose(),
+    name: z.string().min(1).max(255),
+    full_name: z.string().min(3).max(512),
+    default_branch: z.string().min(1).max(255),
+    visibility: z.enum(['public', 'private', 'internal']),
+    archived: z.boolean(),
+  })
+  .loose();
+
+const repositoryPageSchema = z
+  .object({
+    total_count: z.number().int().nonnegative(),
+    repositories: z.array(repositoryResponseSchema).max(REPOSITORIES_PER_PAGE),
   })
   .loose();
 
@@ -62,6 +101,13 @@ interface RepositoryAccess {
   readonly githubRepositoryId: string;
 }
 
+interface InstallationAccess {
+  readonly githubInstallationId: string;
+  readonly githubAccountId: string;
+  readonly accountLogin: string;
+  readonly accountType: 'Organisation' | 'User';
+}
+
 interface BrokerDependencies {
   readonly appId: string;
   readonly privateKey: string;
@@ -69,6 +115,9 @@ interface BrokerDependencies {
     repositoryScanId: string,
     repositoryId: string,
   ) => Promise<RepositoryAccess>;
+  readonly lookupInstallationAccess: (
+    linkedInstallationId: string,
+  ) => Promise<InstallationAccess>;
   readonly fetch: typeof globalThis.fetch;
   readonly now?: () => Date;
 }
@@ -85,6 +134,8 @@ async function dependencies(): Promise<BrokerDependencies> {
     privateKey: secret.privateKey,
     lookupRepositoryAccess: (scanId, repositoryId): Promise<RepositoryAccess> =>
       lookupRepositoryAccess(database, scanId, repositoryId),
+    lookupInstallationAccess: (linkedInstallationId): Promise<InstallationAccess> =>
+      lookupInstallationAccess(database, linkedInstallationId),
     fetch: globalThis.fetch,
   };
   return cachedDependencies;
@@ -107,12 +158,10 @@ export async function handleBrokerCommand(
   );
 
   if (command.operation === 'verify_installation') {
-    const installation = await githubRequest(
+    const installation = await verifyInstallation(
       dependency.fetch,
-      `/app/installations/${command.installationId}`,
+      command.installationId,
       appJwt,
-      { method: 'GET' },
-      installationResponseSchema,
     );
     writeLog('info', {
       event: 'github_installation_verified',
@@ -127,6 +176,24 @@ export async function handleBrokerCommand(
         installation.account.type === 'Organization' ? 'Organisation' : 'User',
       status: installation.suspended_at ? 'suspended' : 'active',
     };
+  }
+
+  if (command.operation === 'get_installation_inventory') {
+    const access = await dependency.lookupInstallationAccess(
+      command.linkedInstallationId,
+    );
+    const installationId = githubIdSchema.parse(access.githubInstallationId);
+    const inventory = await getInstallationInventory(
+      dependency.fetch,
+      { ...access, githubInstallationId: installationId },
+      appJwt,
+    );
+    writeLog('info', {
+      event: 'github_installation_inventory_retrieved',
+      requestId,
+      outcome: String(inventory.repositories.length),
+    });
+    return inventory;
   }
 
   const access = await dependency.lookupRepositoryAccess(
@@ -154,6 +221,121 @@ export async function handleBrokerCommand(
     outcome: 'issued',
   });
   return { token: token.token, expiresAt: token.expires_at };
+}
+
+async function getInstallationInventory(
+  fetchImplementation: typeof globalThis.fetch,
+  access: InstallationAccess,
+  appJwt: string,
+): Promise<GithubInstallationInventory> {
+  const installationId = access.githubInstallationId;
+  let installation: z.infer<typeof installationResponseSchema>;
+  try {
+    installation = await verifyInstallation(
+      fetchImplementation,
+      installationId,
+      appJwt,
+    );
+  } catch (error) {
+    if (
+      error instanceof BrokerError &&
+      error.safeCode === 'GITHUB_INSTALLATION_NOT_FOUND'
+    ) {
+      return githubInstallationInventorySchema.parse({
+        installation: {
+          installationId,
+          accountId: access.githubAccountId,
+          accountLogin: access.accountLogin,
+          accountType: access.accountType,
+          status: 'removed',
+        },
+        repositories: [],
+      });
+    }
+    throw error;
+  }
+  if (installation.suspended_at) {
+    return githubInstallationInventorySchema.parse({
+      installation: {
+        installationId: String(installation.id),
+        accountId: String(installation.account.id),
+        accountLogin: installation.account.login,
+        accountType:
+          installation.account.type === 'Organization' ? 'Organisation' : 'User',
+        status: 'suspended',
+      },
+      repositories: [],
+    });
+  }
+  const token = await githubRequest(
+    fetchImplementation,
+    `/app/installations/${installationId}/access_tokens`,
+    appJwt,
+    {
+      method: 'POST',
+      body: JSON.stringify({
+        permissions: {
+          metadata: 'read',
+        },
+      }),
+    },
+    tokenResponseSchema,
+  );
+
+  const repositories: z.infer<typeof repositoryResponseSchema>[] = [];
+  for (let page = 1; repositories.length < MAX_INSTALLATION_REPOSITORIES; page += 1) {
+    const response = await githubRequest(
+      fetchImplementation,
+      `/installation/repositories?per_page=${String(
+        REPOSITORIES_PER_PAGE,
+      )}&page=${String(page)}`,
+      token.token,
+      { method: 'GET' },
+      repositoryPageSchema,
+    );
+    if (response.total_count > MAX_INSTALLATION_REPOSITORIES) {
+      throw new BrokerError('GITHUB_REPOSITORY_LIMIT_EXCEEDED');
+    }
+    repositories.push(...response.repositories);
+    if (repositories.length >= response.total_count) break;
+    if (response.repositories.length === 0) {
+      throw new BrokerError('GITHUB_RESPONSE_INVALID');
+    }
+  }
+
+  return githubInstallationInventorySchema.parse({
+    installation: {
+      installationId: String(installation.id),
+      accountId: String(installation.account.id),
+      accountLogin: installation.account.login,
+      accountType:
+        installation.account.type === 'Organization' ? 'Organisation' : 'User',
+      status: 'active',
+    },
+    repositories: repositories.map(repository => ({
+      githubRepositoryId: String(repository.id),
+      owner: repository.owner.login,
+      name: repository.name,
+      fullName: repository.full_name,
+      defaultBranch: repository.default_branch,
+      visibility: repository.visibility,
+      archived: repository.archived,
+    })),
+  });
+}
+
+function verifyInstallation(
+  fetchImplementation: typeof globalThis.fetch,
+  installationId: string,
+  appJwt: string,
+): Promise<z.infer<typeof installationResponseSchema>> {
+  return githubRequest(
+    fetchImplementation,
+    `/app/installations/${installationId}`,
+    appJwt,
+    { method: 'GET' },
+    installationResponseSchema,
+  );
 }
 
 async function readAppSecret(
@@ -200,6 +382,21 @@ async function lookupRepositoryAccess(
     .executeTakeFirst();
   if (!access) {
     throw new BrokerError('REPOSITORY_ACCESS_DENIED');
+  }
+  return access;
+}
+
+async function lookupInstallationAccess(
+  database: AppDatabase,
+  linkedInstallationId: string,
+): Promise<InstallationAccess> {
+  const access = await database
+    .selectFrom('githubInstallations')
+    .select(['githubInstallationId', 'githubAccountId', 'accountLogin', 'accountType'])
+    .where('id', '=', linkedInstallationId)
+    .executeTakeFirst();
+  if (!access) {
+    throw new BrokerError('INSTALLATION_ACCESS_DENIED');
   }
   return access;
 }
@@ -251,10 +448,28 @@ async function githubRequest<T>(
     );
   }
   try {
-    return schema.parse(await response.json());
+    return schema.parse(await readBoundedJson(response));
   } catch {
     throw new BrokerError('GITHUB_RESPONSE_INVALID');
   }
+}
+
+async function readBoundedJson(response: Response): Promise<unknown> {
+  const reader = response.body?.getReader();
+  if (!reader) throw new BrokerError('GITHUB_RESPONSE_INVALID');
+  const chunks: Uint8Array[] = [];
+  let bytes = 0;
+  for (;;) {
+    const next = await reader.read();
+    if (next.done) break;
+    bytes += next.value.byteLength;
+    if (bytes > MAX_GITHUB_RESPONSE_BYTES) {
+      await reader.cancel();
+      throw new BrokerError('GITHUB_RESPONSE_TOO_LARGE');
+    }
+    chunks.push(next.value);
+  }
+  return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
 function safeGithubNumber(value: string): number {

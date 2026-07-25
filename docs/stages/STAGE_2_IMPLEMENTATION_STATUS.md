@@ -1,7 +1,7 @@
 # Stage 2 implementation status
 
-- **Status:** Secure foundation implemented; end-to-end GitHub inventory incomplete
-- **Updated:** 2026-07-25
+- **Status:** Stage 2A live; Stage 2B reconciliation implemented but not yet deployed
+- **Updated:** 2026-07-26
 
 ## Implemented
 
@@ -25,35 +25,38 @@
   byte, schema, and version limits.
 - Tenant-scoped APIs for listing installations, repositories, and dependency
   observations.
+- Authenticated, one-time GitHub installation linking with broker verification.
+- SQS-driven GitHub reconciler with delivery-ID deduplication, payload-digest
+  verification, partial-batch retries, lifecycle handling, and a DLQ.
+- Broker-owned, read-only installation-token use for bounded pagination of up
+  to 500 selected repositories. Tokens never leave the broker response boundary.
+- Transactional repository upsert, deselection, archival policy, installation
+  lifecycle updates, and reconciliation timestamps.
+- Repository reconciliation status and selected metadata in the onboarding UI.
 - Service build, deployment-input, Terraform, secret-scanning, and CI wiring
   for the new webhook and broker services.
 
 ## Explicitly incomplete
 
-- Authenticated GitHub installation-link creation and callback consumption.
-- API-to-token-broker invocation wiring. The pinned AWS Lambda client dependency
-  was not approved for installation in the implementation environment.
-- Webhook reconciliation consumer and current-state reconciliation.
 - Trusted source-fetcher image and safe archive acquisition.
 - Repository scan Step Functions workflow and dependency persistence.
-- Repository onboarding and inventory UI.
-- Live GitHub App registration, secrets, callbacks, webhook delivery, and
-  selected-repository evidence.
+- Live Stage 2B webhook reconciliation and selected-repository evidence.
 
 ## Verification
 
-Performed locally on 2026-07-25:
+Performed locally on 2026-07-26:
 
 - `npm run check`: passed.
-- 88 tests passed.
-- Coverage: 96.1% statements, 93.4% branches, 100% functions, and 95.91%
+- 121 tests passed.
+- Coverage: 96.47% statements, 93.81% branches, 100% functions, and 96.31%
   lines for configured boundary packages.
 - Secret-pattern scan: passed.
 - Production service and frontend builds: passed.
 - Terraform 1.15.8 formatting: passed.
 - Terraform 1.15.8 development configuration validation: passed.
 
-No live AWS, Supabase, or GitHub deployment was performed.
+Live Stage 2A installation linking was confirmed in development. Stage 2B has
+not yet been deployed.
 
 ## Exit assessment
 

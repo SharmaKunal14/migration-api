@@ -318,6 +318,7 @@ jobs:
           tar -czf deployment-plan-payload.tar.gz \
             infra/terraform/environments/development/stage-1.tfplan \
             infra/terraform/environments/development/.terraform/api.zip \
+            infra/terraform/environments/development/.terraform/github-reconciler.zip \
             infra/terraform/environments/development/.terraform/github-token-broker.zip \
             infra/terraform/environments/development/.terraform/github-webhook.zip \
             infra/terraform/environments/development/.terraform/outbox.zip \
@@ -445,6 +446,7 @@ jobs:
           tar -xzf deployment-plan-payload.tar.gz
           test -s infra/terraform/environments/development/stage-1.tfplan
           test -s infra/terraform/environments/development/.terraform/api.zip
+          test -s infra/terraform/environments/development/.terraform/github-reconciler.zip
           test -s infra/terraform/environments/development/.terraform/github-token-broker.zip
           test -s infra/terraform/environments/development/.terraform/github-webhook.zip
           test -s infra/terraform/environments/development/.terraform/outbox.zip

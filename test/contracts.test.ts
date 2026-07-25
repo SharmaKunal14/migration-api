@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   agentResultEnvelopeSchema,
   demoRunRequestSchema,
+  githubInstallationInventorySchema,
   githubWebhookEnvelopeSchema,
   migrationPlanSchema,
   repositoryScanWorkflowInputSchema,
@@ -79,6 +80,54 @@ describe('runtime contracts', () => {
     expect(githubWebhookEnvelopeSchema.parse(envelope)).toEqual(envelope);
     expect(() =>
       githubWebhookEnvelopeSchema.parse({ ...envelope, eventName: 'workflow_run' }),
+    ).toThrow();
+  });
+
+  it('requires a bounded, unique, internally consistent repository inventory', () => {
+    const repository = {
+      githubRepositoryId: '67890',
+      owner: 'acme',
+      name: 'widget',
+      fullName: 'acme/widget',
+      defaultBranch: 'main',
+      visibility: 'private',
+      archived: false,
+    } as const;
+    const inventory = {
+      installation: {
+        installationId: '12345',
+        accountId: '45678',
+        accountLogin: 'acme',
+        accountType: 'Organisation',
+        status: 'active',
+      },
+      repositories: [repository],
+    };
+
+    expect(githubInstallationInventorySchema.parse(inventory)).toEqual(inventory);
+    expect(() =>
+      githubInstallationInventorySchema.parse({
+        ...inventory,
+        repositories: [repository, repository],
+      }),
+    ).toThrow();
+    expect(() =>
+      githubInstallationInventorySchema.parse({
+        ...inventory,
+        repositories: [{ ...repository, fullName: 'other/widget' }],
+      }),
+    ).toThrow();
+    expect(
+      githubInstallationInventorySchema.parse({
+        installation: { ...inventory.installation, status: 'suspended' },
+        repositories: [],
+      }),
+    ).toBeDefined();
+    expect(() =>
+      githubInstallationInventorySchema.parse({
+        installation: { ...inventory.installation, status: 'removed' },
+        repositories: [repository],
+      }),
     ).toThrow();
   });
 

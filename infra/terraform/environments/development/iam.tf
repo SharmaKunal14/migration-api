@@ -43,6 +43,11 @@ resource "aws_iam_role" "github_token_broker" {
   assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
 }
 
+resource "aws_iam_role" "github_reconciler" {
+  name               = "migration-api-development-github-reconciler"
+  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+}
+
 resource "aws_iam_role" "agent_execution" {
   name               = "migration-api-development-agent-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
@@ -69,6 +74,7 @@ locals {
     outbox              = aws_iam_role.outbox.id
     workflow_control    = aws_iam_role.workflow_control.id
     github_token_broker = aws_iam_role.github_token_broker.id
+    github_reconciler   = aws_iam_role.github_reconciler.id
   }
 }
 
@@ -120,6 +126,12 @@ resource "aws_iam_role_policy" "outbox_database" {
 resource "aws_iam_role_policy" "workflow_database" {
   name   = "runtime-database"
   role   = aws_iam_role.workflow_control.id
+  policy = data.aws_iam_policy_document.database_secret.json
+}
+
+resource "aws_iam_role_policy" "github_reconciler_database" {
+  name   = "runtime-database"
+  role   = aws_iam_role.github_reconciler.id
   policy = data.aws_iam_policy_document.database_secret.json
 }
 

@@ -26,6 +26,11 @@ output "github_token_broker_function_name" {
   value       = aws_lambda_function.github_token_broker.function_name
 }
 
+output "github_reconciler_function_name" {
+  description = "SQS-driven GitHub installation reconciliation function."
+  value       = aws_lambda_function.github_reconciler.function_name
+}
+
 output "artifact_bucket" {
   value = aws_s3_bucket.artifacts.bucket
 }

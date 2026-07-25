@@ -22,6 +22,18 @@ resource "aws_cloudwatch_log_metric_filter" "wif_failure" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "github_reconciliation_failure" {
+  name           = "migration-api-development-github-reconciliation-failure"
+  log_group_name = aws_cloudwatch_log_group.github_reconciler.name
+  pattern        = "{ $.event = \"github_reconciliation_failed\" }"
+
+  metric_transformation {
+    name      = "GitHubReconciliationFailed"
+    namespace = "MigrationApi/Development"
+    value     = "1"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "api_errors" {
   alarm_name          = "migration-api-development-api-errors"
   alarm_description   = "Control API returned Lambda errors."
@@ -104,12 +116,53 @@ resource "aws_cloudwatch_metric_alarm" "github_webhook_dlq" {
   treat_missing_data  = "notBreaching"
 }
 
+resource "aws_cloudwatch_metric_alarm" "github_webhook_backlog_age" {
+  alarm_name          = "migration-api-development-github-webhook-backlog-age"
+  alarm_description   = "Verified GitHub webhooks have waited more than ten minutes for reconciliation."
+  namespace           = "AWS/SQS"
+  metric_name         = "ApproximateAgeOfOldestMessage"
+  dimensions          = { QueueName = aws_sqs_queue.github_webhooks.name }
+  statistic           = "Maximum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 600
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
 resource "aws_cloudwatch_metric_alarm" "github_token_broker_errors" {
   alarm_name          = "migration-api-development-github-token-broker-errors"
   alarm_description   = "The isolated GitHub token broker returned an unhandled Lambda error."
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
   dimensions          = { FunctionName = aws_lambda_function.github_token_broker.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "github_reconciler_errors" {
+  alarm_name          = "migration-api-development-github-reconciler-errors"
+  alarm_description   = "GitHub reconciler returned an unhandled Lambda error."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.github_reconciler.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "github_reconciliation_failure" {
+  alarm_name          = "migration-api-development-github-reconciliation-failure"
+  alarm_description   = "A verified GitHub webhook reconciliation attempt failed."
+  namespace           = "MigrationApi/Development"
+  metric_name         = "GitHubReconciliationFailed"
   statistic           = "Sum"
   period              = 300
   evaluation_periods  = 1
