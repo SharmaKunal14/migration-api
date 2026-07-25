@@ -5,3 +5,6 @@ node_modules/
 .terraform/
 package-lock.json
 docs/contracts/*.json
+# Immutable copies of public vendor evidence must remain byte-for-byte identical.
+fixtures/vendors/orbitchat/v1/
+fixtures/vendors/orbitchat/v2/

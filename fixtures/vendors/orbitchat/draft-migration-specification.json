@@ -1,0 +1,196 @@
+{
+  "schemaVersion": "1.0",
+  "vendor": {
+    "slug": "orbitchat",
+    "name": "OrbitChat"
+  },
+  "product": {
+    "ecosystem": "npm",
+    "identifier": "@orbitchat/sdk"
+  },
+  "sourceCompatibility": "1.x",
+  "targetVersion": "2.0.0",
+  "changes": [
+    {
+      "changeId": "C-01",
+      "category": "request",
+      "summary": "The message creation method is renamed.",
+      "certainty": "vendor_confirmed",
+      "evidenceIds": ["C-01"],
+      "transformations": [
+        {
+          "kind": "rename_symbol",
+          "before": "messages.send",
+          "after": "messages.create",
+          "condition": null
+        }
+      ]
+    },
+    {
+      "changeId": "C-02",
+      "category": "request",
+      "summary": "The room request field is renamed.",
+      "certainty": "vendor_confirmed",
+      "evidenceIds": ["C-02"],
+      "transformations": [
+        {
+          "kind": "rename_field",
+          "before": "room",
+          "after": "channelId",
+          "condition": null
+        }
+      ]
+    },
+    {
+      "changeId": "C-03",
+      "category": "request",
+      "summary": "The text request field is renamed.",
+      "certainty": "vendor_confirmed",
+      "evidenceIds": ["C-03"],
+      "transformations": [
+        {
+          "kind": "rename_field",
+          "before": "text",
+          "after": "content",
+          "condition": null
+        }
+      ]
+    },
+    {
+      "changeId": "C-04",
+      "category": "behavior",
+      "summary": "Explicit notification choices move into a nested object.",
+      "certainty": "vendor_confirmed",
+      "evidenceIds": ["C-04"],
+      "transformations": [
+        {
+          "kind": "wrap_field",
+          "before": "notify",
+          "after": "notification.enabled",
+          "condition": "Only create notification when notify is explicitly defined."
+        },
+        {
+          "kind": "behavior_review",
+          "before": "notify omitted",
+          "after": "notification omitted",
+          "condition": "Account policy may make default behavior non-equivalent."
+        }
+      ]
+    },
+    {
+      "changeId": "C-05",
+      "category": "response",
+      "summary": "The message identifier response field is renamed.",
+      "certainty": "vendor_confirmed",
+      "evidenceIds": ["C-05"],
+      "transformations": [
+        {
+          "kind": "rename_field",
+          "before": "message_id",
+          "after": "id",
+          "condition": null
+        }
+      ]
+    },
+    {
+      "changeId": "C-06",
+      "category": "response",
+      "summary": "The creation timestamp response field is renamed.",
+      "certainty": "vendor_confirmed",
+      "evidenceIds": ["C-06"],
+      "transformations": [
+        {
+          "kind": "rename_field",
+          "before": "created_at",
+          "after": "createdAt",
+          "condition": null
+        }
+      ]
+    },
+    {
+      "changeId": "C-07",
+      "category": "runtime",
+      "summary": "Node.js 22 or newer is required.",
+      "certainty": "vendor_confirmed",
+      "evidenceIds": ["C-07"],
+      "transformations": [
+        {
+          "kind": "runtime_requirement",
+          "before": "Node.js 18 supported",
+          "after": "Node.js >=22 required",
+          "condition": null
+        }
+      ]
+    }
+  ],
+  "evidence": [
+    {
+      "evidenceId": "C-01",
+      "sourceKey": "migration_guide",
+      "sourceUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/MIGRATION.md",
+      "digest": "f760a6763f09a34d876258d26060e219e3e9badf693bfe6a5147ecd5b0d42f4e",
+      "summary": "Migration guide and declarations replace messages.send with messages.create."
+    },
+    {
+      "evidenceId": "C-02",
+      "sourceKey": "v2_api",
+      "sourceUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/index.d.ts",
+      "digest": "f7e6084a04fc4b1f1856677eabab7a6674f606ef45b37d81df9c732429e40d10",
+      "summary": "CreateMessageInput requires channelId instead of room."
+    },
+    {
+      "evidenceId": "C-03",
+      "sourceKey": "v2_api",
+      "sourceUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/index.d.ts",
+      "digest": "f7e6084a04fc4b1f1856677eabab7a6674f606ef45b37d81df9c732429e40d10",
+      "summary": "CreateMessageInput requires content instead of text."
+    },
+    {
+      "evidenceId": "C-04",
+      "sourceKey": "migration_guide",
+      "sourceUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/MIGRATION.md",
+      "digest": "f760a6763f09a34d876258d26060e219e3e9badf693bfe6a5147ecd5b0d42f4e",
+      "summary": "Explicit notify values map to notification.enabled; omitted-value behavior remains uncertain."
+    },
+    {
+      "evidenceId": "C-05",
+      "sourceKey": "v2_api",
+      "sourceUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/index.d.ts",
+      "digest": "f7e6084a04fc4b1f1856677eabab7a6674f606ef45b37d81df9c732429e40d10",
+      "summary": "CreateMessageResult exposes id instead of message_id."
+    },
+    {
+      "evidenceId": "C-06",
+      "sourceKey": "v2_api",
+      "sourceUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/index.d.ts",
+      "digest": "f7e6084a04fc4b1f1856677eabab7a6674f606ef45b37d81df9c732429e40d10",
+      "summary": "CreateMessageResult exposes createdAt instead of created_at."
+    },
+    {
+      "evidenceId": "C-07",
+      "sourceKey": "release_metadata",
+      "sourceUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/release.json",
+      "digest": "d1fc588a622adf5f6d7ef73aa8774612da35c952872bb7af9fe229bd23c28983",
+      "summary": "Release metadata requires Node.js 22 or newer."
+    }
+  ],
+  "preconditions": [
+    "The repository declares @orbitchat/sdk with 1.x compatibility.",
+    "Impact analysis is bound to an exact repository snapshot."
+  ],
+  "verificationRecommendations": ["typescript_static", "typescript_unit"],
+  "uncertainties": [
+    {
+      "code": "NOTIFICATION_DEFAULT_UNRESOLVED",
+      "summary": "Omitted notification behavior can vary by account policy; v1 and v2 defaults must not be assumed equivalent.",
+      "evidenceIds": ["C-04"]
+    }
+  ],
+  "trust": {
+    "status": "draft",
+    "generatedBy": "operator",
+    "reviewedAt": null
+  },
+  "revision": 1,
+  "generatedAt": "2026-07-26T00:00:00.000Z"
+}

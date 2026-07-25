@@ -346,7 +346,7 @@ function GithubSettingsPage(): React.JSX.Element {
   }
 
   return (
-    <div className="page page-narrow">
+    <div className="page github-settings-page">
       <p className="eyebrow">GitHub connection</p>
       <h1>Connect repository access</h1>
       <p className="lede">
@@ -374,8 +374,19 @@ function GithubSettingsPage(): React.JSX.Element {
         </button>
         {error && <p className="error-message">{error}</p>}
       </section>
-      <section className="panel settings-section">
-        <h2>Selected repositories</h2>
+      <section className="panel settings-section repository-section">
+        <div className="section-heading">
+          <div>
+            <p className="section-kicker">Repository inventory</p>
+            <h2>Selected repositories</h2>
+          </div>
+          {!loading && repositories.length > 0 && (
+            <span className="count-badge">
+              {repositories.length}{' '}
+              {repositories.length === 1 ? 'repository' : 'repositories'}
+            </span>
+          )}
+        </div>
         {loading ? (
           <p>Waiting for repository reconciliation…</p>
         ) : repositories.length === 0 ? (
@@ -386,75 +397,13 @@ function GithubSettingsPage(): React.JSX.Element {
         ) : (
           <div className="repository-list">
             {repositories.map(repository => (
-              <article key={repository.id}>
-                <div>
-                  <strong>{repository.fullName}</strong>
-                  <p>
-                    {repository.visibility} · default branch {repository.defaultBranch}
-                  </p>
-                  {repository.latestScannedCommit && (
-                    <p>
-                      Inventoried commit{' '}
-                      <code>{repository.latestScannedCommit.slice(0, 12)}</code>
-                    </p>
-                  )}
-                  {repository.latestScanStatus &&
-                    repository.latestScanStatus !== 'succeeded' && (
-                      <p>
-                        Scan status: {repository.latestScanStatus}
-                        {repository.latestScanSafeErrorCode
-                          ? ` · ${repository.latestScanSafeErrorCode}`
-                          : ''}
-                      </p>
-                    )}
-                  {(dependencies[repository.id] ?? []).length > 0 && (
-                    <ul className="dependency-list">
-                      {(dependencies[repository.id] ?? [])
-                        .slice(0, 200)
-                        .map(dependency => (
-                          <li
-                            key={`${dependency.manifestPath}:${dependency.packageName}:${dependency.dependencyKind}`}
-                          >
-                            <code>{dependency.packageName}</code>{' '}
-                            {dependency.resolvedVersion ?? dependency.declaredRange}{' '}
-                            <small>({dependency.dependencyKind})</small>
-                          </li>
-                        ))}
-                    </ul>
-                  )}
-                </div>
-                <div className="repository-actions">
-                  <span
-                    className={`status status-${
-                      repository.enabled ? 'active' : 'removed'
-                    }`}
-                  >
-                    {repository.archived
-                      ? 'archived'
-                      : repository.selected
-                        ? 'selected'
-                        : 'removed'}
-                  </span>
-                  <button
-                    className="secondary-button"
-                    type="button"
-                    disabled={
-                      !repository.enabled ||
-                      ['queued', 'running'].includes(
-                        repository.latestScanStatus ?? '',
-                      ) ||
-                      scanningRepositoryId === repository.id
-                    }
-                    onClick={() => void startScan(repository.id)}
-                  >
-                    {['queued', 'running'].includes(
-                      repository.latestScanStatus ?? '',
-                    ) || scanningRepositoryId === repository.id
-                      ? 'Scanning…'
-                      : 'Scan dependencies'}
-                  </button>
-                </div>
-              </article>
+              <RepositoryInventoryCard
+                key={repository.id}
+                repository={repository}
+                dependencies={dependencies[repository.id] ?? []}
+                scanning={scanningRepositoryId === repository.id}
+                onScan={startScan}
+              />
             ))}
           </div>
         )}
@@ -496,6 +445,124 @@ function GithubSettingsPage(): React.JSX.Element {
         </p>
       )}
     </div>
+  );
+}
+
+interface RepositoryInventoryCardProps {
+  readonly repository: PublicRepository;
+  readonly dependencies: PublicDependencyObservation[];
+  readonly scanning: boolean;
+  readonly onScan: (repositoryId: string) => Promise<void>;
+}
+
+function RepositoryInventoryCard({
+  repository,
+  dependencies,
+  scanning,
+  onScan,
+}: RepositoryInventoryCardProps): React.JSX.Element {
+  const scanInProgress = ['queued', 'running'].includes(
+    repository.latestScanStatus ?? '',
+  );
+  const state = repository.archived
+    ? 'archived'
+    : repository.selected
+      ? 'selected'
+      : 'removed';
+  return (
+    <article className="repository-card">
+      <header className="repository-header">
+        <div className="repository-identity">
+          <strong>{repository.fullName}</strong>
+          <div className="repository-metadata">
+            <span>{repository.visibility}</span>
+            <span>
+              Default branch <code>{repository.defaultBranch}</code>
+            </span>
+            {repository.latestScannedCommit && (
+              <span>
+                Commit <code>{repository.latestScannedCommit.slice(0, 12)}</code>
+              </span>
+            )}
+          </div>
+        </div>
+        <div className="repository-actions">
+          <span
+            className={`status status-${repository.enabled ? 'active' : 'removed'}`}
+          >
+            {state}
+          </span>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={!repository.enabled || scanInProgress || scanning}
+            onClick={() => void onScan(repository.id)}
+          >
+            {scanInProgress || scanning ? 'Scanning…' : 'Scan dependencies'}
+          </button>
+        </div>
+      </header>
+      {repository.latestScanStatus && repository.latestScanStatus !== 'succeeded' && (
+        <p
+          className={`scan-notice scan-notice-${repository.latestScanStatus}`}
+          role={repository.latestScanStatus === 'failed' ? 'alert' : undefined}
+        >
+          Scan {repository.latestScanStatus}
+          {repository.latestScanSafeErrorCode
+            ? ` · ${repository.latestScanSafeErrorCode}`
+            : ''}
+        </p>
+      )}
+      {dependencies.length > 0 && (
+        <div className="dependency-inventory">
+          <div className="dependency-heading">
+            <h3>Dependencies</h3>
+            <span>
+              {dependencies.length} {dependencies.length === 1 ? 'package' : 'packages'}
+            </span>
+          </div>
+          <div className="dependency-table" role="table" aria-label="Dependencies">
+            <div className="dependency-table-header" role="row">
+              <span role="columnheader">Package</span>
+              <span role="columnheader">Version</span>
+              <span role="columnheader">Type</span>
+              <span role="columnheader">Source</span>
+            </div>
+            {dependencies.slice(0, 200).map(dependency => (
+              <div
+                className="dependency-row"
+                role="row"
+                key={`${dependency.manifestPath}:${dependency.packageName}:${dependency.dependencyKind}`}
+              >
+                <span className="dependency-package" role="cell" data-label="Package">
+                  <code>{dependency.packageName}</code>
+                </span>
+                <span className="dependency-version" role="cell" data-label="Version">
+                  <strong>
+                    {dependency.resolvedVersion ?? dependency.declaredRange}
+                  </strong>
+                  {dependency.resolvedVersion &&
+                    dependency.resolvedVersion !== dependency.declaredRange && (
+                      <small>Declared {dependency.declaredRange}</small>
+                    )}
+                </span>
+                <span role="cell" data-label="Type">
+                  <span className="dependency-kind">{dependency.dependencyKind}</span>
+                </span>
+                <span className="dependency-source" role="cell" data-label="Source">
+                  <code>{dependency.manifestPath}</code>
+                  <small>
+                    {dependency.lockfilePath
+                      ? `Resolved from ${dependency.lockfilePath}`
+                      : 'Manifest declaration'}
+                  </small>
+                </span>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+    </article>
   );
 }
 

@@ -245,6 +245,112 @@ export interface DependencyObservationTable {
   updatedAt: Timestamp;
 }
 
+export interface VendorTable {
+  id: string;
+  slug: string;
+  name: string;
+  officialDomains: string[];
+  trustState: 'draft' | 'trusted' | 'disabled';
+  synthetic: boolean;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface ApiProductTable {
+  id: string;
+  vendorId: string;
+  ecosystem: 'npm';
+  canonicalIdentifier: string;
+  status: 'active' | 'disabled';
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface VendorSourceTable {
+  id: string;
+  apiProductId: string;
+  sourceKey: string;
+  sourceKind:
+    | 'package_registry_release'
+    | 'migration_guide'
+    | 'changelog'
+    | 'api_definition'
+    | 'sdk_repository_release';
+  canonicalUrl: string;
+  canonicalDomain: string;
+  expectedMediaTypes: string[];
+  trustState: 'draft' | 'trusted' | 'disabled';
+  pollIntervalSeconds: number;
+  lastDigest: string | null;
+  lastEtag: string | null;
+  lastCheckedAt: Timestamp | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface VendorReleaseTable {
+  id: string;
+  apiProductId: string;
+  version: string;
+  revision: number;
+  publishedAt: Timestamp | null;
+  evidenceObjectKey: string | null;
+  evidenceDigest: string | null;
+  sourceDigest: string;
+  processingState: 'registered' | 'fetched' | 'validated' | 'rejected';
+  trustState: 'draft' | 'reviewed' | 'vendor_verified';
+  createdAt: Timestamp;
+}
+
+export interface MigrationSpecificationTable {
+  id: string;
+  vendorReleaseId: string;
+  sourceCompatibility: string;
+  targetVersion: string;
+  schemaVersion: '1.0';
+  specification: unknown;
+  evidenceObjectKey: string;
+  evidenceDigest: string;
+  trustState: 'draft' | 'reviewed' | 'vendor_verified';
+  revision: number;
+  generatedBy: 'change_intelligence_agent' | 'operator';
+  reviewedByUserId: string | null;
+  reviewedAt: Timestamp | null;
+  createdAt: Timestamp;
+}
+
+export interface MigrationCandidateTable {
+  id: string;
+  organisationId: string;
+  repositoryId: string;
+  migrationSpecificationId: string;
+  dependencyObservationId: string;
+  status: 'open' | 'dismissed' | 'superseded' | 'resolved';
+  firstDetectedAt: Timestamp;
+  lastDetectedAt: Timestamp;
+  version: number;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface ImpactReportTable {
+  id: string;
+  candidateId: string;
+  repositoryId: string;
+  repositorySnapshotId: string;
+  impactAgentRunId: string;
+  schemaVersion: '1.0';
+  outcome: 'affected' | 'not_affected' | 'inconclusive';
+  affectedSummary: unknown;
+  riskCategory: 'low' | 'medium' | 'high' | 'unknown';
+  verificationAvailability: unknown;
+  uncertainty: unknown;
+  artifactObjectKey: string;
+  artifactDigest: string;
+  revision: number;
+  createdAt: Timestamp;
+}
+
 export interface Database {
   appUsers: AppUserTable;
   organisations: OrganisationTable;
@@ -263,6 +369,13 @@ export interface Database {
   repositoryScans: RepositoryScanTable;
   repositorySnapshots: RepositorySnapshotTable;
   dependencyObservations: DependencyObservationTable;
+  vendors: VendorTable;
+  apiProducts: ApiProductTable;
+  vendorSources: VendorSourceTable;
+  vendorReleases: VendorReleaseTable;
+  migrationSpecifications: MigrationSpecificationTable;
+  migrationCandidates: MigrationCandidateTable;
+  impactReports: ImpactReportTable;
 }
 
 export type AppDatabase = Kysely<Database>;

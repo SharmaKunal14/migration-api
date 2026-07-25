@@ -39,6 +39,10 @@ export default defineConfig({
         './packages/source-acquisition/src/index.ts',
         import.meta.url,
       ).pathname,
+      '@migration/vendor-intelligence': new URL(
+        './packages/vendor-intelligence/src/index.ts',
+        import.meta.url,
+      ).pathname,
     },
   },
   test: {
@@ -50,6 +54,7 @@ export default defineConfig({
         'packages/domain/src/**/*.ts',
         'packages/repository-inventory/src/**/*.ts',
         'packages/source-acquisition/src/**/*.ts',
+        'packages/vendor-intelligence/src/**/*.ts',
       ],
       provider: 'v8',
       reporter: ['text', 'json-summary'],

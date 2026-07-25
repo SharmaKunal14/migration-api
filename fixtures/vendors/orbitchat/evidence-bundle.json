@@ -1,0 +1,56 @@
+{
+  "schemaVersion": "1.0",
+  "bundleId": "orbitchat-v1-to-v2",
+  "vendorSlug": "orbitchat",
+  "ecosystem": "npm",
+  "productIdentifier": "@orbitchat/sdk",
+  "sourceVersion": "1.0.0",
+  "targetVersion": "2.0.0",
+  "sources": [
+    {
+      "sourceKey": "v1_api",
+      "kind": "api_definition",
+      "canonicalUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v1.0.0/index.d.ts",
+      "contentPath": "v1/api.d.ts",
+      "mediaType": "text/typescript",
+      "digest": "6905c8386ace0ba55f9ee302e27dc39af9fcc2eb2d4a0149756d8f69940b0ae1",
+      "bytes": 388
+    },
+    {
+      "sourceKey": "v2_api",
+      "kind": "api_definition",
+      "canonicalUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/index.d.ts",
+      "contentPath": "v2/api.d.ts",
+      "mediaType": "text/typescript",
+      "digest": "f7e6084a04fc4b1f1856677eabab7a6674f606ef45b37d81df9c732429e40d10",
+      "bytes": 432
+    },
+    {
+      "sourceKey": "release_metadata",
+      "kind": "package_registry_release",
+      "canonicalUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/release.json",
+      "contentPath": "v2/release.json",
+      "mediaType": "application/json",
+      "digest": "d1fc588a622adf5f6d7ef73aa8774612da35c952872bb7af9fe229bd23c28983",
+      "bytes": 800
+    },
+    {
+      "sourceKey": "changelog",
+      "kind": "changelog",
+      "canonicalUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/CHANGELOG.md",
+      "contentPath": "v2/changelog.md",
+      "mediaType": "text/markdown",
+      "digest": "815851a3d6535a1ef901f59244a07156a69b0a638f55e55d78977e3913e0024d",
+      "bytes": 632
+    },
+    {
+      "sourceKey": "migration_guide",
+      "kind": "migration_guide",
+      "canonicalUrl": "https://raw.githubusercontent.com/SharmaKunal14/orbitchat-sdk/v2.0.0/MIGRATION.md",
+      "contentPath": "v2/migration-guide.md",
+      "mediaType": "text/markdown",
+      "digest": "f760a6763f09a34d876258d26060e219e3e9badf693bfe6a5147ecd5b0d42f4e",
+      "bytes": 778
+    }
+  ]
+}

@@ -1,0 +1,105 @@
+{
+  "schemaVersion": "1.0",
+  "candidateId": "40ade5b7-e4c9-438f-90a2-4a1fb93c8124",
+  "repository": {
+    "repositoryId": "be48f45e-48ae-44cd-b686-ed3d0cfc2f25",
+    "snapshotId": "518b2487-a823-4ed0-8222-8c908f622da0",
+    "commitSha": "b6602d33d9dbf9b31a7ba73112b690126149aea4",
+    "snapshotDigest": "72b89932fdd26cf338684c057c3ae3e66ac7c8c8ab4726885872cdad42e82319"
+  },
+  "outcome": "affected",
+  "affectedFiles": [
+    {
+      "path": "package.json",
+      "classification": "dependency_manifest",
+      "symbols": ["@orbitchat/sdk"],
+      "expectedChanges": ["Update @orbitchat/sdk from 1.x compatibility to 2.0.0."],
+      "retrievalReason": "The dependency observation was discovered in this manifest."
+    },
+    {
+      "path": "package-lock.json",
+      "classification": "lockfile",
+      "symbols": ["@orbitchat/sdk"],
+      "expectedChanges": [
+        "Update the exact dependency resolution when lockfile support is available."
+      ],
+      "retrievalReason": "The dependency observation was resolved from this lockfile."
+    },
+    {
+      "path": "src/integrations/orbitchat-client.ts",
+      "classification": "direct_usage",
+      "symbols": ["sendOrbitMessage", "messages.send"],
+      "expectedChanges": [
+        "Use messages.create and map request and response fields while preserving the wrapper contract."
+      ],
+      "retrievalReason": "The file imports @orbitchat/sdk and calls a changed vendor symbol."
+    },
+    {
+      "path": "src/features/escalations/create-escalation.ts",
+      "classification": "direct_usage",
+      "symbols": ["messages.send", "message_id"],
+      "expectedChanges": ["Use the v2 request shape and read the id response field."],
+      "retrievalReason": "The file directly calls a changed vendor symbol and reads a changed response field."
+    },
+    {
+      "path": "src/features/digest/send-digest.ts",
+      "classification": "indirect_usage",
+      "symbols": ["sendOrbitMessage"],
+      "expectedChanges": [],
+      "retrievalReason": "The file calls the affected wrapper, whose public contract is expected to remain stable."
+    },
+    {
+      "path": "test/orbitchat-client.test.ts",
+      "classification": "test",
+      "symbols": ["sendOrbitMessage"],
+      "expectedChanges": [
+        "Cover explicit true, explicit false, and omitted notification behavior."
+      ],
+      "retrievalReason": "The test exercises the directly affected OrbitChat wrapper."
+    },
+    {
+      "path": "test/create-escalation.test.ts",
+      "classification": "test",
+      "symbols": ["createEscalation"],
+      "expectedChanges": ["Update the expected v2 request and response shape."],
+      "retrievalReason": "The test exercises a directly affected OrbitChat call."
+    }
+  ],
+  "unaffectedFiles": [
+    {
+      "path": "src/mail/email-client.ts",
+      "reason": "Its messages.send symbol belongs to the unrelated email client."
+    },
+    {
+      "path": "src/security/prompt-injection-fixture.ts",
+      "reason": "Repository instructions are untrusted data and cannot expand analysis authority."
+    },
+    {
+      "path": "test/email-client.test.ts",
+      "reason": "It covers the unrelated email client and must remain unchanged."
+    }
+  ],
+  "verification": {
+    "profiles": [
+      {
+        "profile": "typescript_static",
+        "availability": "available",
+        "reason": "The repository declares a TypeScript configuration."
+      },
+      {
+        "profile": "typescript_unit",
+        "availability": "available",
+        "reason": "The repository declares bounded unit tests, but Stage 3 will not execute them."
+      }
+    ]
+  },
+  "risk": "medium",
+  "uncertainties": [
+    {
+      "code": "NOTIFICATION_DEFAULT_UNRESOLVED",
+      "summary": "Omitted notification behavior may vary by account policy."
+    }
+  ],
+  "revision": 1,
+  "generatedAt": "2026-07-26T00:00:00.000Z"
+}

@@ -259,6 +259,335 @@ export const migrationPlanSchema = z
     }
   });
 
+const migrationEvidenceReferenceSchema = z
+  .object({
+    evidenceId: z.string().regex(/^C-[0-9]{2,4}$/u),
+    sourceKey: z.string().regex(/^[a-z][a-z0-9_-]{2,63}$/u),
+    sourceUrl: z
+      .url()
+      .max(2_048)
+      .refine(value => value.startsWith('https://'), {
+        message: 'Vendor evidence URLs must use HTTPS.',
+      }),
+    digest: sha256Schema,
+    summary: z.string().min(1).max(1_024),
+  })
+  .strict();
+
+const migrationTransformationSchema = z
+  .object({
+    kind: z.enum([
+      'rename_symbol',
+      'rename_field',
+      'wrap_field',
+      'runtime_requirement',
+      'behavior_review',
+    ]),
+    before: z.string().min(1).max(512),
+    after: z.string().min(1).max(512),
+    condition: z.string().min(1).max(512).nullable(),
+  })
+  .strict();
+
+const migrationSpecificationChangeSchema = z
+  .object({
+    changeId: z.string().regex(/^C-[0-9]{2,4}$/u),
+    category: z.enum(['request', 'response', 'runtime', 'behavior', 'deprecation']),
+    summary: z.string().min(1).max(1_024),
+    certainty: z.enum(['vendor_confirmed', 'ambiguous']),
+    evidenceIds: z
+      .array(z.string().regex(/^C-[0-9]{2,4}$/u))
+      .min(1)
+      .max(50),
+    transformations: z.array(migrationTransformationSchema).max(20),
+  })
+  .strict();
+
+export const migrationSpecificationSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    vendor: z
+      .object({
+        slug: z.string().regex(/^[a-z][a-z0-9-]{1,62}$/u),
+        name: z.string().min(1).max(120),
+      })
+      .strict(),
+    product: z
+      .object({
+        ecosystem: z.enum(['npm']),
+        identifier: z.string().min(1).max(214),
+      })
+      .strict(),
+    sourceCompatibility: z.string().min(1).max(100),
+    targetVersion: z.string().min(1).max(100),
+    changes: z.array(migrationSpecificationChangeSchema).min(1).max(100),
+    evidence: z.array(migrationEvidenceReferenceSchema).min(1).max(100),
+    preconditions: z.array(z.string().min(1).max(512)).max(50),
+    verificationRecommendations: z
+      .array(z.enum(['typescript_static', 'typescript_unit']))
+      .min(1)
+      .max(2),
+    uncertainties: z
+      .array(
+        z
+          .object({
+            code: z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/u),
+            summary: z.string().min(1).max(1_024),
+            evidenceIds: z
+              .array(z.string().regex(/^C-[0-9]{2,4}$/u))
+              .min(1)
+              .max(50),
+          })
+          .strict(),
+      )
+      .max(50),
+    trust: z
+      .object({
+        status: z.enum(['draft', 'reviewed', 'vendor_verified']),
+        generatedBy: z.enum(['change_intelligence_agent', 'operator']),
+        reviewedAt: z.iso.datetime().nullable(),
+      })
+      .strict(),
+    revision: z.number().int().positive(),
+    generatedAt: z.iso.datetime(),
+  })
+  .strict()
+  .superRefine((specification, context) => {
+    const changeIds = specification.changes.map(change => change.changeId);
+    if (new Set(changeIds).size !== changeIds.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Migration change IDs must be unique.',
+        path: ['changes'],
+      });
+    }
+    const evidenceIds = specification.evidence.map(item => item.evidenceId);
+    const knownEvidence = new Set(evidenceIds);
+    if (knownEvidence.size !== evidenceIds.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Migration evidence IDs must be unique.',
+        path: ['evidence'],
+      });
+    }
+    for (const [index, change] of specification.changes.entries()) {
+      for (const evidenceId of change.evidenceIds) {
+        if (!knownEvidence.has(evidenceId)) {
+          context.addIssue({
+            code: 'custom',
+            message: 'A change references unknown evidence.',
+            path: ['changes', index, 'evidenceIds'],
+          });
+        }
+      }
+    }
+    for (const [index, uncertainty] of specification.uncertainties.entries()) {
+      for (const evidenceId of uncertainty.evidenceIds) {
+        if (!knownEvidence.has(evidenceId)) {
+          context.addIssue({
+            code: 'custom',
+            message: 'An uncertainty references unknown evidence.',
+            path: ['uncertainties', index, 'evidenceIds'],
+          });
+        }
+      }
+    }
+    const reviewed = specification.trust.status !== 'draft';
+    if (reviewed !== (specification.trust.reviewedAt !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only reviewed specifications have a review timestamp.',
+        path: ['trust', 'reviewedAt'],
+      });
+    }
+  });
+
+export const vendorEvidenceBundleSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    bundleId: z.string().regex(/^[a-z][a-z0-9-]{2,127}$/u),
+    vendorSlug: z.string().regex(/^[a-z][a-z0-9-]{1,62}$/u),
+    ecosystem: z.enum(['npm']),
+    productIdentifier: z.string().min(1).max(214),
+    sourceVersion: z.string().min(1).max(100),
+    targetVersion: z.string().min(1).max(100),
+    sources: z
+      .array(
+        z
+          .object({
+            sourceKey: z.string().regex(/^[a-z][a-z0-9_-]{2,63}$/u),
+            kind: z.enum([
+              'package_registry_release',
+              'migration_guide',
+              'changelog',
+              'api_definition',
+              'sdk_repository_release',
+            ]),
+            canonicalUrl: z
+              .url()
+              .max(2_048)
+              .refine(value => value.startsWith('https://'), {
+                message: 'Vendor source URLs must use HTTPS.',
+              }),
+            contentPath: z
+              .string()
+              .min(1)
+              .max(1_024)
+              .regex(/^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))[A-Za-z0-9._/-]+$/u),
+            mediaType: z.enum([
+              'application/json',
+              'text/markdown',
+              'text/plain',
+              'text/typescript',
+            ]),
+            digest: sha256Schema,
+            bytes: z
+              .number()
+              .int()
+              .positive()
+              .max(1024 * 1024),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(50),
+  })
+  .strict()
+  .superRefine((bundle, context) => {
+    const keys = bundle.sources.map(source => source.sourceKey);
+    const paths = bundle.sources.map(source => source.contentPath);
+    if (new Set(keys).size !== keys.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Vendor source keys must be unique.',
+        path: ['sources'],
+      });
+    }
+    if (new Set(paths).size !== paths.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Vendor source content paths must be unique.',
+        path: ['sources'],
+      });
+    }
+  });
+
+const repositoryRelativePathSchema = z
+  .string()
+  .min(1)
+  .max(1_024)
+  .regex(/^(?!\/)(?!.*(?:^|\/)\.\.?(?:\/|$))(?!.*\\).+$/u)
+  .refine(
+    value => Array.from(value).every(character => character.charCodeAt(0) >= 32),
+    {
+      message: 'Repository paths cannot contain control characters.',
+    },
+  );
+
+const impactedFileSchema = z
+  .object({
+    path: repositoryRelativePathSchema,
+    classification: z.enum([
+      'dependency_manifest',
+      'lockfile',
+      'direct_usage',
+      'indirect_usage',
+      'test',
+    ]),
+    symbols: z.array(z.string().min(1).max(512)).max(100),
+    expectedChanges: z.array(z.string().min(1).max(1_024)).max(50),
+    retrievalReason: z.string().min(1).max(1_024),
+  })
+  .strict();
+
+export const impactReportSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    candidateId: uuidSchema,
+    repository: z
+      .object({
+        repositoryId: uuidSchema,
+        snapshotId: uuidSchema,
+        commitSha: commitShaSchema,
+        snapshotDigest: sha256Schema,
+      })
+      .strict(),
+    outcome: z.enum(['affected', 'not_affected', 'inconclusive']),
+    affectedFiles: z.array(impactedFileSchema).max(500),
+    unaffectedFiles: z
+      .array(
+        z
+          .object({
+            path: repositoryRelativePathSchema,
+            reason: z.string().min(1).max(1_024),
+          })
+          .strict(),
+      )
+      .max(500),
+    verification: z
+      .object({
+        profiles: z
+          .array(
+            z
+              .object({
+                profile: z.enum(['typescript_static', 'typescript_unit']),
+                availability: z.enum(['available', 'unavailable']),
+                reason: z.string().min(1).max(1_024),
+              })
+              .strict(),
+          )
+          .max(20),
+      })
+      .strict(),
+    risk: z.enum(['low', 'medium', 'high', 'unknown']),
+    uncertainties: z
+      .array(
+        z
+          .object({
+            code: z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/u),
+            summary: z.string().min(1).max(1_024),
+          })
+          .strict(),
+      )
+      .max(100),
+    revision: z.number().int().positive(),
+    generatedAt: z.iso.datetime(),
+  })
+  .strict()
+  .superRefine((report, context) => {
+    const affectedPaths = report.affectedFiles.map(file => file.path);
+    const unaffectedPaths = report.unaffectedFiles.map(file => file.path);
+    if (new Set(affectedPaths).size !== affectedPaths.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Affected file paths must be unique.',
+        path: ['affectedFiles'],
+      });
+    }
+    if (new Set(unaffectedPaths).size !== unaffectedPaths.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Unaffected file paths must be unique.',
+        path: ['unaffectedFiles'],
+      });
+    }
+    const affected = new Set(affectedPaths);
+    if (unaffectedPaths.some(path => affected.has(path))) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A file cannot be both affected and unaffected.',
+        path: ['unaffectedFiles'],
+      });
+    }
+    if (report.outcome === 'affected' && report.affectedFiles.length === 0) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Affected reports must identify at least one affected file.',
+        path: ['affectedFiles'],
+      });
+    }
+  });
+
 export const agentResultEnvelopeSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -336,6 +665,9 @@ export const agentResultEnvelopeSchema = z
 export type DemoRunRequest = z.infer<typeof demoRunRequestSchema>;
 export type WorkflowInput = z.infer<typeof workflowInputSchema>;
 export type MigrationPlan = z.infer<typeof migrationPlanSchema>;
+export type MigrationSpecification = z.infer<typeof migrationSpecificationSchema>;
+export type VendorEvidenceBundle = z.infer<typeof vendorEvidenceBundleSchema>;
+export type ImpactReport = z.infer<typeof impactReportSchema>;
 export type AgentResultEnvelope = z.infer<typeof agentResultEnvelopeSchema>;
 export type RepositoryScanWorkflowInput = z.infer<
   typeof repositoryScanWorkflowInputSchema
