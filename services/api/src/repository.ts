@@ -74,6 +74,8 @@ export interface InstallationLinkStateRecord {
   readonly consumedAt: Date | null;
 }
 
+export const GITHUB_INSTALL_RETURN_PATH = '/settings/github';
+
 export interface ApiRepositoryPort {
   ensureUser(actor: Actor): Promise<string>;
   listOrganisations(userId: string): Promise<OrganisationRecord[]>;
@@ -285,7 +287,7 @@ export class ApiRepository implements ApiRepositoryPort {
           userId,
           expiresAt,
           consumedAt: null,
-          returnPath: `/organisations/${organisationId}/settings/github`,
+          returnPath: GITHUB_INSTALL_RETURN_PATH,
           createdAt: now,
         })
         .executeTakeFirstOrThrow();
