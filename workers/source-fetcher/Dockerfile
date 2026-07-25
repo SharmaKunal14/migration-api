@@ -7,6 +7,8 @@ COPY dist/workers/source-fetcher/main.js ./main.js
 
 RUN mkdir -p /workspace && chown node:node /workspace
 
+VOLUME ["/workspace"]
+
 USER node
 
 ENTRYPOINT ["node", "/app/main.js"]

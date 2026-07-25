@@ -103,8 +103,10 @@ export async function acquireRepository(
   await mkdir(config.WORKSPACE_DIRECTORY, { recursive: true });
   const inputPath = `${config.WORKSPACE_DIRECTORY}/source.tar.gz`;
   const outputPath = `${config.WORKSPACE_DIRECTORY}/snapshot.tar.gz`;
+  let failureStage = 'issue_token';
   try {
     const access = await issueReadToken(config, dependency.lambda);
+    failureStage = 'resolve_commit';
     const commit = await githubJson(
       dependency.fetch,
       `/repositories/${access.githubRepositoryId}/commits/${encodeURIComponent(
@@ -113,6 +115,7 @@ export async function acquireRepository(
       access.token,
       commitResponseSchema,
     );
+    failureStage = 'download_archive';
     await downloadGithubArchive(
       dependency.fetch,
       access.owner,
@@ -121,7 +124,9 @@ export async function acquireRepository(
       access.token,
       inputPath,
     );
+    failureStage = 'normalize_archive';
     const normalized = await normalizeGithubTarball(inputPath, outputPath);
+    failureStage = 'inventory_repository';
     const inventory = inventoryRepository(normalized.inventoryFiles);
     if (inventory.manifests.length === 0) {
       throw new AcquisitionError('MISSING_SUPPORTED_MANIFEST');
@@ -133,6 +138,7 @@ export async function acquireRepository(
       config.REPOSITORY_SCAN_ID,
       commit.sha,
     );
+    failureStage = 'write_snapshot';
     await dependency.s3.send(
       new PutObjectCommand({
         Bucket: config.ARTIFACT_BUCKET,
@@ -149,6 +155,7 @@ export async function acquireRepository(
         },
       }),
     );
+    failureStage = 'validate_result';
     return repositoryAcquisitionResultSchema.parse({
       schemaVersion: '1.0',
       organisationId: config.ORGANISATION_ID,
@@ -170,6 +177,14 @@ export async function acquireRepository(
     });
   } catch (error) {
     const failure = classifyFailure(error);
+    writeLog('warn', {
+      event: 'repository_acquisition_failed',
+      organisationId: config.ORGANISATION_ID,
+      repositoryId: config.REPOSITORY_ID,
+      repositoryScanId: config.REPOSITORY_SCAN_ID,
+      safeErrorCode: failure.safeErrorCode,
+      failureStage,
+    });
     return repositoryAcquisitionResultSchema.parse({
       schemaVersion: '1.0',
       organisationId: config.ORGANISATION_ID,

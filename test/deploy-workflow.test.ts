@@ -9,6 +9,10 @@ const deploymentWorkflow = readFileSync(
   ),
   'utf8',
 );
+const sourceFetcherDockerfile = readFileSync(
+  fileURLToPath(new URL('../workers/source-fetcher/Dockerfile', import.meta.url)),
+  'utf8',
+);
 
 describe('development deployment artifact contract', () => {
   it('packages and verifies every Stage 2 Lambda archive', () => {
@@ -27,5 +31,12 @@ describe('development deployment artifact contract', () => {
     expect(deploymentWorkflow).toContain('migration-api-development-source-fetcher');
     expect(deploymentWorkflow).toContain('TF_VAR_source_fetcher_image_digest');
     expect(deploymentWorkflow).toContain('SOURCE_FETCHER_SCAN_DIGEST');
+  });
+
+  it('preserves non-root ownership on the source-fetcher workspace bind mount', () => {
+    expect(sourceFetcherDockerfile).toContain('RUN mkdir -p /workspace');
+    expect(sourceFetcherDockerfile).toContain('chown node:node /workspace');
+    expect(sourceFetcherDockerfile).toContain('VOLUME ["/workspace"]');
+    expect(sourceFetcherDockerfile).toContain('USER node');
   });
 });
