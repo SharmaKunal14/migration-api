@@ -33,7 +33,11 @@ all application routes to the static application fallback. The browser uses one
 public product origin.
 
 Supabase Auth handles login with PKCE. The browser presents the Supabase access
-token to the API. It does not read or mutate core business tables directly.
+token to the API. The control Lambda verifies the ES256 signature, issuer,
+audience, expiry, and subject against Supabase JWKS before route dispatch. API
+Gateway's built-in HTTP API JWT authorizer is not used because it supports only
+RSA signatures. The browser does not read or mutate core business tables
+directly.
 
 Required controls:
 

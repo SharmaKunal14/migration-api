@@ -282,8 +282,7 @@ flowchart TD
     Edge --> ApiGw["API Gateway"]
     Browser --> Auth["Supabase Auth"]
 
-    ApiGw --> Authorizer["JWT authorizer"]
-    ApiGw --> Api["Control-plane Lambdas"]
+    ApiGw --> Api["Control-plane Lambdas + ES256 JWT verification"]
     ApiGw --> Webhook["Raw GitHub webhook Lambda"]
 
     Api --> DbPool["Supabase transaction pooler"]

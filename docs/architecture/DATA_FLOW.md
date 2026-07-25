@@ -49,7 +49,7 @@ flowchart LR
 
     Browser -->|"F-01 assets/TLS"| CF
     CF -->|"F-02 API request/JWT"| APIGW
-    APIGW --> API
+    APIGW -->|"Bearer token; ES256 verified before dispatch"| API
     GitHub -->|"F-03 signed webhook"| Webhook
     Webhook -->|"bounded envelope"| API
 

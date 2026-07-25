@@ -121,15 +121,18 @@ Cache behavior:
 | Resource                      | Purpose/control                                         |
 | ----------------------------- | ------------------------------------------------------- |
 | API Gateway HTTP API          | `/v1` JSON endpoints                                    |
-| Supabase JWT authorizer       | Signature, issuer, audience, expiry                     |
+| Control Lambda JWT verifier   | Signature, issuer, audience, expiry, subject            |
 | Control Lambda                | `me`, org, demo-run create/read endpoints               |
 | Outbox dispatcher Lambda      | Claims outbox rows and starts named Standard executions |
 | EventBridge Scheduler         | Bounded outbox dispatch cadence                         |
 | Lambda security group/subnets | Fixed egress to Supabase pooler                         |
 | Lambda log groups             | Structured redacted logs with explicit retention        |
 
-If HTTP API cannot enforce a required authorizer or payload behavior, record an
-ADR before switching to REST API. Do not mix both casually.
+API Gateway's built-in HTTP API JWT authorizer supports only RSA signatures.
+Supabase issues ES256 access tokens, so the control Lambda verifies every bearer
+token against the configured JWKS before dispatching a route or accessing
+application state. Do not weaken the Supabase signing algorithm to accommodate
+the gateway limitation.
 
 ### 5.3 Workflow and execution
 
@@ -401,7 +404,7 @@ Structured correlation:
 Metrics:
 
 - API latency/errors/throttles;
-- authorizer failures;
+- JWT verification failures;
 - database connection/query failures;
 - outbox age and attempts;
 - workflow success/failure/timeout;

@@ -5,18 +5,6 @@ resource "aws_apigatewayv2_api" "control" {
   disable_execute_api_endpoint = false
 }
 
-resource "aws_apigatewayv2_authorizer" "supabase" {
-  api_id           = aws_apigatewayv2_api.control.id
-  authorizer_type  = "JWT"
-  identity_sources = ["$request.header.Authorization"]
-  name             = "supabase-jwt"
-
-  jwt_configuration {
-    audience = [var.supabase_jwt_audience]
-    issuer   = var.supabase_jwt_issuer
-  }
-}
-
 resource "aws_apigatewayv2_integration" "api" {
   api_id                 = aws_apigatewayv2_api.control.id
   integration_type       = "AWS_PROXY"
@@ -26,19 +14,19 @@ resource "aws_apigatewayv2_integration" "api" {
 }
 
 resource "aws_apigatewayv2_route" "me" {
+  # API Gateway JWT authorizers accept only RSA signatures. The Lambda verifies
+  # Supabase ES256 tokens before dispatching any route operation.
   api_id             = aws_apigatewayv2_api.control.id
   route_key          = "ANY /v1/me"
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"
-  authorization_type = "JWT"
-  authorizer_id      = aws_apigatewayv2_authorizer.supabase.id
+  authorization_type = "NONE"
 }
 
 resource "aws_apigatewayv2_route" "v1" {
   api_id             = aws_apigatewayv2_api.control.id
   route_key          = "ANY /v1/{proxy+}"
   target             = "integrations/${aws_apigatewayv2_integration.api.id}"
-  authorization_type = "JWT"
-  authorizer_id      = aws_apigatewayv2_authorizer.supabase.id
+  authorization_type = "NONE"
 }
 
 resource "aws_cloudwatch_log_group" "api_access" {
