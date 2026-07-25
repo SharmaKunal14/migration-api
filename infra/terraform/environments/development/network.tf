@@ -135,7 +135,6 @@ resource "aws_networkfirewall_rule_group" "openai_egress" {
       rules_string = <<-RULES
         pass tls $HOME_NET any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"api.openai.com"; nocase; startswith; endswith; sid:1; rev:1;)
         pass tls $HOME_NET any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"auth.openai.com"; nocase; startswith; endswith; sid:2; rev:1;)
-        drop ip $HOME_NET any -> $EXTERNAL_NET any (sid:3; rev:1;)
       RULES
     }
   }

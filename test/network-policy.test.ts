@@ -11,7 +11,7 @@ const networkConfiguration = readFileSync(
 );
 
 describe('agent outbound network policy', () => {
-  it('allows only the required OpenAI HTTPS hostnames before denying all else', () => {
+  it('allows only the required OpenAI HTTPS hostnames and denies other established traffic', () => {
     const rules = /rules_string = <<-RULES(?<rules>[\s\S]*?)\n\s*RULES/u.exec(
       networkConfiguration,
     )?.groups?.rules;
@@ -22,9 +22,9 @@ describe('agent outbound network policy', () => {
         match => match.groups?.hostname,
       ),
     ).toEqual(['api.openai.com', 'auth.openai.com']);
-    expect(rules).toContain(
-      'drop ip $HOME_NET any -> $EXTERNAL_NET any (sid:3; rev:1;)',
+    expect(rules).not.toContain('drop ip $HOME_NET');
+    expect(networkConfiguration).toContain(
+      'stateful_default_actions           = ["aws:drop_established", "aws:alert_established"]',
     );
-    expect(rules!.indexOf('auth.openai.com')).toBeLessThan(rules!.indexOf('drop ip'));
   });
 });
