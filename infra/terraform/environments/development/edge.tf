@@ -5,6 +5,21 @@ resource "aws_apigatewayv2_api" "control" {
   disable_execute_api_endpoint = false
 }
 
+# Transitional resource: keep the legacy RSA-only authorizer until a deployment
+# has detached both routes. Remove it in the next reviewed deployment after the
+# live routes report authorizationType NONE and no AuthorizerId.
+resource "aws_apigatewayv2_authorizer" "supabase" {
+  api_id           = aws_apigatewayv2_api.control.id
+  authorizer_type  = "JWT"
+  identity_sources = ["$request.header.Authorization"]
+  name             = "supabase-jwt"
+
+  jwt_configuration {
+    audience = [var.supabase_jwt_audience]
+    issuer   = var.supabase_jwt_issuer
+  }
+}
+
 resource "aws_apigatewayv2_integration" "api" {
   api_id                 = aws_apigatewayv2_api.control.id
   integration_type       = "AWS_PROXY"
