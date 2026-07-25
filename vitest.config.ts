@@ -7,6 +7,10 @@ export default defineConfig({
         './packages/authorization/src/index.ts',
         import.meta.url,
       ).pathname,
+      '@migration/agent-tools': new URL(
+        './packages/agent-tools/src/index.ts',
+        import.meta.url,
+      ).pathname,
       '@migration/config': new URL('./packages/config/src/index.ts', import.meta.url)
         .pathname,
       '@migration/contracts': new URL(
