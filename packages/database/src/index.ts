@@ -81,7 +81,7 @@ export interface ArtifactTable {
   artifactType: 'vendor_evidence' | 'agent_action' | 'final_result';
   objectKey: string;
   digest: string;
-  bytes: number;
+  bytes: ColumnType<string, number, never>;
   mediaType: string;
   createdAt: Timestamp;
   expiresAt: Timestamp | null;

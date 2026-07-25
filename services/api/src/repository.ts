@@ -23,7 +23,7 @@ export interface AgentRunRecord {
   readonly resultArtifactId: string | null;
   readonly resultObjectKey: string | null;
   readonly resultDigest: string | null;
-  readonly resultBytes: number | null;
+  readonly resultBytes: string | null;
   readonly version: number;
   readonly createdAt: Date;
   readonly startedAt: Date | null;

@@ -12,6 +12,7 @@ import {
 import {
   agentResultEnvelopeSchema,
   demoRunRequestSchema,
+  type MigrationPlan,
   type PublicAgentRun,
 } from '@migration/contracts';
 import { apiConfigSchema, parseConfig, type ApiConfig } from '@migration/config';
@@ -153,6 +154,12 @@ export async function handleRequest(
       durationMs: Date.now() - started,
       safeErrorCode: code,
       outcome: String(status),
+      ...(error instanceof ResultArtifactError
+        ? {
+            errorClass: 'ResultArtifactError',
+            failureStage: 'result_artifact_validation',
+          }
+        : {}),
     });
     return withRequestId(
       json(status, {
@@ -181,9 +188,6 @@ async function publicRun(
     run.resultDigest &&
     run.resultBytes !== null
   ) {
-    if (run.resultBytes > MAX_RESULT_BYTES) {
-      throw new Error('Result artifact exceeds the configured display limit.');
-    }
     const response = await dependency.s3.send(
       new GetObjectCommand({
         Bucket: dependency.config.ARTIFACT_BUCKET,
@@ -191,23 +195,15 @@ async function publicRun(
       }),
     );
     const bytes = await response.Body?.transformToByteArray();
-    if (bytes?.byteLength !== run.resultBytes) {
-      throw new Error('Result artifact size validation failed.');
-    }
-    const digest = createHash('sha256').update(bytes).digest('hex');
-    if (digest !== run.resultDigest) {
-      throw new Error('Result artifact digest validation failed.');
-    }
-    const envelope = agentResultEnvelopeSchema.parse(
-      JSON.parse(Buffer.from(bytes).toString('utf8')),
+    result = validateResultArtifact(
+      {
+        id: run.id,
+        organisationId: run.organisationId,
+        resultBytes: run.resultBytes,
+        resultDigest: run.resultDigest,
+      },
+      bytes,
     );
-    if (
-      envelope.organisationId !== run.organisationId ||
-      envelope.agentRunId !== run.id
-    ) {
-      throw new Error('Result artifact ownership validation failed.');
-    }
-    result = envelope.result;
   }
   return {
     id: run.id,
@@ -222,6 +218,79 @@ async function publicRun(
     startedAt: run.startedAt?.toISOString() ?? null,
     completedAt: run.completedAt?.toISOString() ?? null,
   };
+}
+
+type ResultArtifactFailureCode =
+  | 'RESULT_ARTIFACT_METADATA_INVALID'
+  | 'RESULT_ARTIFACT_TOO_LARGE'
+  | 'RESULT_ARTIFACT_READ_FAILED'
+  | 'RESULT_ARTIFACT_SIZE_MISMATCH'
+  | 'RESULT_ARTIFACT_DIGEST_MISMATCH'
+  | 'RESULT_ARTIFACT_SCHEMA_INVALID'
+  | 'RESULT_ARTIFACT_OWNERSHIP_MISMATCH';
+
+class ResultArtifactError extends Error {
+  public constructor(public readonly safeCode: ResultArtifactFailureCode) {
+    super('The result artifact failed validation.');
+    this.name = 'ResultArtifactError';
+  }
+}
+
+interface ResultArtifactMetadata {
+  readonly id: string;
+  readonly organisationId: string;
+  readonly resultBytes: string;
+  readonly resultDigest: string;
+}
+
+export function validateResultArtifact(
+  run: ResultArtifactMetadata,
+  bytes: Uint8Array | undefined,
+): MigrationPlan {
+  const expectedBytes = parseResultArtifactBytes(run.resultBytes);
+  if (!bytes) {
+    throw new ResultArtifactError('RESULT_ARTIFACT_READ_FAILED');
+  }
+  if (bytes.byteLength !== expectedBytes) {
+    throw new ResultArtifactError('RESULT_ARTIFACT_SIZE_MISMATCH');
+  }
+  const digest = createHash('sha256').update(bytes).digest('hex');
+  if (digest !== run.resultDigest) {
+    throw new ResultArtifactError('RESULT_ARTIFACT_DIGEST_MISMATCH');
+  }
+
+  let envelope;
+  try {
+    envelope = agentResultEnvelopeSchema.parse(
+      JSON.parse(Buffer.from(bytes).toString('utf8')),
+    );
+  } catch {
+    throw new ResultArtifactError('RESULT_ARTIFACT_SCHEMA_INVALID');
+  }
+  if (
+    envelope.organisationId !== run.organisationId ||
+    envelope.agentRunId !== run.id
+  ) {
+    throw new ResultArtifactError('RESULT_ARTIFACT_OWNERSHIP_MISMATCH');
+  }
+  if (!envelope.result) {
+    throw new ResultArtifactError('RESULT_ARTIFACT_SCHEMA_INVALID');
+  }
+  return envelope.result;
+}
+
+function parseResultArtifactBytes(value: string): number {
+  if (!/^(0|[1-9][0-9]*)$/u.test(value)) {
+    throw new ResultArtifactError('RESULT_ARTIFACT_METADATA_INVALID');
+  }
+  const parsed = Number(value);
+  if (!Number.isSafeInteger(parsed)) {
+    throw new ResultArtifactError('RESULT_ARTIFACT_METADATA_INVALID');
+  }
+  if (parsed < 1 || parsed > MAX_RESULT_BYTES) {
+    throw new ResultArtifactError('RESULT_ARTIFACT_TOO_LARGE');
+  }
+  return parsed;
 }
 
 function parseBody(event: APIGatewayProxyEventV2): unknown {
