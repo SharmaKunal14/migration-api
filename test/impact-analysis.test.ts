@@ -13,10 +13,12 @@ import {
   impactReportSchema,
 } from '@migration/contracts';
 
+import { classifyImpactAnalysisFailure } from '../workers/impact-analysis-agent/src/failure.js';
 import {
   RepositoryToolError,
   RepositoryTools,
 } from '../workers/impact-analysis-agent/src/tools.js';
+import { OAuthError } from 'openai';
 
 const snapshotKey =
   'env/development/org/fb88f567-56f6-4151-8a42-c84981f49ec6/' +
@@ -111,6 +113,39 @@ describe('Stage 3E impact-analysis boundary', () => {
     expect(() =>
       valid.execute('read_repository_file', '{"path":"../secret"}', 1),
     ).toThrow(RepositoryToolError);
+  });
+
+  it('classifies identity and snapshot failures without exposing details', () => {
+    const sensitiveDescription = 'mapping rejected sensitive-value';
+    const identityFailure = classifyImpactAnalysisFailure(
+      new OAuthError(
+        401,
+        {
+          error: 'invalid_subject_token',
+          error_description: sensitiveDescription,
+        },
+        new Headers({ 'x-request-id': 'req_impact_123' }),
+      ),
+    );
+
+    expect(identityFailure).toEqual({
+      safeErrorCode: 'MODEL_IDENTITY_EXCHANGE_FAILED',
+      errorClass: 'OAuthError',
+      failureStage: 'openai_token_exchange',
+      httpStatus: 401,
+      upstreamErrorCode: 'invalid_subject_token',
+      upstreamRequestId: 'req_impact_123',
+    });
+    expect(JSON.stringify(identityFailure)).not.toContain(sensitiveDescription);
+    expect(
+      classifyImpactAnalysisFailure(
+        new RepositoryToolError('SNAPSHOT_DIGEST_MISMATCH'),
+      ),
+    ).toEqual({
+      safeErrorCode: 'SNAPSHOT_DIGEST_MISMATCH',
+      errorClass: 'RepositoryToolError',
+      failureStage: 'repository_snapshot',
+    });
   });
 
   it('requires successful results to remain snapshot-bound', () => {

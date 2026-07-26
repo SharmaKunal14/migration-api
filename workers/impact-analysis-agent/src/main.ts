@@ -11,6 +11,10 @@ import {
 import { impactAnalysisAgentConfigSchema, parseConfig } from '@migration/config';
 import { writeLog } from '@migration/observability';
 
+import {
+  classifyImpactAnalysisFailure,
+  type ImpactFailureClassification,
+} from './failure.js';
 import { ImpactAnalysisGateway } from './gateway.js';
 import { ImpactAnalysisKernel } from './kernel.js';
 import { RepositoryTools } from './tools.js';
@@ -35,6 +39,7 @@ async function main(): Promise<void> {
     throw new Error('The impact-analysis input ownership is invalid.');
   }
   let result: ImpactAnalysisResult;
+  let failure: ImpactFailureClassification | undefined;
   try {
     const tools = new RepositoryTools(
       s3,
@@ -52,8 +57,14 @@ async function main(): Promise<void> {
       input,
     });
     result = await new ImpactAnalysisKernel(gateway, tools).run(input);
-  } catch {
-    result = failedResult(input, config.OPENAI_MODEL, Date.now() - startedAt);
+  } catch (error) {
+    failure = classifyImpactAnalysisFailure(error);
+    result = failedResult(
+      input,
+      config.OPENAI_MODEL,
+      Date.now() - startedAt,
+      failure.safeErrorCode,
+    );
   }
   const body = JSON.stringify(impactAnalysisResultSchema.parse(result));
   await s3.send(
@@ -78,6 +89,7 @@ async function main(): Promise<void> {
     outcome: result.status,
     safeErrorCode: result.safeErrorCode ?? undefined,
     durationMs: result.usage.durationMs,
+    ...(failure ?? {}),
   });
 }
 
@@ -109,6 +121,7 @@ function failedResult(
   input: ImpactAnalysisInputArtifact,
   model: string,
   durationMs: number,
+  safeErrorCode: string,
 ): ImpactAnalysisResult {
   return {
     schemaVersion: '1.0',
@@ -117,7 +130,7 @@ function failedResult(
     repositorySnapshotId: input.repositorySnapshotId,
     snapshotDigest: input.snapshotDigest,
     status: 'failed',
-    safeErrorCode: 'IMPACT_ANALYSIS_AGENT_FAILED',
+    safeErrorCode,
     model: { requestedModel: model, returnedModel: model, requestId: null },
     usage: {
       modelCalls: 0,
