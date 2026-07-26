@@ -213,6 +213,12 @@ describe('Stage 3E impact-analysis boundary', () => {
       report: fixture,
     };
     expect(impactAnalysisResultSchema.parse(envelope)).toBeDefined();
+    expect(
+      impactAnalysisResultSchema.parse({
+        ...envelope,
+        usage: { ...envelope.usage, modelCalls: 5 },
+      }),
+    ).toBeDefined();
     expect(() =>
       impactAnalysisResultSchema.parse({
         ...envelope,
@@ -242,6 +248,26 @@ describe('Stage 3E impact-analysis boundary', () => {
     expect(migration).toContain('snapshot.expires_at > statement_timestamp()');
     expect(migration).toContain('unique (');
     expect(migration).toContain('snapshot_digest');
+  });
+
+  it('reserves a fifth bounded model turn for report synthesis', () => {
+    const kernel = readFileSync(
+      new URL('../workers/impact-analysis-agent/src/kernel.ts', import.meta.url),
+      'utf8',
+    );
+    const gateway = readFileSync(
+      new URL('../workers/impact-analysis-agent/src/gateway.ts', import.meta.url),
+      'utf8',
+    );
+    const migration = readFileSync(
+      new URL('../supabase/migrations/0009_stage_3e_model_budget.sql', import.meta.url),
+      'utf8',
+    );
+
+    expect(kernel).toContain('maximumModelCalls: 5');
+    expect(kernel).toContain('modelCalls < budgets.maximumModelCalls');
+    expect(gateway).toContain("allowToolCalls ? 'auto' : 'none'");
+    expect(migration).toContain('model_calls between 0 and 5');
   });
 });
 

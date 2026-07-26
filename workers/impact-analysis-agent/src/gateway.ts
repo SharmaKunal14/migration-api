@@ -85,6 +85,7 @@ export class ImpactAnalysisGateway {
   public async runTurn(
     input: ResponseInputItem[],
     maximumOutputTokens: number,
+    allowToolCalls: boolean,
     signal: AbortSignal,
   ): Promise<ImpactModelTurn> {
     const response = await this.client.responses.create(
@@ -105,7 +106,7 @@ export class ImpactAnalysisGateway {
         ].join(' '),
         input,
         tools: [...repositoryTools],
-        tool_choice: 'auto',
+        tool_choice: allowToolCalls ? 'auto' : 'none',
         parallel_tool_calls: true,
         reasoning: { effort: 'medium' },
         text: {

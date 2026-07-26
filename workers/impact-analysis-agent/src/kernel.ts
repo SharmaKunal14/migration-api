@@ -15,7 +15,7 @@ import { RepositoryToolError } from './tools.js';
 import type { RepositoryTools } from './tools.js';
 
 const budgets = {
-  maximumModelCalls: 4,
+  maximumModelCalls: 5,
   maximumToolCalls: 30,
   maximumIterations: 6,
   maximumInputTokens: 100_000,
@@ -55,6 +55,7 @@ export class ImpactAnalysisKernel {
       const turn = await this.gateway.runTurn(
         modelInput,
         remaining,
+        modelCalls < budgets.maximumModelCalls,
         AbortSignal.timeout(Math.max(1, deadline - Date.now())),
       );
       returnedModel = turn.response.model;

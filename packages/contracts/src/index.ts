@@ -895,7 +895,7 @@ export const impactAnalysisResultSchema = z
       .strict(),
     usage: z
       .object({
-        modelCalls: z.number().int().min(0).max(4),
+        modelCalls: z.number().int().min(0).max(5),
         toolCalls: z.number().int().min(0).max(30),
         iterations: z.number().int().min(0).max(6),
         inputTokens: z.number().int().nonnegative().max(100_000),
