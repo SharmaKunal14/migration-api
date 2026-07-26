@@ -70,5 +70,8 @@ describe('development deployment artifact contract', () => {
     );
     expect(deploymentWorkflow).toContain('CHANGE_INTELLIGENCE_AGENT_SCAN_DIGEST');
     expect(changeIntelligenceDockerfile).toContain('USER 10001:10001');
+    expect(changeIntelligenceDockerfile).toContain(
+      'COPY dist/workers/change-intelligence-agent/main.js /app/main.js',
+    );
   });
 });
