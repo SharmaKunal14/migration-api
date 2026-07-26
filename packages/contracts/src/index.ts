@@ -804,6 +804,143 @@ export const impactReportSchema = z
     }
   });
 
+export const impactAnalysisWorkflowInputSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    candidateId: uuidSchema,
+    correlationId: uuidSchema,
+  })
+  .strict();
+
+export const impactAnalysisPreparedInputSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    candidateId: uuidSchema,
+    impactAnalysisRunId: uuidSchema,
+    correlationId: uuidSchema,
+    organisationId: uuidSchema,
+    repositoryId: uuidSchema,
+    repositorySnapshotId: uuidSchema,
+    commitSha: commitShaSchema,
+    snapshotObjectKey: z.string().min(1).max(1_024),
+    snapshotDigest: sha256Schema,
+    migrationSpecificationId: uuidSchema,
+    inputObjectKey: z.string().min(1).max(1_024),
+    inputDigest: sha256Schema,
+    resultObjectKey: z.string().min(1).max(1_024),
+    reportRevision: z.number().int().positive(),
+    alreadySucceeded: z.boolean(),
+  })
+  .strict();
+
+export const impactAnalysisInputArtifactSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    candidateId: uuidSchema,
+    impactAnalysisRunId: uuidSchema,
+    organisationId: uuidSchema,
+    repositoryId: uuidSchema,
+    repositorySnapshotId: uuidSchema,
+    commitSha: commitShaSchema,
+    snapshotObjectKey: z.string().min(1).max(1_024),
+    snapshotDigest: sha256Schema,
+    migrationSpecificationId: uuidSchema,
+    migrationSpecification: migrationSpecificationSchema,
+    reportRevision: z.number().int().positive(),
+  })
+  .strict();
+
+const impactAnalysisActionSchema = z
+  .object({
+    sequence: z.number().int().positive().max(30),
+    toolName: z.enum([
+      'list_repository_files',
+      'read_repository_file',
+      'search_repository',
+      'inspect_manifest',
+      'inspect_typescript',
+    ]),
+    path: repositoryRelativePathSchema.nullable(),
+    status: z.enum(['succeeded', 'rejected']),
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+    inputDigest: sha256Schema,
+    outputDigest: sha256Schema.nullable(),
+  })
+  .strict();
+
+export const impactAnalysisResultSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    candidateId: uuidSchema,
+    impactAnalysisRunId: uuidSchema,
+    repositorySnapshotId: uuidSchema,
+    snapshotDigest: sha256Schema,
+    status: z.enum(['succeeded', 'failed']),
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+    model: z
+      .object({
+        requestedModel: z.string().min(1).max(200),
+        returnedModel: z.string().min(1).max(200),
+        requestId: z
+          .string()
+          .regex(/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u)
+          .nullable(),
+      })
+      .strict(),
+    usage: z
+      .object({
+        modelCalls: z.number().int().min(0).max(4),
+        toolCalls: z.number().int().min(0).max(30),
+        iterations: z.number().int().min(0).max(6),
+        inputTokens: z.number().int().nonnegative().max(100_000),
+        outputTokens: z.number().int().nonnegative().max(16_000),
+        durationMs: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(10 * 60 * 1_000),
+      })
+      .strict(),
+    actions: z.array(impactAnalysisActionSchema).max(30),
+    report: impactReportSchema.nullable(),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    const succeeded = result.status === 'succeeded';
+    if (succeeded !== (result.report !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Successful impact analysis requires an impact report.',
+        path: ['report'],
+      });
+    }
+    if (succeeded === (result.safeErrorCode !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only failed impact analysis requires a safe error code.',
+        path: ['safeErrorCode'],
+      });
+    }
+    if (
+      result.report &&
+      (result.report.candidateId !== result.candidateId ||
+        result.report.repository.snapshotId !== result.repositorySnapshotId ||
+        result.report.repository.snapshotDigest !== result.snapshotDigest)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Impact reports must remain bound to the analysed snapshot.',
+        path: ['report', 'repository'],
+      });
+    }
+  });
+
 export const agentResultEnvelopeSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -884,6 +1021,16 @@ export type MigrationPlan = z.infer<typeof migrationPlanSchema>;
 export type MigrationSpecification = z.infer<typeof migrationSpecificationSchema>;
 export type VendorEvidenceBundle = z.infer<typeof vendorEvidenceBundleSchema>;
 export type ImpactReport = z.infer<typeof impactReportSchema>;
+export type ImpactAnalysisWorkflowInput = z.infer<
+  typeof impactAnalysisWorkflowInputSchema
+>;
+export type ImpactAnalysisPreparedInput = z.infer<
+  typeof impactAnalysisPreparedInputSchema
+>;
+export type ImpactAnalysisInputArtifact = z.infer<
+  typeof impactAnalysisInputArtifactSchema
+>;
+export type ImpactAnalysisResult = z.infer<typeof impactAnalysisResultSchema>;
 export type VendorIngestionWorkflowInput = z.infer<
   typeof vendorIngestionWorkflowInputSchema
 >;

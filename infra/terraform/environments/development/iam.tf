@@ -98,6 +98,21 @@ resource "aws_iam_role" "change_intelligence_task" {
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
 }
 
+resource "aws_iam_role" "impact_analysis_control" {
+  name               = "migration-api-development-impact-analysis-control"
+  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+}
+
+resource "aws_iam_role" "impact_analysis_execution" {
+  name               = "migration-api-development-impact-analysis-execution"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
+resource "aws_iam_role" "impact_analysis_task" {
+  name               = "migration-api-development-impact-analysis-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
 resource "aws_iam_role" "migrator_execution" {
   name               = "migration-api-development-migrator-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
@@ -117,6 +132,7 @@ locals {
     github_reconciler           = aws_iam_role.github_reconciler.id
     repository_scan_control     = aws_iam_role.repository_scan_control.id
     vendor_intelligence_control = aws_iam_role.vendor_intelligence_control.id
+    impact_analysis_control     = aws_iam_role.impact_analysis_control.id
   }
 }
 
@@ -186,6 +202,12 @@ resource "aws_iam_role_policy" "repository_scan_control_database" {
 resource "aws_iam_role_policy" "vendor_intelligence_control_database" {
   name   = "runtime-database"
   role   = aws_iam_role.vendor_intelligence_control.id
+  policy = data.aws_iam_policy_document.database_secret.json
+}
+
+resource "aws_iam_role_policy" "impact_analysis_control_database" {
+  name   = "runtime-database"
+  role   = aws_iam_role.impact_analysis_control.id
   policy = data.aws_iam_policy_document.database_secret.json
 }
 
@@ -509,6 +531,110 @@ resource "aws_iam_role_policy" "change_intelligence_task" {
   name   = "bounded-change-intelligence-runtime"
   role   = aws_iam_role.change_intelligence_task.id
   policy = data.aws_iam_policy_document.change_intelligence_task.json
+}
+
+data "aws_iam_policy_document" "impact_analysis_execution" {
+  statement {
+    sid = "PullImpactAnalysisImage"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer"
+    ]
+    resources = [data.aws_ecr_repository.impact_analysis_agent.arn]
+  }
+
+  statement {
+    sid       = "EcrAuthorization"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "WriteImpactAnalysisLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.impact_analysis_agent.arn}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "impact_analysis_execution" {
+  name   = "impact-analysis-image-and-logs"
+  role   = aws_iam_role.impact_analysis_execution.id
+  policy = data.aws_iam_policy_document.impact_analysis_execution.json
+}
+
+data "aws_iam_policy_document" "impact_analysis_task" {
+  statement {
+    sid       = "ReadExactRepositorySnapshots"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/org/*/repository/*/scan/*/snapshot/*"]
+  }
+
+  statement {
+    sid       = "ReadInputsWriteResults"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/impact-analysis/*"]
+  }
+
+  statement {
+    sid = "ArtifactEncryption"
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:GenerateDataKey"
+    ]
+    resources = [aws_kms_key.artifacts.arn]
+  }
+
+  # STS GetWebIdentityToken cannot be resource-scoped. Audience and duration
+  # conditions constrain the otherwise unavoidable wildcard.
+  statement {
+    sid       = "OpenAiWorkloadIdentity"
+    actions   = ["sts:GetWebIdentityToken"]
+    resources = ["*"]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "sts:IdentityTokenAudience"
+      values   = ["https://api.openai.com/v1"]
+    }
+
+    condition {
+      test     = "NumericLessThanEquals"
+      variable = "sts:DurationSeconds"
+      values   = ["300"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "impact_analysis_task" {
+  name   = "bounded-impact-analysis-runtime"
+  role   = aws_iam_role.impact_analysis_task.id
+  policy = data.aws_iam_policy_document.impact_analysis_task.json
+}
+
+data "aws_iam_policy_document" "impact_analysis_control_artifacts" {
+  statement {
+    sid       = "ReadWriteImpactAnalysisArtifacts"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/impact-analysis/*"]
+  }
+
+  statement {
+    sid = "ImpactAnalysisArtifactEncryption"
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:GenerateDataKey"
+    ]
+    resources = [aws_kms_key.artifacts.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "impact_analysis_control_artifacts" {
+  name   = "impact-analysis-artifacts"
+  role   = aws_iam_role.impact_analysis_control.id
+  policy = data.aws_iam_policy_document.impact_analysis_control_artifacts.json
 }
 
 data "aws_iam_policy_document" "vendor_intelligence_control_artifacts" {

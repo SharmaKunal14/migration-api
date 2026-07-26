@@ -21,3 +21,7 @@ output "vendor_fetcher_ecr_repository_url" {
 output "change_intelligence_agent_ecr_repository_url" {
   value = aws_ecr_repository.change_intelligence_agent.repository_url
 }
+
+output "impact_analysis_agent_ecr_repository_url" {
+  value = aws_ecr_repository.impact_analysis_agent.repository_url
+}

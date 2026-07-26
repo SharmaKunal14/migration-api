@@ -10,6 +10,7 @@ const serviceBundles = [
   'dist/services/github-reconciler.js',
   'dist/services/repository-scan-control.js',
   'dist/services/vendor-intelligence-control.js',
+  'dist/services/impact-analysis-control.js',
 ];
 const workerBundles = [
   'dist/workers/agent/main.js',
@@ -17,6 +18,7 @@ const workerBundles = [
   'dist/workers/vendor-fetcher/main.js',
   'dist/workers/source-fetcher/main.js',
   'dist/workers/change-intelligence-agent/main.js',
+  'dist/workers/impact-analysis-agent/main.js',
 ];
 
 for (const bundle of serviceBundles) {

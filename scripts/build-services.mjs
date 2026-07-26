@@ -4,7 +4,7 @@ import { build } from 'esbuild';
 
 const common = {
   banner: {
-    js: "import { createRequire } from 'node:module'; const require = createRequire(import.meta.url);",
+    js: "import { createRequire } from 'node:module'; import { fileURLToPath } from 'node:url'; import { dirname } from 'node:path'; const require = createRequire(import.meta.url); const __filename = fileURLToPath(import.meta.url); const __dirname = dirname(__filename);",
   },
   bundle: true,
   format: 'esm',
@@ -22,6 +22,7 @@ await mkdir('dist/workers/database-migrator', { recursive: true });
 await mkdir('dist/workers/source-fetcher', { recursive: true });
 await mkdir('dist/workers/vendor-fetcher', { recursive: true });
 await mkdir('dist/workers/change-intelligence-agent', { recursive: true });
+await mkdir('dist/workers/impact-analysis-agent', { recursive: true });
 
 await Promise.all([
   build({
@@ -66,6 +67,11 @@ await Promise.all([
   }),
   build({
     ...common,
+    entryPoints: ['services/impact-analysis-control/src/handler.ts'],
+    outfile: 'dist/services/impact-analysis-control.js',
+  }),
+  build({
+    ...common,
     entryPoints: ['workers/agent/src/main.ts'],
     outfile: 'dist/workers/agent/main.js',
   }),
@@ -88,5 +94,10 @@ await Promise.all([
     ...common,
     entryPoints: ['workers/change-intelligence-agent/src/main.ts'],
     outfile: 'dist/workers/change-intelligence-agent/main.js',
+  }),
+  build({
+    ...common,
+    entryPoints: ['workers/impact-analysis-agent/src/main.ts'],
+    outfile: 'dist/workers/impact-analysis-agent/main.js',
   }),
 ]);

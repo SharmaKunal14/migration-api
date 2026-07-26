@@ -275,6 +275,7 @@ begin
     and observation.package_name = product_identifier
     and snapshot.repository_id = p_repository_id
     and snapshot.status = 'available'
+    and snapshot.expires_at > p_detected_at
     and repository.selected
     and repository.enabled
     and not repository.archived

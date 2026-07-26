@@ -185,3 +185,23 @@ variable "change_intelligence_openai_service_account_id" {
   description = "Dedicated OpenAI service account ID for change intelligence; not a secret."
   type        = string
 }
+
+variable "impact_analysis_agent_image_digest" {
+  description = "Immutable sha256 digest of the reviewed impact-analysis agent image."
+  type        = string
+
+  validation {
+    condition     = can(regex("^sha256:[a-f0-9]{64}$", var.impact_analysis_agent_image_digest))
+    error_message = "impact_analysis_agent_image_digest must be an immutable sha256 digest."
+  }
+}
+
+variable "impact_analysis_openai_identity_provider_id" {
+  description = "Dedicated OpenAI WIF provider ID for the impact-analysis workload."
+  type        = string
+}
+
+variable "impact_analysis_openai_service_account_id" {
+  description = "Dedicated OpenAI service account ID for impact analysis; not a secret."
+  type        = string
+}

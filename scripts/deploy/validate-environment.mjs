@@ -21,6 +21,8 @@ const requiredVariables = [
   'TF_VAR_openai_service_account_id',
   'TF_VAR_change_intelligence_openai_identity_provider_id',
   'TF_VAR_change_intelligence_openai_service_account_id',
+  'TF_VAR_impact_analysis_openai_identity_provider_id',
+  'TF_VAR_impact_analysis_openai_service_account_id',
   'TF_VAR_owner',
   'TF_VAR_product_domain',
   'TF_VAR_supabase_jwks_url',

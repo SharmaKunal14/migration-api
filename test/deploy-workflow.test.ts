@@ -23,6 +23,12 @@ const changeIntelligenceDockerfile = readFileSync(
   ),
   'utf8',
 );
+const impactAnalysisDockerfile = readFileSync(
+  fileURLToPath(
+    new URL('../workers/impact-analysis-agent/Dockerfile', import.meta.url),
+  ),
+  'utf8',
+);
 
 describe('development deployment artifact contract', () => {
   it('packages and verifies every Stage 2 Lambda archive', () => {
@@ -72,6 +78,19 @@ describe('development deployment artifact contract', () => {
     expect(changeIntelligenceDockerfile).toContain('USER 10001:10001');
     expect(changeIntelligenceDockerfile).toContain(
       'COPY dist/workers/change-intelligence-agent/main.js /app/main.js',
+    );
+  });
+
+  it('builds, scans, and deploys the isolated impact-analysis image', () => {
+    expect(deploymentWorkflow).toContain('workers/impact-analysis-agent/Dockerfile');
+    expect(deploymentWorkflow).toContain(
+      'migration-api-development-impact-analysis-agent',
+    );
+    expect(deploymentWorkflow).toContain('TF_VAR_impact_analysis_agent_image_digest');
+    expect(deploymentWorkflow).toContain('IMPACT_ANALYSIS_AGENT_SCAN_DIGEST');
+    expect(impactAnalysisDockerfile).toContain('USER 10001:10001');
+    expect(impactAnalysisDockerfile).toContain(
+      'COPY dist/workers/impact-analysis-agent/main.js /app/main.js',
     );
   });
 });

@@ -370,6 +370,33 @@ export interface ImpactReportTable {
   createdAt: Timestamp;
 }
 
+export interface ImpactAnalysisRunTable {
+  id: string;
+  candidateId: string;
+  repositorySnapshotId: string;
+  migrationSpecificationId: string;
+  snapshotDigest: string;
+  status: 'running' | 'succeeded' | 'failed';
+  attempt: number;
+  safeErrorCode: string | null;
+  correlationId: string;
+  inputObjectKey: string;
+  inputDigest: string;
+  resultObjectKey: string;
+  impactReportId: string | null;
+  requestedModel: string;
+  returnedModel: string | null;
+  openaiRequestId: string | null;
+  modelCalls: number;
+  toolCalls: number;
+  iterations: number;
+  inputTokens: number;
+  outputTokens: number;
+  startedAt: Timestamp;
+  completedAt: Timestamp | null;
+  updatedAt: Timestamp;
+}
+
 export interface VendorIngestionRunTable {
   id: string;
   vendorReleaseId: string;
@@ -446,6 +473,7 @@ export interface Database {
   migrationSpecifications: MigrationSpecificationTable;
   migrationCandidates: MigrationCandidateTable;
   impactReports: ImpactReportTable;
+  impactAnalysisRuns: ImpactAnalysisRunTable;
   vendorIngestionRuns: VendorIngestionRunTable;
   vendorEvidenceItems: VendorEvidenceItemTable;
   changeIntelligenceRuns: ChangeIntelligenceRunTable;

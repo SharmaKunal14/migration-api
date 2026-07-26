@@ -70,6 +70,18 @@ resource "aws_cloudwatch_log_group" "change_intelligence_agent" {
   kms_key_id        = aws_kms_key.logs.arn
 }
 
+resource "aws_cloudwatch_log_group" "impact_analysis_control" {
+  name              = "/aws/lambda/migration-api-development-impact-analysis-control"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
+resource "aws_cloudwatch_log_group" "impact_analysis_agent" {
+  name              = "/migration-api/development/impact-analysis-agent"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
 resource "aws_cloudwatch_log_group" "migrator" {
   name              = "/migration-api/development/database-migrator"
   retention_in_days = 30
@@ -115,6 +127,10 @@ locals {
     vendor_intelligence_control = {
       role = aws_iam_role.vendor_intelligence_control.id
       arn  = aws_cloudwatch_log_group.vendor_intelligence_control.arn
+    }
+    impact_analysis_control = {
+      role = aws_iam_role.impact_analysis_control.id
+      arn  = aws_cloudwatch_log_group.impact_analysis_control.arn
     }
   }
 }
@@ -211,6 +227,16 @@ data "archive_file" "vendor_intelligence_control" {
 
   source {
     content  = file("${var.service_build_directory}/vendor-intelligence-control.js")
+    filename = "index.mjs"
+  }
+}
+
+data "archive_file" "impact_analysis_control" {
+  type        = "zip"
+  output_path = "${path.module}/.terraform/impact-analysis-control.zip"
+
+  source {
+    content  = file("${var.service_build_directory}/impact-analysis-control.js")
     filename = "index.mjs"
   }
 }
@@ -441,6 +467,46 @@ resource "aws_lambda_function" "vendor_intelligence_control" {
     aws_iam_role_policy.vendor_intelligence_control_database,
     aws_iam_role_policy.vendor_intelligence_control_artifacts,
     aws_iam_role_policy.lambda_vpc["vendor_intelligence_control"]
+  ]
+}
+
+resource "aws_lambda_function" "impact_analysis_control" {
+  function_name                  = "migration-api-development-impact-analysis-control"
+  role                           = aws_iam_role.impact_analysis_control.arn
+  handler                        = "index.handler"
+  runtime                        = "nodejs22.x"
+  architectures                  = ["arm64"]
+  filename                       = data.archive_file.impact_analysis_control.output_path
+  source_code_hash               = data.archive_file.impact_analysis_control.output_base64sha256
+  memory_size                    = 512
+  timeout                        = 30
+  reserved_concurrent_executions = 2
+
+  environment {
+    variables = {
+      APP_ENVIRONMENT      = "development"
+      ARTIFACT_BUCKET      = aws_s3_bucket.artifacts.bucket
+      ARTIFACT_KMS_KEY_ARN = aws_kms_key.artifacts.arn
+      DATABASE_SECRET_ARN  = var.database_secret_arn
+      OPENAI_MODEL         = var.openai_model
+      NODE_OPTIONS         = "--enable-source-maps"
+    }
+  }
+
+  vpc_config {
+    security_group_ids = [aws_security_group.control.id]
+    subnet_ids         = [for subnet in aws_subnet.control : subnet.id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.impact_analysis_control,
+    aws_iam_role_policy.impact_analysis_control_database,
+    aws_iam_role_policy.impact_analysis_control_artifacts,
+    aws_iam_role_policy.lambda_vpc["impact_analysis_control"]
   ]
 }
 
@@ -734,6 +800,56 @@ resource "aws_ecs_task_definition" "change_intelligence_agent" {
   ])
 }
 
+resource "aws_ecs_task_definition" "impact_analysis_agent" {
+  family                   = "migration-api-development-impact-analysis-agent"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 1024
+  memory                   = 2048
+  execution_role_arn       = aws_iam_role.impact_analysis_execution.arn
+  task_role_arn            = aws_iam_role.impact_analysis_task.arn
+
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name                   = "impact-analysis-agent"
+      image                  = "${data.aws_ecr_repository.impact_analysis_agent.repository_url}@${var.impact_analysis_agent_image_digest}"
+      essential              = true
+      readonlyRootFilesystem = true
+      user                   = "10001:10001"
+      stopTimeout            = 30
+      linuxParameters = {
+        initProcessEnabled = true
+        capabilities       = { drop = ["ALL"] }
+      }
+      environment = [
+        { name = "APP_ENVIRONMENT", value = "development" },
+        { name = "AWS_REGION", value = var.aws_region },
+        { name = "AWS_STS_REGIONAL_ENDPOINTS", value = "regional" },
+        { name = "ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.bucket },
+        { name = "ARTIFACT_KMS_KEY_ARN", value = aws_kms_key.artifacts.arn },
+        { name = "OPENAI_IDENTITY_PROVIDER_ID", value = var.impact_analysis_openai_identity_provider_id },
+        { name = "OPENAI_SERVICE_ACCOUNT_ID", value = var.impact_analysis_openai_service_account_id },
+        { name = "OPENAI_WIF_AUDIENCE", value = "https://api.openai.com/v1" },
+        { name = "OPENAI_MODEL", value = var.openai_model },
+        { name = "OPENAI_PROJECT_ALIAS", value = "development-impact-analysis" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.impact_analysis_agent.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "impact-analysis"
+        }
+      }
+    }
+  ])
+}
+
 resource "aws_ecs_task_definition" "migrator" {
   family                   = "migration-api-development-database-migrator"
   requires_compatibilities = ["FARGATE"]
@@ -799,7 +915,8 @@ data "aws_iam_policy_document" "step_functions" {
     resources = [
       aws_lambda_function.workflow_control.arn,
       aws_lambda_function.repository_scan_control.arn,
-      aws_lambda_function.vendor_intelligence_control.arn
+      aws_lambda_function.vendor_intelligence_control.arn,
+      aws_lambda_function.impact_analysis_control.arn
     ]
   }
 
@@ -810,7 +927,8 @@ data "aws_iam_policy_document" "step_functions" {
       aws_ecs_task_definition.agent.arn,
       aws_ecs_task_definition.source_fetcher.arn,
       aws_ecs_task_definition.vendor_fetcher.arn,
-      aws_ecs_task_definition.change_intelligence_agent.arn
+      aws_ecs_task_definition.change_intelligence_agent.arn,
+      aws_ecs_task_definition.impact_analysis_agent.arn
     ]
 
     condition {
@@ -837,7 +955,9 @@ data "aws_iam_policy_document" "step_functions" {
       aws_iam_role.vendor_fetcher_execution.arn,
       aws_iam_role.vendor_fetcher_task.arn,
       aws_iam_role.change_intelligence_execution.arn,
-      aws_iam_role.change_intelligence_task.arn
+      aws_iam_role.change_intelligence_task.arn,
+      aws_iam_role.impact_analysis_execution.arn,
+      aws_iam_role.impact_analysis_task.arn
     ]
   }
 
@@ -1283,6 +1403,147 @@ resource "aws_sfn_state_machine" "change_intelligence" {
         Type  = "Fail"
         Error = "ChangeIntelligenceInfrastructureFailed"
         Cause = "The Stage 3C workflow encountered an infrastructure failure."
+      }
+      Complete = {
+        Type = "Succeed"
+      }
+    }
+  })
+}
+
+resource "aws_sfn_state_machine" "impact_analysis" {
+  name     = "migration-api-development-impact-analysis"
+  role_arn = aws_iam_role.step_functions.arn
+  type     = "STANDARD"
+
+  logging_configuration {
+    include_execution_data = false
+    level                  = "ERROR"
+    log_destination        = "${aws_cloudwatch_log_group.workflow.arn}:*"
+  }
+
+  tracing_configuration {
+    enabled = true
+  }
+
+  definition = jsonencode({
+    Comment = "Stage 3E bounded read-only repository impact analysis"
+    StartAt = "PrepareImpactAnalysis"
+    States = {
+      PrepareImpactAnalysis = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.impact_analysis_control.arn
+          Payload = {
+            operation    = "prepare"
+            "workflow.$" = "$"
+          }
+        }
+        OutputPath = "$.Payload"
+        Next       = "AlreadySucceeded"
+      }
+      AlreadySucceeded = {
+        Type = "Choice"
+        Choices = [{
+          Variable      = "$.alreadySucceeded"
+          BooleanEquals = true
+          Next          = "Complete"
+        }]
+        Default = "AnalyseRepository"
+      }
+      AnalyseRepository = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::ecs:runTask.sync"
+        TimeoutSeconds = 600
+        Parameters = {
+          Cluster        = aws_ecs_cluster.agent.arn
+          TaskDefinition = aws_ecs_task_definition.impact_analysis_agent.arn
+          LaunchType     = "FARGATE"
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              AssignPublicIp = "DISABLED"
+              SecurityGroups = [aws_security_group.agent.id]
+              Subnets        = [for subnet in aws_subnet.agent : subnet.id]
+            }
+          }
+          Overrides = {
+            ContainerOverrides = [{
+              Name = "impact-analysis-agent"
+              Environment = [
+                { Name = "CANDIDATE_ID", "Value.$" = "$.candidateId" },
+                { Name = "IMPACT_ANALYSIS_RUN_ID", "Value.$" = "$.impactAnalysisRunId" },
+                { Name = "INPUT_OBJECT_KEY", "Value.$" = "$.inputObjectKey" },
+                { Name = "INPUT_DIGEST", "Value.$" = "$.inputDigest" },
+                { Name = "RESULT_OBJECT_KEY", "Value.$" = "$.resultObjectKey" }
+              ]
+            }]
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["ECS.AmazonECSException", "ECS.ThrottlingException"]
+          IntervalSeconds = 5
+          BackoffRate     = 2
+          MaxAttempts     = 2
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          ResultPath  = null
+          Next        = "MarkInfrastructureFailure"
+        }]
+        Next = "FinalizeImpactAnalysis"
+      }
+      FinalizeImpactAnalysis = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.impact_analysis_control.arn
+          Payload = {
+            operation    = "finalize"
+            "workflow.$" = "$"
+          }
+        }
+        OutputPath = "$.Payload"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          ResultPath  = null
+          Next        = "MarkInfrastructureFailure"
+        }]
+        Next = "EvaluateOutcome"
+      }
+      EvaluateOutcome = {
+        Type = "Choice"
+        Choices = [{
+          Variable     = "$.status"
+          StringEquals = "succeeded"
+          Next         = "Complete"
+        }]
+        Default = "ImpactAnalysisFailed"
+      }
+      MarkInfrastructureFailure = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.impact_analysis_control.arn
+          Payload = {
+            operation     = "mark_failed"
+            "workflow.$"  = "$"
+            safeErrorCode = "IMPACT_ANALYSIS_INFRASTRUCTURE_FAILED"
+          }
+        }
+        OutputPath = "$.Payload"
+        Next       = "ImpactAnalysisInfrastructureFailed"
+      }
+      ImpactAnalysisFailed = {
+        Type  = "Fail"
+        Error = "ImpactAnalysisFailed"
+        Cause = "The bounded agent did not produce an acceptable impact report."
+      }
+      ImpactAnalysisInfrastructureFailed = {
+        Type  = "Fail"
+        Error = "ImpactAnalysisInfrastructureFailed"
+        Cause = "The Stage 3E workflow encountered an infrastructure failure."
       }
       Complete = {
         Type = "Succeed"

@@ -83,6 +83,18 @@ output "change_intelligence_state_machine_arn" {
   value = aws_sfn_state_machine.change_intelligence.arn
 }
 
+output "impact_analysis_agent_ecr_repository_url" {
+  value = data.aws_ecr_repository.impact_analysis_agent.repository_url
+}
+
+output "impact_analysis_task_definition_arn" {
+  value = aws_ecs_task_definition.impact_analysis_agent.arn
+}
+
+output "impact_analysis_state_machine_arn" {
+  value = aws_sfn_state_machine.impact_analysis.arn
+}
+
 output "migrator_task_definition_arn" {
   value = aws_ecs_task_definition.migrator.arn
 }

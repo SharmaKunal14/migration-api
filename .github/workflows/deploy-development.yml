@@ -38,6 +38,8 @@ jobs:
         ${{ steps.images.outputs.vendor_fetcher_image_digest }}
       change_intelligence_agent_image_digest:
         ${{ steps.images.outputs.change_intelligence_agent_image_digest }}
+      impact_analysis_agent_image_digest:
+        ${{ steps.images.outputs.impact_analysis_agent_image_digest }}
     env:
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
@@ -75,6 +77,10 @@ jobs:
         ${{ vars.CHANGE_INTELLIGENCE_OPENAI_IDENTITY_PROVIDER_ID }}
       TF_VAR_change_intelligence_openai_service_account_id:
         ${{ vars.CHANGE_INTELLIGENCE_OPENAI_SERVICE_ACCOUNT_ID }}
+      TF_VAR_impact_analysis_openai_identity_provider_id:
+        ${{ vars.IMPACT_ANALYSIS_OPENAI_IDENTITY_PROVIDER_ID }}
+      TF_VAR_impact_analysis_openai_service_account_id:
+        ${{ vars.IMPACT_ANALYSIS_OPENAI_SERVICE_ACCOUNT_ID }}
 
     steps:
       - name: Check out the selected revision
@@ -143,6 +149,7 @@ jobs:
               migration-api-development-source-fetcher \
               migration-api-development-vendor-fetcher \
               migration-api-development-change-intelligence-agent \
+              migration-api-development-impact-analysis-agent \
             --output json > deployment-evidence/ecr-repositories.json
 
       - name: Install Terraform
@@ -185,6 +192,7 @@ jobs:
           source_fetcher_image="${ECR_REGISTRY}/migration-api-development-source-fetcher:${GITHUB_SHA}"
           vendor_fetcher_image="${ECR_REGISTRY}/migration-api-development-vendor-fetcher:${GITHUB_SHA}"
           change_intelligence_agent_image="${ECR_REGISTRY}/migration-api-development-change-intelligence-agent:${GITHUB_SHA}"
+          impact_analysis_agent_image="${ECR_REGISTRY}/migration-api-development-impact-analysis-agent:${GITHUB_SHA}"
           if ! aws ecr describe-images \
             --repository-name migration-api-development-agent \
             --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
@@ -242,6 +250,20 @@ jobs:
               .
           fi
           if ! aws ecr describe-images \
+            --repository-name migration-api-development-impact-analysis-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker buildx build \
+              --file workers/impact-analysis-agent/Dockerfile \
+              --platform linux/arm64 \
+              --provenance=mode=max \
+              --sbom=true \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "${impact_analysis_agent_image}" \
+              --push \
+              .
+          fi
+          if ! aws ecr describe-images \
             --repository-name migration-api-development-database-migrator \
             --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
             docker buildx build \
@@ -284,6 +306,11 @@ jobs:
             --image-ids "imageTag=${GITHUB_SHA}" \
             --query 'imageDetails[0].imageDigest' \
             --output text)"
+          impact_analysis_agent_digest="$(aws ecr describe-images \
+            --repository-name migration-api-development-impact-analysis-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
           if [[ ! "${agent_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
             echo "Agent digest is invalid." >&2
             exit 1
@@ -302,6 +329,10 @@ jobs:
           fi
           if [[ ! "${change_intelligence_agent_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
             echo "Change-intelligence agent digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${impact_analysis_agent_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Impact-analysis agent digest is invalid." >&2
             exit 1
           fi
           resolve_arm64_digest() {
@@ -331,6 +362,8 @@ jobs:
             "${ECR_REGISTRY}/migration-api-development-vendor-fetcher@${vendor_fetcher_digest}")"
           change_intelligence_agent_scan_digest="$(resolve_arm64_digest \
             "${ECR_REGISTRY}/migration-api-development-change-intelligence-agent@${change_intelligence_agent_digest}")"
+          impact_analysis_agent_scan_digest="$(resolve_arm64_digest \
+            "${ECR_REGISTRY}/migration-api-development-impact-analysis-agent@${impact_analysis_agent_digest}")"
           if [[ ! "${agent_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
             echo "Agent scan digest is invalid." >&2
             exit 1
@@ -351,17 +384,23 @@ jobs:
             echo "Change-intelligence agent scan digest is invalid." >&2
             exit 1
           fi
+          if [[ ! "${impact_analysis_agent_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Impact-analysis agent scan digest is invalid." >&2
+            exit 1
+          fi
           {
             echo "TF_VAR_agent_image_digest=${agent_digest}"
             echo "TF_VAR_migrator_image_digest=${migrator_digest}"
             echo "TF_VAR_source_fetcher_image_digest=${source_fetcher_digest}"
             echo "TF_VAR_vendor_fetcher_image_digest=${vendor_fetcher_digest}"
             echo "TF_VAR_change_intelligence_agent_image_digest=${change_intelligence_agent_digest}"
+            echo "TF_VAR_impact_analysis_agent_image_digest=${impact_analysis_agent_digest}"
             echo "AGENT_SCAN_DIGEST=${agent_scan_digest}"
             echo "MIGRATOR_SCAN_DIGEST=${migrator_scan_digest}"
             echo "SOURCE_FETCHER_SCAN_DIGEST=${source_fetcher_scan_digest}"
             echo "VENDOR_FETCHER_SCAN_DIGEST=${vendor_fetcher_scan_digest}"
             echo "CHANGE_INTELLIGENCE_AGENT_SCAN_DIGEST=${change_intelligence_agent_scan_digest}"
+            echo "IMPACT_ANALYSIS_AGENT_SCAN_DIGEST=${impact_analysis_agent_scan_digest}"
           } >> "${GITHUB_ENV}"
           {
             echo "agent_image_digest=${agent_digest}"
@@ -369,6 +408,7 @@ jobs:
             echo "source_fetcher_image_digest=${source_fetcher_digest}"
             echo "vendor_fetcher_image_digest=${vendor_fetcher_digest}"
             echo "change_intelligence_agent_image_digest=${change_intelligence_agent_digest}"
+            echo "impact_analysis_agent_image_digest=${impact_analysis_agent_digest}"
           } >> "${GITHUB_OUTPUT}"
           {
             echo "agent_image_digest=${agent_digest}"
@@ -376,11 +416,13 @@ jobs:
             echo "source_fetcher_image_digest=${source_fetcher_digest}"
             echo "vendor_fetcher_image_digest=${vendor_fetcher_digest}"
             echo "change_intelligence_agent_image_digest=${change_intelligence_agent_digest}"
+            echo "impact_analysis_agent_image_digest=${impact_analysis_agent_digest}"
             echo "agent_scan_digest=${agent_scan_digest}"
             echo "migrator_scan_digest=${migrator_scan_digest}"
             echo "source_fetcher_scan_digest=${source_fetcher_scan_digest}"
             echo "vendor_fetcher_scan_digest=${vendor_fetcher_scan_digest}"
             echo "change_intelligence_agent_scan_digest=${change_intelligence_agent_scan_digest}"
+            echo "impact_analysis_agent_scan_digest=${impact_analysis_agent_scan_digest}"
           } >> deployment-evidence/deployment.txt
 
       - name: Gate on ECR vulnerability scans
@@ -405,6 +447,10 @@ jobs:
             migration-api-development-change-intelligence-agent \
             "${CHANGE_INTELLIGENCE_AGENT_SCAN_DIGEST}" \
             deployment-evidence/change-intelligence-agent-image-scan.json
+          bash scripts/deploy/wait-for-ecr-scan.sh \
+            migration-api-development-impact-analysis-agent \
+            "${IMPACT_ANALYSIS_AGENT_SCAN_DIGEST}" \
+            deployment-evidence/impact-analysis-agent-image-scan.json
 
       - name: Refresh AWS credentials for migration and planning
         uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
@@ -454,6 +500,7 @@ jobs:
             infra/terraform/environments/development/.terraform/outbox.zip \
             infra/terraform/environments/development/.terraform/repository-scan-control.zip \
             infra/terraform/environments/development/.terraform/vendor-intelligence-control.zip \
+            infra/terraform/environments/development/.terraform/impact-analysis-control.zip \
             infra/terraform/environments/development/.terraform/workflow-control.zip \
             dist/services \
             dist/web
@@ -518,6 +565,10 @@ jobs:
         ${{ vars.CHANGE_INTELLIGENCE_OPENAI_IDENTITY_PROVIDER_ID }}
       TF_VAR_change_intelligence_openai_service_account_id:
         ${{ vars.CHANGE_INTELLIGENCE_OPENAI_SERVICE_ACCOUNT_ID }}
+      TF_VAR_impact_analysis_openai_identity_provider_id:
+        ${{ vars.IMPACT_ANALYSIS_OPENAI_IDENTITY_PROVIDER_ID }}
+      TF_VAR_impact_analysis_openai_service_account_id:
+        ${{ vars.IMPACT_ANALYSIS_OPENAI_SERVICE_ACCOUNT_ID }}
       TF_VAR_agent_image_digest: ${{ needs.prepare.outputs.agent_image_digest }}
       TF_VAR_migrator_image_digest: ${{ needs.prepare.outputs.migrator_image_digest }}
       TF_VAR_source_fetcher_image_digest:
@@ -526,6 +577,8 @@ jobs:
         ${{ needs.prepare.outputs.vendor_fetcher_image_digest }}
       TF_VAR_change_intelligence_agent_image_digest:
         ${{ needs.prepare.outputs.change_intelligence_agent_image_digest }}
+      TF_VAR_impact_analysis_agent_image_digest:
+        ${{ needs.prepare.outputs.impact_analysis_agent_image_digest }}
 
     steps:
       - name: Check out the exact planned revision
@@ -594,6 +647,7 @@ jobs:
           test -s infra/terraform/environments/development/.terraform/outbox.zip
           test -s infra/terraform/environments/development/.terraform/repository-scan-control.zip
           test -s infra/terraform/environments/development/.terraform/vendor-intelligence-control.zip
+          test -s infra/terraform/environments/development/.terraform/impact-analysis-control.zip
           test -s infra/terraform/environments/development/.terraform/workflow-control.zip
 
       - name: Apply the exact reviewed plan
@@ -631,6 +685,7 @@ jobs:
             echo "- Source fetcher: \`${TF_VAR_source_fetcher_image_digest}\`"
             echo "- Vendor fetcher: \`${TF_VAR_vendor_fetcher_image_digest}\`"
             echo "- Change intelligence: \`${TF_VAR_change_intelligence_agent_image_digest}\`"
+            echo "- Impact analysis: \`${TF_VAR_impact_analysis_agent_image_digest}\`"
             echo "- Migration: passed"
             echo "- Saved-plan approval: passed"
             echo "- Public smoke checks: passed"

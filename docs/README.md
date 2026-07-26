@@ -17,6 +17,8 @@ and measurable exit gates.
 - [Stage 1 CI/CD](runbooks/CI_CD.md)
 - [Stage 3D implementation status](stages/STAGE_3D_IMPLEMENTATION_STATUS.md)
 - [Stage 3D deployment runbook](runbooks/STAGE_3D_DEPLOYMENT.md)
+- [Stage 3E implementation status](stages/STAGE_3E_IMPLEMENTATION_STATUS.md)
+- [Stage 3E deployment runbook](runbooks/STAGE_3E_DEPLOYMENT.md)
 
 ## Architecture decisions
 

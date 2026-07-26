@@ -117,6 +117,7 @@ export async function reconcileCandidatesForSpecification(
     .distinctOn('snapshot.repositoryId')
     .select(['snapshot.id', 'snapshot.repositoryId'])
     .where('snapshot.status', '=', 'available')
+    .where('snapshot.expiresAt', '>', detectedAt)
     .where('repository.selected', '=', true)
     .where('repository.enabled', '=', true)
     .where('repository.archived', '=', false)

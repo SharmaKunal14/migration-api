@@ -155,6 +155,28 @@ export const vendorIntelligenceControlConfigSchema = commonSchema.extend({
   OPENAI_MODEL: nonEmpty.default('gpt-5.6-sol'),
 });
 
+export const impactAnalysisAgentConfigSchema = commonSchema.extend({
+  ARTIFACT_BUCKET: nonEmpty,
+  ARTIFACT_KMS_KEY_ARN: awsArn,
+  CANDIDATE_ID: z.uuid(),
+  IMPACT_ANALYSIS_RUN_ID: z.uuid(),
+  INPUT_DIGEST: z.string().regex(/^[a-f0-9]{64}$/u),
+  INPUT_OBJECT_KEY: z.string().min(1).max(1_024),
+  OPENAI_IDENTITY_PROVIDER_ID: nonEmpty,
+  OPENAI_MODEL: nonEmpty.default('gpt-5.6-sol'),
+  OPENAI_PROJECT_ALIAS: z.string().regex(/^[a-z][a-z0-9-]{1,62}$/u),
+  OPENAI_SERVICE_ACCOUNT_ID: nonEmpty,
+  OPENAI_WIF_AUDIENCE: z.literal('https://api.openai.com/v1'),
+  RESULT_OBJECT_KEY: z.string().min(1).max(1_024),
+});
+
+export const impactAnalysisControlConfigSchema = commonSchema.extend({
+  ARTIFACT_BUCKET: nonEmpty,
+  ARTIFACT_KMS_KEY_ARN: awsArn,
+  DATABASE_SECRET_ARN: awsArn,
+  OPENAI_MODEL: nonEmpty.default('gpt-5.6-sol'),
+});
+
 export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type DispatcherConfig = z.infer<typeof dispatcherConfigSchema>;
 export type WorkflowControlConfig = z.infer<typeof workflowControlConfigSchema>;
@@ -173,6 +195,10 @@ export type ChangeIntelligenceAgentConfig = z.infer<
 >;
 export type VendorIntelligenceControlConfig = z.infer<
   typeof vendorIntelligenceControlConfigSchema
+>;
+export type ImpactAnalysisAgentConfig = z.infer<typeof impactAnalysisAgentConfigSchema>;
+export type ImpactAnalysisControlConfig = z.infer<
+  typeof impactAnalysisControlConfigSchema
 >;
 export type DatabaseCredential = z.infer<typeof databaseCredentialSchema>;
 

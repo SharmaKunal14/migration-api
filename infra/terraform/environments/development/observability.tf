@@ -70,6 +70,18 @@ resource "aws_cloudwatch_log_metric_filter" "change_intelligence_failure" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "impact_analysis_failure" {
+  name           = "migration-api-development-impact-analysis-failure"
+  log_group_name = aws_cloudwatch_log_group.impact_analysis_agent.name
+  pattern        = "{ $.event = \"impact_analysis_result_written\" && $.outcome = \"failed\" }"
+
+  metric_transformation {
+    name      = "ImpactAnalysisFailed"
+    namespace = "MigrationApi/Development"
+    value     = "1"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "api_errors" {
   alarm_name          = "migration-api-development-api-errors"
   alarm_description   = "Control API returned Lambda errors."
@@ -308,6 +320,33 @@ resource "aws_cloudwatch_metric_alarm" "change_intelligence_failure" {
   alarm_description   = "A draft migration specification could not be generated safely."
   namespace           = "MigrationApi/Development"
   metric_name         = "ChangeIntelligenceFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "impact_analysis_workflow_failures" {
+  alarm_name          = "migration-api-development-impact-analysis-workflow-failures"
+  alarm_description   = "Impact-analysis workflow reached a failed execution."
+  namespace           = "AWS/States"
+  metric_name         = "ExecutionsFailed"
+  dimensions          = { StateMachineArn = aws_sfn_state_machine.impact_analysis.arn }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "impact_analysis_failure" {
+  alarm_name          = "migration-api-development-impact-analysis-failure"
+  alarm_description   = "A read-only impact report could not be generated safely."
+  namespace           = "MigrationApi/Development"
+  metric_name         = "ImpactAnalysisFailed"
   statistic           = "Sum"
   period              = 300
   evaluation_periods  = 1

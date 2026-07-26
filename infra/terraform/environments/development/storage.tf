@@ -229,3 +229,7 @@ data "aws_ecr_repository" "vendor_fetcher" {
 data "aws_ecr_repository" "change_intelligence_agent" {
   name = "migration-api-development-change-intelligence-agent"
 }
+
+data "aws_ecr_repository" "impact_analysis_agent" {
+  name = "migration-api-development-impact-analysis-agent"
+}
