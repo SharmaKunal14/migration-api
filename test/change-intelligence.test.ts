@@ -10,7 +10,10 @@ import {
   changeIntelligenceWorkflowInputSchema,
 } from '@migration/contracts';
 
-import { parseDraftSpecification } from '../workers/change-intelligence-agent/src/gateway.js';
+import {
+  draftSpecificationJsonSchema,
+  parseDraftSpecification,
+} from '../workers/change-intelligence-agent/src/gateway.js';
 import { ChangeIntelligenceTools } from '../workers/change-intelligence-agent/src/tools.js';
 import type { ToolPolicyError } from '../workers/change-intelligence-agent/src/tools.js';
 import { evidenceReferencesMatch } from '../services/vendor-intelligence-control/src/handler.js';
@@ -52,6 +55,17 @@ describe('Stage 3C change-intelligence boundary', () => {
     expect(gatewaySource).toContain(
       'release_metadata, migration_guide, changelog, v1_api, and v2_api together',
     );
+  });
+
+  it('constrains machine transformation identifiers in the model output schema', () => {
+    const transformationSchema =
+      draftSpecificationJsonSchema.properties.changes.items.properties.transformations
+        .items.properties;
+
+    expect(transformationSchema.before.enum).toContain('messages.send');
+    expect(transformationSchema.before.enum).not.toContain('messages.send()');
+    expect(transformationSchema.after.enum).toContain('notification.enabled');
+    expect(transformationSchema.after.enum).toContain('Node.js 22 or newer');
   });
 
   it('accepts identifier-only workflow input', () => {
@@ -125,7 +139,12 @@ describe('Stage 3C change-intelligence boundary', () => {
         3,
         new Date('2026-07-26T01:00:00.000Z'),
       ),
-    ).toThrow(expect.objectContaining({ safeCode: 'ORBIT_SPECIFICATION_INVALID' }));
+    ).toThrow(
+      expect.objectContaining({
+        safeCode: 'ORBIT_SPECIFICATION_INVALID',
+        validationIssues: ['changes.C-01.rename_symbol'],
+      }),
+    );
 
     const equivalentRuntimeWording = JSON.parse(JSON.stringify(fixture)) as {
       changes: {
@@ -154,6 +173,38 @@ describe('Stage 3C change-intelligence boundary', () => {
         new Date('2026-07-26T01:00:00.000Z'),
       ),
     ).toMatchObject({ targetVersion: '2.0.0' });
+
+    const uncertaintyWithoutDuplicateTransformation = JSON.parse(
+      JSON.stringify(fixture),
+    ) as {
+      changes: {
+        changeId: string;
+        transformations: { kind: string }[];
+      }[];
+    };
+    const uncertainNotificationChange =
+      uncertaintyWithoutDuplicateTransformation.changes.find(
+        change => change.changeId === 'C-04',
+      );
+    if (!uncertainNotificationChange) {
+      throw new Error('The test fixture is missing C-04.');
+    }
+    uncertainNotificationChange.transformations =
+      uncertainNotificationChange.transformations.filter(
+        transformation => transformation.kind !== 'behavior_review',
+      );
+
+    expect(
+      parseDraftSpecification(
+        JSON.stringify(uncertaintyWithoutDuplicateTransformation),
+        3,
+        new Date('2026-07-26T01:00:00.000Z'),
+      ),
+    ).toMatchObject({
+      uncertainties: [
+        expect.objectContaining({ code: 'NOTIFICATION_DEFAULT_UNRESOLVED' }),
+      ],
+    });
   });
 
   it('reads only digest-bound sources under the manifest release prefix', async () => {

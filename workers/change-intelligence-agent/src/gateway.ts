@@ -97,6 +97,7 @@ export class ChangeIntelligenceGateway {
           'After listing evidence, request release_metadata, migration_guide, changelog, v1_api, and v2_api together in the next tool turn.',
           'Never request network access, shell access, GitHub, credentials, databases, or file mutation.',
           'Describe exactly seven confirmed changes: messages.send to messages.create; room to channelId; text to content; notify to notification.enabled while preserving explicit booleans and omitting undefined; message_id to id; created_at to createdAt; and Node.js 22 or newer.',
+          'Use the exact machine transformation values exposed by the output schema; put additional explanation in summary or condition instead of changing before or after identifiers.',
           'Record omitted-notification account-policy behavior with the exact uncertainty code NOTIFICATION_DEFAULT_UNRESOLVED.',
           'Do not claim that the draft is reviewed, trusted, approved, or vendor verified.',
         ].join(' '),
@@ -156,6 +157,7 @@ export class ChangeIntelligenceGateway {
           responseStatus: response.status,
           incompleteReason: response.incomplete_details?.reason ?? undefined,
           failureReason: error.reason,
+          validationIssuePaths: error.validationIssues,
         });
       }
       throw error;
@@ -176,7 +178,10 @@ export class InvalidSpecificationOutputError extends Error {
     | 'MODEL_OUTPUT_SCHEMA_INVALID'
     | 'ORBIT_SPECIFICATION_INVALID';
 
-  public constructor(public readonly reason: InvalidOutputReason) {
+  public constructor(
+    public readonly reason: InvalidOutputReason,
+    public readonly validationIssues?: readonly string[],
+  ) {
     super('The model output could not be accepted as a migration specification.');
     this.name = 'InvalidSpecificationOutputError';
     this.safeCode =
@@ -218,7 +223,10 @@ export function parseDraftSpecification(
     generatedAt: generatedAt.toISOString(),
   });
   if (!parsed.success) {
-    throw new InvalidSpecificationOutputError('schema_validation_failed');
+    throw new InvalidSpecificationOutputError(
+      'schema_validation_failed',
+      parsed.error.issues.map(issue => formatValidationPath(issue.path)),
+    );
   }
   const specification = parsed.data;
   const expectedChanges = new Set([
@@ -236,10 +244,41 @@ export function parseDraftSpecification(
     ['C-02', 'rename_field', 'room', 'channelId'],
     ['C-03', 'rename_field', 'text', 'content'],
     ['C-04', 'wrap_field', 'notify', 'notification.enabled'],
-    ['C-04', 'behavior_review', 'notify omitted', 'notification omitted'],
     ['C-05', 'rename_field', 'message_id', 'id'],
     ['C-06', 'rename_field', 'created_at', 'createdAt'],
   ] as const;
+  const validationIssues: string[] = [];
+  if (specification.vendor.slug !== 'orbitchat') {
+    validationIssues.push('vendor.slug');
+  }
+  if (specification.product.identifier !== '@orbitchat/sdk') {
+    validationIssues.push('product.identifier');
+  }
+  if (specification.sourceCompatibility !== '1.x') {
+    validationIssues.push('sourceCompatibility');
+  }
+  if (specification.targetVersion !== '2.0.0') {
+    validationIssues.push('targetVersion');
+  }
+  if (
+    actualChanges.size !== expectedChanges.size ||
+    [...expectedChanges].some(changeId => !actualChanges.has(changeId))
+  ) {
+    validationIssues.push('changes.required_ids');
+  }
+  for (const [changeId, kind, before, after] of expectedTransformations) {
+    const hasTransformation = specification.changes
+      .find(change => change.changeId === changeId)
+      ?.transformations.some(
+        transformation =>
+          transformation.kind === kind &&
+          transformation.before === before &&
+          transformation.after === after,
+      );
+    if (!hasTransformation) {
+      validationIssues.push(`changes.${changeId}.${kind}`);
+    }
+  }
   const runtimeChange = specification.changes.find(
     change => change.changeId === 'C-07',
   );
@@ -249,32 +288,27 @@ export function parseDraftSpecification(
       /node(?:\.js)?/iu.test(transformation.after) &&
       /\b22\b/u.test(transformation.after),
   );
+  if (!hasNode22Requirement) {
+    validationIssues.push('changes.C-07.runtime_requirement');
+  }
   if (
-    specification.vendor.slug !== 'orbitchat' ||
-    specification.product.identifier !== '@orbitchat/sdk' ||
-    specification.sourceCompatibility !== '1.x' ||
-    specification.targetVersion !== '2.0.0' ||
-    actualChanges.size !== expectedChanges.size ||
-    [...expectedChanges].some(changeId => !actualChanges.has(changeId)) ||
-    expectedTransformations.some(
-      ([changeId, kind, before, after]) =>
-        !specification.changes
-          .find(change => change.changeId === changeId)
-          ?.transformations.some(
-            transformation =>
-              transformation.kind === kind &&
-              transformation.before === before &&
-              transformation.after === after,
-          ),
-    ) ||
-    !hasNode22Requirement ||
     !specification.uncertainties.some(
       uncertainty => uncertainty.code === 'NOTIFICATION_DEFAULT_UNRESOLVED',
     )
   ) {
-    throw new InvalidSpecificationOutputError('orbit_contract_invalid');
+    validationIssues.push('uncertainties.NOTIFICATION_DEFAULT_UNRESOLVED');
+  }
+  if (validationIssues.length > 0) {
+    throw new InvalidSpecificationOutputError(
+      'orbit_contract_invalid',
+      validationIssues,
+    );
   }
   return specification;
+}
+
+function formatValidationPath(path: readonly PropertyKey[]): string {
+  return path.length === 0 ? 'root' : path.map(String).join('.');
 }
 
 function safeUpstreamIdentifier(value: unknown): string | null {
@@ -288,6 +322,28 @@ function isRecord(value: unknown): value is Record<string, unknown> {
 }
 
 const changeIds = ['C-01', 'C-02', 'C-03', 'C-04', 'C-05', 'C-06', 'C-07'];
+const transformationBeforeValues = [
+  'messages.send',
+  'room',
+  'text',
+  'notify',
+  'notify omitted',
+  'message_id',
+  'created_at',
+  'Node.js 18 supported',
+  'Node.js 18 and 20',
+];
+const transformationAfterValues = [
+  'messages.create',
+  'channelId',
+  'content',
+  'notification.enabled',
+  'notification omitted',
+  'id',
+  'createdAt',
+  'Node.js >=22 required',
+  'Node.js 22 or newer',
+];
 
 export const draftSpecificationJsonSchema = {
   type: 'object',
@@ -376,8 +432,8 @@ export const draftSpecificationJsonSchema = {
                     'behavior_review',
                   ],
                 },
-                before: { type: 'string', minLength: 1, maxLength: 512 },
-                after: { type: 'string', minLength: 1, maxLength: 512 },
+                before: { type: 'string', enum: transformationBeforeValues },
+                after: { type: 'string', enum: transformationAfterValues },
                 condition: {
                   type: ['string', 'null'],
                   minLength: 1,
