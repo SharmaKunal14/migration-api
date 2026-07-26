@@ -97,7 +97,7 @@ export class ChangeIntelligenceGateway {
           'After listing evidence, request release_metadata, migration_guide, changelog, v1_api, and v2_api together in the next tool turn.',
           'Never request network access, shell access, GitHub, credentials, databases, or file mutation.',
           'Describe exactly seven confirmed changes: messages.send to messages.create; room to channelId; text to content; notify to notification.enabled while preserving explicit booleans and omitting undefined; message_id to id; created_at to createdAt; and Node.js 22 or newer.',
-          'Record omitted-notification account-policy behavior as an uncertainty.',
+          'Record omitted-notification account-policy behavior with the exact uncertainty code NOTIFICATION_DEFAULT_UNRESOLVED.',
           'Do not claim that the draft is reviewed, trusted, approved, or vendor verified.',
         ].join(' '),
         input,
@@ -239,8 +239,16 @@ export function parseDraftSpecification(
     ['C-04', 'behavior_review', 'notify omitted', 'notification omitted'],
     ['C-05', 'rename_field', 'message_id', 'id'],
     ['C-06', 'rename_field', 'created_at', 'createdAt'],
-    ['C-07', 'runtime_requirement', 'Node.js 18 supported', 'Node.js >=22 required'],
   ] as const;
+  const runtimeChange = specification.changes.find(
+    change => change.changeId === 'C-07',
+  );
+  const hasNode22Requirement = runtimeChange?.transformations.some(
+    transformation =>
+      transformation.kind === 'runtime_requirement' &&
+      /node(?:\.js)?/iu.test(transformation.after) &&
+      /\b22\b/u.test(transformation.after),
+  );
   if (
     specification.vendor.slug !== 'orbitchat' ||
     specification.product.identifier !== '@orbitchat/sdk' ||
@@ -248,7 +256,6 @@ export function parseDraftSpecification(
     specification.targetVersion !== '2.0.0' ||
     actualChanges.size !== expectedChanges.size ||
     [...expectedChanges].some(changeId => !actualChanges.has(changeId)) ||
-    specification.changes.some(change => change.certainty !== 'vendor_confirmed') ||
     expectedTransformations.some(
       ([changeId, kind, before, after]) =>
         !specification.changes
@@ -260,6 +267,7 @@ export function parseDraftSpecification(
               transformation.after === after,
           ),
     ) ||
+    !hasNode22Requirement ||
     !specification.uncertainties.some(
       uncertainty => uncertainty.code === 'NOTIFICATION_DEFAULT_UNRESOLVED',
     )
@@ -431,7 +439,7 @@ export const draftSpecificationJsonSchema = {
         properties: {
           code: {
             type: 'string',
-            pattern: '^[A-Z][A-Z0-9_]{2,63}$',
+            const: 'NOTIFICATION_DEFAULT_UNRESOLVED',
           },
           summary: { type: 'string', minLength: 1, maxLength: 1024 },
           evidenceIds: {

@@ -126,6 +126,34 @@ describe('Stage 3C change-intelligence boundary', () => {
         new Date('2026-07-26T01:00:00.000Z'),
       ),
     ).toThrow(expect.objectContaining({ safeCode: 'ORBIT_SPECIFICATION_INVALID' }));
+
+    const equivalentRuntimeWording = JSON.parse(JSON.stringify(fixture)) as {
+      changes: {
+        changeId: string;
+        certainty: 'vendor_confirmed' | 'ambiguous';
+        transformations: { before: string; after: string }[];
+      }[];
+    };
+    const runtimeChange = equivalentRuntimeWording.changes.find(
+      change => change.changeId === 'C-07',
+    );
+    const notificationChange = equivalentRuntimeWording.changes.find(
+      change => change.changeId === 'C-04',
+    );
+    if (!runtimeChange?.transformations[0] || !notificationChange) {
+      throw new Error('The test fixture is missing a required change.');
+    }
+    runtimeChange.transformations[0].before = 'Node.js 18 and 20';
+    runtimeChange.transformations[0].after = 'Node.js 22 or newer';
+    notificationChange.certainty = 'ambiguous';
+
+    expect(
+      parseDraftSpecification(
+        JSON.stringify(equivalentRuntimeWording),
+        3,
+        new Date('2026-07-26T01:00:00.000Z'),
+      ),
+    ).toMatchObject({ targetVersion: '2.0.0' });
   });
 
   it('reads only digest-bound sources under the manifest release prefix', async () => {
