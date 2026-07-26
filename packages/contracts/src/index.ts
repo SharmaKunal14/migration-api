@@ -804,6 +804,144 @@ export const impactReportSchema = z
     }
   });
 
+const policyVersionSchema = z
+  .string()
+  .min(1)
+  .max(100)
+  .regex(/^[a-z0-9][a-z0-9._-]{0,99}$/u);
+
+export const migrationApprovalPatchPolicySchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    allowedPaths: z.array(repositoryRelativePathSchema).min(1).max(500),
+    allowedChangeCategories: z
+      .array(
+        z.enum([
+          'dependency_manifest',
+          'lockfile',
+          'direct_usage',
+          'indirect_usage',
+          'test',
+        ]),
+      )
+      .min(1)
+      .max(5),
+    maxChangedFiles: z.number().int().min(1).max(100),
+    maxPatchBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(1024 * 1024),
+    maxAddedLines: z.number().int().min(1).max(10_000),
+    maxDeletedLines: z.number().int().min(0).max(10_000),
+  })
+  .strict()
+  .superRefine((policy, context) => {
+    if (new Set(policy.allowedPaths).size !== policy.allowedPaths.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Allowed patch paths must be unique.',
+        path: ['allowedPaths'],
+      });
+    }
+    if (
+      new Set(policy.allowedChangeCategories).size !==
+      policy.allowedChangeCategories.length
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Allowed change categories must be unique.',
+        path: ['allowedChangeCategories'],
+      });
+    }
+  });
+
+export const migrationApprovalVerificationProfileSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    profiles: z
+      .array(
+        z
+          .object({
+            profile: z.enum(['typescript_static', 'typescript_unit']),
+            availability: z.enum(['available', 'unavailable']),
+            commandIds: z
+              .array(
+                z
+                  .string()
+                  .min(1)
+                  .max(100)
+                  .regex(/^[a-z][a-z0-9._-]{0,99}$/u),
+              )
+              .max(20),
+          })
+          .strict(),
+      )
+      .min(1)
+      .max(2),
+  })
+  .strict()
+  .superRefine((verification, context) => {
+    const profiles = verification.profiles.map(profile => profile.profile);
+    if (new Set(profiles).size !== profiles.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Verification profiles must be unique.',
+        path: ['profiles'],
+      });
+    }
+    for (const [index, profile] of verification.profiles.entries()) {
+      if (
+        (profile.availability === 'available' && profile.commandIds.length === 0) ||
+        (profile.availability === 'unavailable' && profile.commandIds.length > 0)
+      ) {
+        context.addIssue({
+          code: 'custom',
+          message:
+            'Only available verification profiles may authorize command identifiers.',
+          path: ['profiles', index, 'commandIds'],
+        });
+      }
+      if (new Set(profile.commandIds).size !== profile.commandIds.length) {
+        context.addIssue({
+          code: 'custom',
+          message: 'Verification command identifiers must be unique.',
+          path: ['profiles', index, 'commandIds'],
+        });
+      }
+    }
+  });
+
+export const migrationApprovalAuthoritySchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    approvalContractVersion: z.literal('1.0'),
+    agentPolicyVersion: policyVersionSchema,
+    toolRegistryVersion: policyVersionSchema,
+    patchPolicyVersion: policyVersionSchema,
+    patchPolicy: migrationApprovalPatchPolicySchema,
+    verificationPolicyVersion: policyVersionSchema,
+    verificationProfile: migrationApprovalVerificationProfileSchema,
+    publicationPolicyVersion: policyVersionSchema,
+    openaiProcessingPolicyVersion: policyVersionSchema,
+    openaiProcessingMode: z.enum(['default_controls', 'verified_zdr']),
+  })
+  .strict();
+
+export const migrationWorkflowInputSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    organisationId: uuidSchema,
+    migrationRunId: uuidSchema,
+    candidateId: uuidSchema,
+    approvalId: uuidSchema,
+    repositoryId: uuidSchema,
+    correlationId: uuidSchema,
+    expectedAttempt: z.number().int().min(1).max(10),
+    expectedVersion: z.number().int().positive(),
+  })
+  .strict();
+
 export const impactAnalysisWorkflowInputSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -1021,6 +1159,16 @@ export type MigrationPlan = z.infer<typeof migrationPlanSchema>;
 export type MigrationSpecification = z.infer<typeof migrationSpecificationSchema>;
 export type VendorEvidenceBundle = z.infer<typeof vendorEvidenceBundleSchema>;
 export type ImpactReport = z.infer<typeof impactReportSchema>;
+export type MigrationApprovalPatchPolicy = z.infer<
+  typeof migrationApprovalPatchPolicySchema
+>;
+export type MigrationApprovalVerificationProfile = z.infer<
+  typeof migrationApprovalVerificationProfileSchema
+>;
+export type MigrationApprovalAuthority = z.infer<
+  typeof migrationApprovalAuthoritySchema
+>;
+export type MigrationWorkflowInput = z.infer<typeof migrationWorkflowInputSchema>;
 export type ImpactAnalysisWorkflowInput = z.infer<
   typeof impactAnalysisWorkflowInputSchema
 >;

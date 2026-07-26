@@ -397,6 +397,114 @@ export interface ImpactAnalysisRunTable {
   updatedAt: Timestamp;
 }
 
+export interface MigrationApprovalTable {
+  id: string;
+  organisationId: string;
+  candidateId: string;
+  repositoryId: string;
+  githubRepositoryId: string;
+  installationId: string;
+  repositorySnapshotId: string;
+  baseBranch: string;
+  baseCommitSha: string;
+  snapshotDigest: string;
+  migrationSpecificationId: string;
+  migrationSpecificationRevision: number;
+  migrationSpecificationDigest: string;
+  impactReportId: string;
+  impactReportRevision: number;
+  impactReportDigest: string;
+  approvalContractVersion: '1.0';
+  agentPolicyVersion: string;
+  toolRegistryVersion: string;
+  patchPolicyVersion: string;
+  patchPolicy: unknown;
+  patchPolicyDigest: string;
+  verificationPolicyVersion: string;
+  verificationProfile: unknown;
+  verificationProfileDigest: string;
+  publicationPolicyVersion: string;
+  openaiProcessingPolicyVersion: string;
+  openaiProcessingMode: 'default_controls' | 'verified_zdr';
+  acknowledgementSourceProcessing: boolean;
+  acknowledgementVerificationExecution: boolean;
+  acknowledgementDraftPullRequest: boolean;
+  acknowledgementHumanReviewRequired: boolean;
+  renderedCopyDigest: string;
+  approvedByUserId: string;
+  approvedByRole: 'owner' | 'admin' | 'reviewer';
+  requestId: string;
+  correlationId: string;
+  idempotencyKey: string;
+  requestDigest: string;
+  approvedAt: Timestamp;
+  expiresAt: Timestamp | null;
+  createdAt: Timestamp;
+}
+
+export interface MigrationApprovalRevocationTable {
+  approvalId: string;
+  revokedByUserId: string;
+  revokedByRole: 'owner' | 'admin' | 'reviewer';
+  reasonCode: string;
+  requestId: string;
+  revokedAt: Timestamp;
+  createdAt: Timestamp;
+}
+
+export interface MigrationRunTable {
+  id: string;
+  organisationId: string;
+  candidateId: string;
+  approvalId: string;
+  repositoryId: string;
+  baseCommitSha: string;
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
+  currentStage:
+    | 'queued'
+    | 'revalidating'
+    | 'acquiring'
+    | 'planning'
+    | 'patching'
+    | 'verifying'
+    | 'repairing'
+    | 'publishing'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'stale';
+  attempt: number;
+  workflowExecutionArn: string | null;
+  terminalResult: 'completed' | 'failed' | 'cancelled' | 'stale' | null;
+  safeErrorCode: string | null;
+  correlationId: string;
+  cancellationRequestedAt: Timestamp | null;
+  cancellationRequestedByUserId: string | null;
+  cancellationReasonCode: string | null;
+  version: number;
+  createdAt: Timestamp;
+  startedAt: Timestamp | null;
+  completedAt: Timestamp | null;
+  updatedAt: Timestamp;
+}
+
+export interface MigrationRunOutboxTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  eventType: 'migration_run.requested';
+  aggregateVersion: number;
+  idempotencyKey: string;
+  payload: unknown;
+  availableAt: Timestamp;
+  leaseOwner: string | null;
+  leaseExpiresAt: Timestamp | null;
+  attempts: number;
+  deliveredAt: Timestamp | null;
+  safeErrorCode: string | null;
+  createdAt: Timestamp;
+}
+
 export interface VendorIngestionRunTable {
   id: string;
   vendorReleaseId: string;
@@ -474,6 +582,10 @@ export interface Database {
   migrationCandidates: MigrationCandidateTable;
   impactReports: ImpactReportTable;
   impactAnalysisRuns: ImpactAnalysisRunTable;
+  migrationApprovals: MigrationApprovalTable;
+  migrationApprovalRevocations: MigrationApprovalRevocationTable;
+  migrationRuns: MigrationRunTable;
+  migrationRunOutbox: MigrationRunOutboxTable;
   vendorIngestionRuns: VendorIngestionRunTable;
   vendorEvidenceItems: VendorEvidenceItemTable;
   changeIntelligenceRuns: ChangeIntelligenceRunTable;
