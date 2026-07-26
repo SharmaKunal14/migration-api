@@ -164,6 +164,12 @@ export async function handleRequest(
         method === 'GET'
           ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-candidates$/u.exec(path)
           : null;
+      const candidateMatch =
+        method === 'GET'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-candidates\/([0-9a-f-]{36})$/u.exec(
+              path,
+            )
+          : null;
       const reviewSpecificationMatch =
         method === 'POST'
           ? /^\/v1\/operator\/migration-specifications\/([0-9a-f-]{36})\/review$/u.exec(
@@ -265,6 +271,15 @@ export async function handleRequest(
         const organisationId = z.uuid().parse(candidatesMatch[1]);
         response = json(200, {
           candidates: await repository.listMigrationCandidates(userId, organisationId),
+        });
+      } else if (candidateMatch?.[1] && candidateMatch[2]) {
+        const organisationId = z.uuid().parse(candidateMatch[1]);
+        response = json(200, {
+          candidate: await repository.getMigrationCandidate(
+            userId,
+            organisationId,
+            z.uuid().parse(candidateMatch[2]),
+          ),
         });
       } else if (createMatch?.[1]) {
         const input = demoRunRequestSchema.parse(parseBody(event));

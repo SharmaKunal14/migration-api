@@ -10,6 +10,7 @@ import type {
   PublicDependencyObservation,
   PublicGithubInstallation,
   PublicMigrationCandidate,
+  PublicMigrationCandidateDetail,
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
@@ -273,6 +274,75 @@ class FakeRepository implements ApiRepositoryPort {
   ): Promise<PublicMigrationCandidate[]> {
     return Promise.resolve([]);
   }
+
+  public getMigrationCandidate(
+    _userId: string,
+    _organisationId: string,
+    candidateId: string,
+  ): Promise<PublicMigrationCandidateDetail> {
+    return Promise.resolve({
+      candidate: {
+        id: candidateId,
+        repositoryId: runId,
+        repositoryFullName: 'SharmaKunal14/orbitchat-migration-fixture',
+        migrationSpecificationId: runId,
+        packageName: '@orbitchat/sdk',
+        declaredRange: '^1.0.0',
+        resolvedVersion: '1.0.0',
+        sourceCompatibility: '1.x',
+        targetVersion: '2.0.0',
+        specificationTrustState: 'reviewed',
+        status: 'open',
+        impact: null,
+        firstDetectedAt: '2026-07-26T00:00:00.000Z',
+        lastDetectedAt: '2026-07-26T00:00:00.000Z',
+        version: 1,
+      },
+      repository: {
+        id: runId,
+        fullName: 'SharmaKunal14/orbitchat-migration-fixture',
+        commitSha: 'a'.repeat(40),
+        snapshotDigest: 'b'.repeat(64),
+        snapshotCreatedAt: '2026-07-26T00:00:00.000Z',
+      },
+      dependency: {
+        id: organisationId,
+        packageName: '@orbitchat/sdk',
+        dependencyKind: 'dependency',
+        manifestPath: 'package.json',
+        lockfilePath: 'package-lock.json',
+        declaredRange: '^1.0.0',
+        resolvedVersion: '1.0.0',
+        discoveryMethod: 'npm_lockfile',
+      },
+      specification: {
+        ...draftSpecification,
+        trustState: 'reviewed',
+        reviewedAt: '2026-07-26T00:00:00.000Z',
+        specification: {
+          schemaVersion: '1.0',
+          vendor: { slug: 'orbitchat', name: 'OrbitChat' },
+          product: { ecosystem: 'npm', identifier: '@orbitchat/sdk' },
+          sourceCompatibility: '1.x',
+          targetVersion: '2.0.0',
+          changes: [],
+          evidence: [],
+          preconditions: [],
+          verificationRecommendations: ['typescript_static'],
+          uncertainties: [],
+          trust: {
+            status: 'reviewed',
+            generatedBy: 'change_intelligence_agent',
+            reviewedAt: '2026-07-26T00:00:00.000Z',
+          },
+          revision: 1,
+          generatedAt: '2026-07-26T00:00:00.000Z',
+        },
+      },
+      vendorEvidence: [],
+      impactReport: null,
+    });
+  }
 }
 
 function dependencies(repository = new FakeRepository()): ApiDependencies {
@@ -474,6 +544,27 @@ describe('API handler trust boundary', () => {
     );
     expect(response.statusCode).toBe(200);
     expect(parsedBody(response)).toEqual({ [key]: [] });
+  });
+
+  it('returns a tenant-scoped migration candidate detail', async () => {
+    const response = await handleRequest(
+      event(
+        'GET',
+        `/api/v1/organisations/${organisationId}/migration-candidates/${runId}`,
+      ),
+      dependencies(new FakeRepository()),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(parsedBody(response)).toMatchObject({
+      candidate: {
+        candidate: {
+          id: runId,
+          repositoryFullName: 'SharmaKunal14/orbitchat-migration-fixture',
+          specificationTrustState: 'reviewed',
+        },
+        repository: { commitSha: 'a'.repeat(40) },
+      },
+    });
   });
 
   it('reviews a draft only through the operator route with idempotency', async () => {

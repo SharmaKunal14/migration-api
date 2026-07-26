@@ -7,13 +7,16 @@ import {
   reconcileCandidatesForSpecification,
 } from '@migration/candidate-matching';
 import type { AppDatabase, Database } from '@migration/database';
-import { migrationSpecificationSchema } from '@migration/contracts';
+import { impactReportSchema, migrationSpecificationSchema } from '@migration/contracts';
 import type {
   GithubInstallationVerification,
   MigrationSpecification,
   PublicDependencyObservation,
   PublicGithubInstallation,
   PublicMigrationCandidate,
+  PublicMigrationCandidateDetail,
+  PublicMigrationCandidateImpactReport,
+  PublicImpactReportSummary,
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
@@ -158,10 +161,102 @@ export interface ApiRepositoryPort {
     userId: string,
     organisationId: string,
   ): Promise<PublicMigrationCandidate[]>;
+  getMigrationCandidate(
+    userId: string,
+    organisationId: string,
+    candidateId: string,
+  ): Promise<PublicMigrationCandidateDetail>;
 }
 
 function digestJson(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+interface StoredImpactReport {
+  readonly id: string;
+  readonly candidateId: string;
+  readonly repositoryId: string;
+  readonly repositorySnapshotId: string;
+  readonly outcome: 'affected' | 'not_affected' | 'inconclusive';
+  readonly affectedSummary: unknown;
+  readonly riskCategory: 'low' | 'medium' | 'high' | 'unknown';
+  readonly verificationAvailability: unknown;
+  readonly uncertainty: unknown;
+  readonly artifactDigest: string;
+  readonly revision: number;
+  readonly createdAt: Date;
+  readonly commitSha: string;
+  readonly snapshotDigest: string;
+}
+
+function publicImpactReport(
+  row: StoredImpactReport,
+  currentSnapshotId: string,
+): PublicMigrationCandidateImpactReport {
+  const report = impactReportSchema.safeParse({
+    schemaVersion: '1.0',
+    candidateId: row.candidateId,
+    repository: {
+      repositoryId: row.repositoryId,
+      snapshotId: row.repositorySnapshotId,
+      commitSha: row.commitSha,
+      snapshotDigest: row.snapshotDigest,
+    },
+    outcome: row.outcome,
+    affectedFiles: readObjectProperty(row.affectedSummary, 'affectedFiles'),
+    unaffectedFiles: readObjectProperty(row.affectedSummary, 'unaffectedFiles'),
+    verification: row.verificationAvailability,
+    risk: row.riskCategory,
+    uncertainties: row.uncertainty,
+    revision: row.revision,
+    generatedAt: row.createdAt.toISOString(),
+  });
+  if (!report.success) {
+    throw new DomainError(
+      'IMPACT_REPORT_INVALID',
+      'The impact report could not be loaded.',
+      500,
+    );
+  }
+  return {
+    id: row.id,
+    outcome: report.data.outcome,
+    riskCategory: report.data.risk,
+    freshness: row.repositorySnapshotId === currentSnapshotId ? 'current' : 'stale',
+    affectedFileCount: report.data.affectedFiles.length,
+    uncertaintyCount: report.data.uncertainties.length,
+    analysedCommit: report.data.repository.commitSha,
+    snapshotDigest: report.data.repository.snapshotDigest,
+    artifactDigest: row.artifactDigest,
+    revision: report.data.revision,
+    affectedFiles: report.data.affectedFiles,
+    unaffectedFiles: report.data.unaffectedFiles,
+    verification: report.data.verification,
+    uncertainties: report.data.uncertainties,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+function readObjectProperty(value: unknown, property: string): unknown {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return undefined;
+  }
+  return Reflect.get(value, property) as unknown;
+}
+
+function publicImpactReportSummary(
+  report: PublicMigrationCandidateImpactReport,
+): PublicImpactReportSummary {
+  return {
+    id: report.id,
+    outcome: report.outcome,
+    riskCategory: report.riskCategory,
+    freshness: report.freshness,
+    affectedFileCount: report.affectedFileCount,
+    uncertaintyCount: report.uncertaintyCount,
+    analysedCommit: report.analysedCommit,
+    createdAt: report.createdAt,
+  };
 }
 
 export class ApiRepository implements ApiRepositoryPort {
@@ -924,6 +1019,7 @@ export class ApiRepository implements ApiRepositoryPort {
         'candidate.repositoryId',
         'repository.fullName as repositoryFullName',
         'candidate.migrationSpecificationId',
+        'observation.repositorySnapshotId',
         'observation.packageName',
         'observation.declaredRange',
         'observation.resolvedVersion',
@@ -941,6 +1037,57 @@ export class ApiRepository implements ApiRepositoryPort {
       .orderBy('candidate.lastDetectedAt', 'desc')
       .limit(500)
       .execute();
+    const reportRows =
+      rows.length === 0
+        ? []
+        : await this.database
+            .selectFrom('impactReports as report')
+            .innerJoin(
+              'repositorySnapshots as snapshot',
+              'snapshot.id',
+              'report.repositorySnapshotId',
+            )
+            .select([
+              'report.id',
+              'report.candidateId',
+              'report.repositoryId',
+              'report.repositorySnapshotId',
+              'report.outcome',
+              'report.affectedSummary',
+              'report.riskCategory',
+              'report.verificationAvailability',
+              'report.uncertainty',
+              'report.artifactDigest',
+              'report.revision',
+              'report.createdAt',
+              'snapshot.commitSha',
+              'snapshot.digest as snapshotDigest',
+            ])
+            .where(
+              'report.candidateId',
+              'in',
+              rows.map(row => row.id),
+            )
+            .orderBy('report.candidateId')
+            .orderBy('report.revision', 'desc')
+            .execute();
+    const currentSnapshots = new Map(
+      rows.map(row => [row.id, row.repositorySnapshotId]),
+    );
+    const latestReports = new Map<string, PublicImpactReportSummary>();
+    for (const report of reportRows) {
+      if (!latestReports.has(report.candidateId)) {
+        latestReports.set(
+          report.candidateId,
+          publicImpactReportSummary(
+            publicImpactReport(
+              report,
+              currentSnapshots.get(report.candidateId) ?? report.repositorySnapshotId,
+            ),
+          ),
+        );
+      }
+    }
     return rows.map(row => {
       if (row.specificationTrustState === 'draft') {
         throw new DomainError(
@@ -950,12 +1097,221 @@ export class ApiRepository implements ApiRepositoryPort {
         );
       }
       return {
-        ...row,
+        id: row.id,
+        repositoryId: row.repositoryId,
+        repositoryFullName: row.repositoryFullName,
+        migrationSpecificationId: row.migrationSpecificationId,
+        packageName: row.packageName,
+        declaredRange: row.declaredRange,
+        resolvedVersion: row.resolvedVersion,
+        sourceCompatibility: row.sourceCompatibility,
+        targetVersion: row.targetVersion,
         specificationTrustState: row.specificationTrustState,
+        status: row.status,
+        impact: latestReports.get(row.id) ?? null,
         firstDetectedAt: row.firstDetectedAt.toISOString(),
         lastDetectedAt: row.lastDetectedAt.toISOString(),
+        version: row.version,
       };
     });
+  }
+
+  public async getMigrationCandidate(
+    userId: string,
+    organisationId: string,
+    candidateId: string,
+  ): Promise<PublicMigrationCandidateDetail> {
+    requireAction(await this.membership(organisationId, userId), 'repository:read');
+    const row = await this.database
+      .selectFrom('migrationCandidates as candidate')
+      .innerJoin(
+        'repositories as repository',
+        'repository.id',
+        'candidate.repositoryId',
+      )
+      .innerJoin(
+        'migrationSpecifications as specification',
+        'specification.id',
+        'candidate.migrationSpecificationId',
+      )
+      .innerJoin(
+        'vendorReleases as release',
+        'release.id',
+        'specification.vendorReleaseId',
+      )
+      .innerJoin('apiProducts as product', 'product.id', 'release.apiProductId')
+      .innerJoin('vendors as vendor', 'vendor.id', 'product.vendorId')
+      .innerJoin(
+        'dependencyObservations as observation',
+        'observation.id',
+        'candidate.dependencyObservationId',
+      )
+      .innerJoin(
+        'repositorySnapshots as snapshot',
+        'snapshot.id',
+        'observation.repositorySnapshotId',
+      )
+      .select([
+        'candidate.id',
+        'candidate.repositoryId',
+        'repository.fullName as repositoryFullName',
+        'candidate.migrationSpecificationId',
+        'candidate.status',
+        'candidate.firstDetectedAt',
+        'candidate.lastDetectedAt',
+        'candidate.version',
+        'observation.id as dependencyObservationId',
+        'observation.packageName',
+        'observation.dependencyKind',
+        'observation.manifestPath',
+        'observation.lockfilePath',
+        'observation.declaredRange',
+        'observation.resolvedVersion',
+        'observation.discoveryMethod',
+        'snapshot.id as repositorySnapshotId',
+        'snapshot.commitSha',
+        'snapshot.digest as snapshotDigest',
+        'snapshot.createdAt as snapshotCreatedAt',
+        'specification.vendorReleaseId',
+        'specification.sourceCompatibility',
+        'specification.targetVersion',
+        'specification.trustState as specificationTrustState',
+        'specification.revision as specificationRevision',
+        'specification.evidenceDigest',
+        'specification.reviewedAt',
+        'specification.createdAt as specificationCreatedAt',
+        'specification.specification',
+        'vendor.name as vendorName',
+        'product.canonicalIdentifier as productIdentifier',
+      ])
+      .where('candidate.organisationId', '=', organisationId)
+      .where('candidate.id', '=', candidateId)
+      .where('specification.trustState', 'in', ['reviewed', 'vendor_verified'])
+      .executeTakeFirst();
+    if (!row) {
+      throw new DomainError(
+        'MIGRATION_CANDIDATE_NOT_FOUND',
+        'The migration candidate was not found.',
+        404,
+      );
+    }
+    if (row.specificationTrustState === 'draft') {
+      throw new DomainError(
+        'MIGRATION_CANDIDATE_TRUST_INVALID',
+        'The migration candidate could not be loaded.',
+        500,
+      );
+    }
+    const specification = migrationSpecificationSchema.safeParse(row.specification);
+    if (!specification.success) {
+      throw new DomainError(
+        'MIGRATION_SPECIFICATION_INVALID',
+        'The migration specification could not be loaded.',
+        500,
+      );
+    }
+    const [evidenceRows, reportRow] = await Promise.all([
+      this.database
+        .selectFrom('vendorEvidenceItems as evidence')
+        .innerJoin('vendorSources as source', 'source.id', 'evidence.vendorSourceId')
+        .select([
+          'source.sourceKey',
+          'source.sourceKind',
+          'evidence.canonicalUrl',
+          'evidence.digest',
+          'evidence.mediaType',
+          'evidence.retrievedAt',
+        ])
+        .where('evidence.vendorReleaseId', '=', row.vendorReleaseId)
+        .orderBy('source.sourceKey')
+        .limit(100)
+        .execute(),
+      this.database
+        .selectFrom('impactReports as report')
+        .innerJoin(
+          'repositorySnapshots as reportSnapshot',
+          'reportSnapshot.id',
+          'report.repositorySnapshotId',
+        )
+        .select([
+          'report.id',
+          'report.candidateId',
+          'report.repositoryId',
+          'report.repositorySnapshotId',
+          'report.outcome',
+          'report.affectedSummary',
+          'report.riskCategory',
+          'report.verificationAvailability',
+          'report.uncertainty',
+          'report.artifactDigest',
+          'report.revision',
+          'report.createdAt',
+          'reportSnapshot.commitSha',
+          'reportSnapshot.digest as snapshotDigest',
+        ])
+        .where('report.candidateId', '=', row.id)
+        .orderBy('report.revision', 'desc')
+        .executeTakeFirst(),
+    ]);
+    const impactReport = reportRow
+      ? publicImpactReport(reportRow, row.repositorySnapshotId)
+      : null;
+    const candidate: PublicMigrationCandidate = {
+      id: row.id,
+      repositoryId: row.repositoryId,
+      repositoryFullName: row.repositoryFullName,
+      migrationSpecificationId: row.migrationSpecificationId,
+      packageName: row.packageName,
+      declaredRange: row.declaredRange,
+      resolvedVersion: row.resolvedVersion,
+      sourceCompatibility: row.sourceCompatibility,
+      targetVersion: row.targetVersion,
+      specificationTrustState: row.specificationTrustState,
+      status: row.status,
+      impact: impactReport ? publicImpactReportSummary(impactReport) : null,
+      firstDetectedAt: row.firstDetectedAt.toISOString(),
+      lastDetectedAt: row.lastDetectedAt.toISOString(),
+      version: row.version,
+    };
+    return {
+      candidate,
+      repository: {
+        id: row.repositoryId,
+        fullName: row.repositoryFullName,
+        commitSha: row.commitSha,
+        snapshotDigest: row.snapshotDigest,
+        snapshotCreatedAt: row.snapshotCreatedAt.toISOString(),
+      },
+      dependency: {
+        id: row.dependencyObservationId,
+        packageName: row.packageName,
+        dependencyKind: row.dependencyKind,
+        manifestPath: row.manifestPath,
+        lockfilePath: row.lockfilePath,
+        declaredRange: row.declaredRange,
+        resolvedVersion: row.resolvedVersion,
+        discoveryMethod: row.discoveryMethod,
+      },
+      specification: {
+        id: row.migrationSpecificationId,
+        vendorReleaseId: row.vendorReleaseId,
+        vendorName: row.vendorName,
+        productIdentifier: row.productIdentifier,
+        sourceCompatibility: row.sourceCompatibility,
+        targetVersion: row.targetVersion,
+        trustState: row.specificationTrustState,
+        revision: row.specificationRevision,
+        evidenceDigest: row.evidenceDigest,
+        reviewedAt: row.reviewedAt?.toISOString() ?? null,
+        createdAt: row.specificationCreatedAt.toISOString(),
+        specification: specification.data,
+      },
+      vendorEvidence: evidenceRows.map(evidence => ({
+        ...evidence,
+        retrievedAt: evidence.retrievedAt.toISOString(),
+      })),
+      impactReport,
+    };
   }
 
   public async createDemoRun(

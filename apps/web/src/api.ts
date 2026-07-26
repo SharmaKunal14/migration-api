@@ -3,6 +3,8 @@ import type {
   PublicGithubInstallation,
   PublicGithubInstallLink,
   PublicGithubSetupCompletion,
+  PublicMigrationCandidate,
+  PublicMigrationCandidateDetail,
   PublicOrganisation,
   PublicDependencyObservation,
   PublicRepository,
@@ -129,6 +131,24 @@ export async function loadDependencies(
   return request(
     token,
     `/v1/organisations/${organisationId}/repositories/${repositoryId}/dependencies`,
+  );
+}
+
+export async function loadMigrationCandidates(
+  token: string,
+  organisationId: string,
+): Promise<{ candidates: PublicMigrationCandidate[] }> {
+  return request(token, `/v1/organisations/${organisationId}/migration-candidates`);
+}
+
+export async function loadMigrationCandidate(
+  token: string,
+  organisationId: string,
+  candidateId: string,
+): Promise<{ candidate: PublicMigrationCandidateDetail }> {
+  return request(
+    token,
+    `/v1/organisations/${organisationId}/migration-candidates/${candidateId}`,
   );
 }
 

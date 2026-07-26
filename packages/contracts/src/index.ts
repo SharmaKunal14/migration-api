@@ -1177,7 +1177,69 @@ export interface PublicMigrationCandidate {
   readonly targetVersion: string;
   readonly specificationTrustState: 'reviewed' | 'vendor_verified';
   readonly status: 'open' | 'dismissed' | 'superseded' | 'resolved';
+  readonly impact: PublicImpactReportSummary | null;
   readonly firstDetectedAt: string;
   readonly lastDetectedAt: string;
   readonly version: number;
+}
+
+export type ImpactReportFreshness = 'current' | 'stale';
+
+export interface PublicImpactReportSummary {
+  readonly id: string;
+  readonly outcome: 'affected' | 'not_affected' | 'inconclusive';
+  readonly riskCategory: 'low' | 'medium' | 'high' | 'unknown';
+  readonly freshness: ImpactReportFreshness;
+  readonly affectedFileCount: number;
+  readonly uncertaintyCount: number;
+  readonly analysedCommit: string;
+  readonly createdAt: string;
+}
+
+export interface PublicVendorEvidenceItem {
+  readonly sourceKey: string;
+  readonly sourceKind:
+    | 'package_registry_release'
+    | 'migration_guide'
+    | 'changelog'
+    | 'api_definition'
+    | 'sdk_repository_release';
+  readonly canonicalUrl: string;
+  readonly digest: string;
+  readonly mediaType: string;
+  readonly retrievedAt: string;
+}
+
+export interface PublicMigrationCandidateImpactReport extends PublicImpactReportSummary {
+  readonly snapshotDigest: string;
+  readonly artifactDigest: string;
+  readonly revision: number;
+  readonly affectedFiles: ImpactReport['affectedFiles'];
+  readonly unaffectedFiles: ImpactReport['unaffectedFiles'];
+  readonly verification: ImpactReport['verification'];
+  readonly uncertainties: ImpactReport['uncertainties'];
+}
+
+export interface PublicMigrationCandidateDetail {
+  readonly candidate: PublicMigrationCandidate;
+  readonly repository: {
+    readonly id: string;
+    readonly fullName: string;
+    readonly commitSha: string;
+    readonly snapshotDigest: string;
+    readonly snapshotCreatedAt: string;
+  };
+  readonly dependency: {
+    readonly id: string;
+    readonly packageName: string;
+    readonly dependencyKind: 'dependency' | 'development' | 'optional' | 'peer';
+    readonly manifestPath: string;
+    readonly lockfilePath: string | null;
+    readonly declaredRange: string;
+    readonly resolvedVersion: string | null;
+    readonly discoveryMethod: 'manifest' | 'npm_lockfile';
+  };
+  readonly specification: PublicMigrationSpecificationDetail;
+  readonly vendorEvidence: PublicVendorEvidenceItem[];
+  readonly impactReport: PublicMigrationCandidateImpactReport | null;
 }

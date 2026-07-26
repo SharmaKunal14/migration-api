@@ -5,6 +5,8 @@ import type {
   PublicAgentRun,
   PublicDependencyObservation,
   PublicGithubInstallation,
+  PublicMigrationCandidate,
+  PublicMigrationCandidateDetail,
   PublicOrganisation,
   PublicRepository,
 } from '@migration/contracts';
@@ -18,6 +20,8 @@ import {
   loadGithubInstallations,
   loadDependencies,
   loadMe,
+  loadMigrationCandidate,
+  loadMigrationCandidates,
   loadRepositories,
   loadRun,
   startRepositoryScan,
@@ -39,6 +43,14 @@ export function App(): React.JSX.Element {
         />
         <Route path="/organisations/:orgId/demo" element={<DemoPage />} />
         <Route path="/organisations/:orgId/runs/:runId" element={<RunPage />} />
+        <Route
+          path="/organisations/:orgId/migrations"
+          element={<MigrationInboxPage />}
+        />
+        <Route
+          path="/organisations/:orgId/migrations/:candidateId"
+          element={<MigrationCandidatePage />}
+        />
       </Route>
       <Route path="*" element={<HomeRedirect />} />
     </Routes>
@@ -438,11 +450,17 @@ function GithubSettingsPage(): React.JSX.Element {
         )}
       </section>
       {orgId && (
-        <p className="fine-print">
+        <nav className="settings-links" aria-label="Workspace tools">
+          <a
+            className="primary-button link-button"
+            href={`/organisations/${orgId}/migrations`}
+          >
+            Open migration inbox
+          </a>
           <a href={`/organisations/${orgId}/demo`}>
             Open the Stage 1 OrbitChat evidence demo
           </a>
-        </p>
+        </nav>
       )}
     </div>
   );
@@ -606,6 +624,417 @@ function readGithubSetupCallback():
   const installationId = parameters.get('installation_id');
   const state = parameters.get('state');
   return installationId && state ? { installationId, state } : undefined;
+}
+
+function MigrationInboxPage(): React.JSX.Element {
+  const { session } = useAuth();
+  const { orgId } = useParams();
+  const [candidates, setCandidates] = useState<PublicMigrationCandidate[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!session || !orgId) return;
+    let active = true;
+    void loadMigrationCandidates(session.access_token, orgId)
+      .then(data => {
+        if (active) setCandidates(data.candidates);
+      })
+      .catch((caught: unknown) => {
+        if (active) setError(errorText(caught));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [orgId, session]);
+
+  return (
+    <div className="page migration-page">
+      <div className="migration-page-heading">
+        <div>
+          <p className="eyebrow">Migration inbox</p>
+          <h1>Changes worth reviewing.</h1>
+          <p className="lede">
+            Candidates appear only after vendor evidence is reviewed and matched to an
+            observed dependency. Nothing here changes repository code.
+          </p>
+        </div>
+        {orgId && (
+          <a
+            className="secondary-button link-button"
+            href={`/organisations/${orgId}/settings/github`}
+          >
+            Repository settings
+          </a>
+        )}
+      </div>
+      {loading ? (
+        <section className="panel empty-state">Loading migration candidates…</section>
+      ) : error ? (
+        <section className="panel empty-state error-message">{error}</section>
+      ) : candidates.length === 0 ? (
+        <section className="panel empty-state">
+          <span className="empty-state-mark" aria-hidden="true">
+            ✓
+          </span>
+          <h2>No open migrations</h2>
+          <p>
+            No reviewed vendor release currently matches the dependencies in this
+            workspace.
+          </p>
+        </section>
+      ) : (
+        <div className="candidate-grid">
+          {candidates.map(candidate => (
+            <MigrationCandidateCard
+              candidate={candidate}
+              organisationId={orgId ?? ''}
+              key={candidate.id}
+            />
+          ))}
+        </div>
+      )}
+      <p className="fine-print stage-boundary">
+        Stage 3 is read-only. Approval, repository edits, test execution, branches, and
+        pull requests are not available from this inbox.
+      </p>
+    </div>
+  );
+}
+
+function MigrationCandidateCard({
+  candidate,
+  organisationId,
+}: {
+  readonly candidate: PublicMigrationCandidate;
+  readonly organisationId: string;
+}): React.JSX.Element {
+  const impact = candidate.impact;
+  return (
+    <a
+      className="candidate-card"
+      href={`/organisations/${organisationId}/migrations/${candidate.id}`}
+    >
+      <div className="candidate-card-topline">
+        <span className="package-pill">{candidate.packageName}</span>
+        <span className={`risk risk-${impact?.riskCategory ?? 'pending'}`}>
+          {impact ? `${impact.riskCategory} risk` : 'analysis pending'}
+        </span>
+      </div>
+      <h2>{candidate.repositoryFullName}</h2>
+      <div className="version-route" aria-label="Version migration">
+        <div>
+          <small>Observed</small>
+          <strong>{candidate.resolvedVersion ?? candidate.declaredRange}</strong>
+        </div>
+        <span aria-hidden="true">→</span>
+        <div>
+          <small>Target</small>
+          <strong>{candidate.targetVersion}</strong>
+        </div>
+      </div>
+      <div className="candidate-metrics">
+        <span>
+          <small>Evidence</small>
+          <strong>{candidate.specificationTrustState.replace('_', ' ')}</strong>
+        </span>
+        <span>
+          <small>Affected areas</small>
+          <strong>{impact ? impact.affectedFileCount : '—'}</strong>
+        </span>
+        <span>
+          <small>Uncertainties</small>
+          <strong>{impact ? impact.uncertaintyCount : '—'}</strong>
+        </span>
+      </div>
+      <footer>
+        <span className={`freshness freshness-${impact?.freshness ?? 'pending'}`}>
+          {impact
+            ? `${impact.freshness} · ${shortSha(impact.analysedCommit)}`
+            : 'Impact report pending'}
+        </span>
+        <strong>
+          Review evidence <span aria-hidden="true">↗</span>
+        </strong>
+      </footer>
+    </a>
+  );
+}
+
+function MigrationCandidatePage(): React.JSX.Element {
+  const { session } = useAuth();
+  const { orgId, candidateId } = useParams();
+  const [detail, setDetail] = useState<PublicMigrationCandidateDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!session || !orgId || !candidateId) return;
+    let active = true;
+    void loadMigrationCandidate(session.access_token, orgId, candidateId)
+      .then(data => {
+        if (active) setDetail(data.candidate);
+      })
+      .catch((caught: unknown) => {
+        if (active) setError(errorText(caught));
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [candidateId, orgId, session]);
+
+  if (error) return <FullPageMessage>{error}</FullPageMessage>;
+  if (!detail) return <FullPageMessage>Loading migration evidence…</FullPageMessage>;
+
+  const { candidate, impactReport, specification } = detail;
+  return (
+    <div className="page migration-detail-page">
+      <a className="back-link" href={`/organisations/${orgId ?? ''}/migrations`}>
+        ← Migration inbox
+      </a>
+      <header className="candidate-hero">
+        <div>
+          <p className="eyebrow">Reviewed migration candidate</p>
+          <h1>{candidate.repositoryFullName}</h1>
+          <p className="lede">
+            {candidate.packageName}{' '}
+            {candidate.resolvedVersion ?? candidate.declaredRange} can be evaluated for{' '}
+            {candidate.targetVersion}.
+          </p>
+        </div>
+        <div className="hero-badges">
+          <span className={`status status-${candidate.status}`}>
+            {candidate.status}
+          </span>
+          <span className={`risk risk-${impactReport?.riskCategory ?? 'pending'}`}>
+            {impactReport ? `${impactReport.riskCategory} risk` : 'analysis pending'}
+          </span>
+        </div>
+      </header>
+
+      <section className="detail-overview">
+        <article className="panel version-panel">
+          <p className="section-kicker">Version route</p>
+          <div className="version-route version-route-large">
+            <div>
+              <small>Current</small>
+              <strong>{candidate.resolvedVersion ?? candidate.declaredRange}</strong>
+              <span>{candidate.declaredRange}</span>
+            </div>
+            <span aria-hidden="true">→</span>
+            <div>
+              <small>Target</small>
+              <strong>{candidate.targetVersion}</strong>
+              <span>Supports {candidate.sourceCompatibility}</span>
+            </div>
+          </div>
+        </article>
+        <article className="panel trust-panel">
+          <p className="section-kicker">Evidence status</p>
+          <h2>{specification.trustState.replace('_', ' ')}</h2>
+          <p>
+            Operator-reviewed specification revision {specification.revision}.
+            {specification.reviewedAt
+              ? ` Reviewed ${new Date(specification.reviewedAt).toLocaleString()}.`
+              : ''}
+          </p>
+        </article>
+      </section>
+
+      {impactReport ? (
+        <>
+          <section className="panel detail-section">
+            <div className="section-heading">
+              <div>
+                <p className="section-kicker">Read-only impact analysis</p>
+                <h2>{impactHeadline(impactReport.outcome)}</h2>
+              </div>
+              <span className={`freshness freshness-${impactReport.freshness}`}>
+                {impactReport.freshness} report
+              </span>
+            </div>
+            {impactReport.affectedFiles.length === 0 ? (
+              <p className="muted-copy">No affected files were identified.</p>
+            ) : (
+              <div className="file-impact-list">
+                {impactReport.affectedFiles.map(file => (
+                  <article key={file.path}>
+                    <div className="file-impact-heading">
+                      <code>{file.path}</code>
+                      <span>{file.classification.replace('_', ' ')}</span>
+                    </div>
+                    {file.symbols.length > 0 && (
+                      <div className="symbol-list" aria-label="Affected symbols">
+                        {file.symbols.map(symbol => (
+                          <code key={symbol}>{symbol}</code>
+                        ))}
+                      </div>
+                    )}
+                    <ul>
+                      {file.expectedChanges.map(change => (
+                        <li key={change}>{change}</li>
+                      ))}
+                    </ul>
+                  </article>
+                ))}
+              </div>
+            )}
+          </section>
+
+          <div className="detail-two-column">
+            <section className="panel detail-section">
+              <p className="section-kicker">Verification availability</p>
+              <h2>Checks found in the snapshot</h2>
+              <div className="verification-list">
+                {impactReport.verification.profiles.map(profile => (
+                  <article key={profile.profile}>
+                    <span
+                      className={`availability availability-${profile.availability}`}
+                    >
+                      {profile.availability}
+                    </span>
+                    <div>
+                      <strong>{profileLabel(profile.profile)}</strong>
+                      <p>{profile.reason}</p>
+                    </div>
+                  </article>
+                ))}
+              </div>
+            </section>
+            <section className="panel detail-section uncertainty-panel">
+              <p className="section-kicker">Uncertainty</p>
+              <h2>
+                {impactReport.uncertainties.length === 0
+                  ? 'No reported ambiguity'
+                  : `${String(impactReport.uncertainties.length)} item${
+                      impactReport.uncertainties.length === 1 ? '' : 's'
+                    } need judgement`}
+              </h2>
+              {impactReport.uncertainties.map(item => (
+                <article key={item.code}>
+                  <code>{item.code}</code>
+                  <p>{item.summary}</p>
+                </article>
+              ))}
+            </section>
+          </div>
+        </>
+      ) : (
+        <section className="panel empty-state">
+          <h2>Impact analysis pending</h2>
+          <p>
+            The candidate is valid, but no structured impact report is available yet.
+          </p>
+        </section>
+      )}
+
+      <section className="panel detail-section">
+        <p className="section-kicker">Reviewed change specification</p>
+        <h2>What the vendor evidence says changed</h2>
+        <div className="specification-change-list">
+          {specification.specification.changes.map(change => (
+            <article key={change.changeId}>
+              <span>{change.changeId}</span>
+              <div>
+                <h3>{change.summary}</h3>
+                <p>
+                  {change.category} · {change.certainty.replace('_', ' ')}
+                </p>
+                {change.transformations.map((transformation, index) => (
+                  <div
+                    className="transformation"
+                    key={`${change.changeId}:${transformation.kind}:${String(index)}`}
+                  >
+                    <code>{transformation.before}</code>
+                    <span aria-hidden="true">→</span>
+                    <code>{transformation.after}</code>
+                  </div>
+                ))}
+              </div>
+            </article>
+          ))}
+        </div>
+      </section>
+
+      <div className="detail-two-column">
+        <section className="panel detail-section">
+          <p className="section-kicker">Vendor provenance</p>
+          <h2>{detail.vendorEvidence.length} immutable sources</h2>
+          <div className="evidence-list">
+            {detail.vendorEvidence.map(evidence => (
+              <article key={`${evidence.sourceKey}:${evidence.digest}`}>
+                <div>
+                  <strong>{evidence.sourceKey.replaceAll('_', ' ')}</strong>
+                  <span>{evidence.sourceKind.replaceAll('_', ' ')}</span>
+                </div>
+                <a href={evidence.canonicalUrl} rel="noreferrer" target="_blank">
+                  View source ↗
+                </a>
+                <code title={evidence.digest}>{evidence.digest}</code>
+              </article>
+            ))}
+          </div>
+        </section>
+        <section className="panel detail-section provenance-panel">
+          <p className="section-kicker">Exact analysis boundary</p>
+          <h2>Reproducible references</h2>
+          <DescriptionRow label="Commit" value={detail.repository.commitSha} />
+          <DescriptionRow
+            label="Snapshot digest"
+            value={detail.repository.snapshotDigest}
+          />
+          <DescriptionRow
+            label="Specification digest"
+            value={specification.evidenceDigest}
+          />
+          {impactReport && (
+            <DescriptionRow label="Impact digest" value={impactReport.artifactDigest} />
+          )}
+          <DescriptionRow label="Manifest" value={detail.dependency.manifestPath} />
+          {detail.dependency.lockfilePath && (
+            <DescriptionRow label="Lockfile" value={detail.dependency.lockfilePath} />
+          )}
+        </section>
+      </div>
+      <p className="fine-print stage-boundary">
+        This report explains a possible migration. It does not approve work, execute
+        repository code, modify files, or create a pull request.
+      </p>
+    </div>
+  );
+}
+
+function DescriptionRow({
+  label,
+  value,
+}: {
+  readonly label: string;
+  readonly value: string;
+}): React.JSX.Element {
+  return (
+    <div className="description-row">
+      <span>{label}</span>
+      <code>{value}</code>
+    </div>
+  );
+}
+
+function shortSha(value: string): string {
+  return value.slice(0, 12);
+}
+
+function impactHeadline(outcome: 'affected' | 'not_affected' | 'inconclusive'): string {
+  if (outcome === 'affected') return 'Repository usage is affected';
+  if (outcome === 'not_affected') return 'No affected usage was found';
+  return 'Impact remains inconclusive';
+}
+
+function profileLabel(profile: 'typescript_static' | 'typescript_unit'): string {
+  return profile === 'typescript_static'
+    ? 'TypeScript static checks'
+    : 'TypeScript unit tests';
 }
 
 function DemoPage(): React.JSX.Element {
