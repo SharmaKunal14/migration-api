@@ -13,10 +13,12 @@ interface ResponsePlan {
   readonly responseError?: Error;
   readonly requestError?: Error;
   readonly timeOut?: boolean;
+  readonly inspectOptions?: (options: Parameters<HttpsRequestFactory>[1]) => void;
 }
 
 function requestFactory(plan: ResponsePlan): HttpsRequestFactory {
-  return (_url, _options, responseListener) => {
+  return (_url, options, responseListener) => {
+    plan.inspectOptions?.(options);
     let requestErrorListener: ((error: Error) => void) | undefined;
     let timeoutListener: (() => void) | undefined;
     const request = {
@@ -82,6 +84,10 @@ function requestFactory(plan: ResponsePlan): HttpsRequestFactory {
 
 describe('vendor HTTPS transport adapter', () => {
   it('returns bounded response metadata and content', async () => {
+    const inspectOptions = vi.fn((options: Parameters<HttpsRequestFactory>[1]) => {
+      expect(options.family).toBe(4);
+      expect(options.servername).toBe('example.com');
+    });
     const request = createPinnedHttpsRequester(
       requestFactory({
         statusCode: 200,
@@ -90,6 +96,7 @@ describe('vendor HTTPS transport adapter', () => {
           etag: ['first', 'ignored'],
         },
         chunks: [Buffer.from('trusted'), Buffer.from(' evidence')],
+        inspectOptions,
       }),
     );
 
@@ -101,6 +108,7 @@ describe('vendor HTTPS transport adapter', () => {
       etag: 'first',
       bytes: Buffer.from('trusted evidence'),
     });
+    expect(inspectOptions).toHaveBeenCalledOnce();
   });
 
   it('rejects an oversized declared response before reading it', async () => {
@@ -137,14 +145,29 @@ describe('vendor HTTPS transport adapter', () => {
     ).rejects.toMatchObject({ safeCode: 'VENDOR_SOURCE_TIMEOUT' });
   });
 
-  it('propagates transport errors for safe classification by the worker', async () => {
+  it('classifies transport errors without exposing their messages', async () => {
     const request = createPinnedHttpsRequester(
       requestFactory({ requestError: new Error('connection failed') }),
     );
 
     await expect(
       request(new URL('https://example.com/evidence'), '8.8.8.8', 1024),
-    ).rejects.toThrow('connection failed');
+    ).rejects.toMatchObject({
+      safeCode: 'VENDOR_SOURCE_TRANSPORT_FAILED',
+    });
+  });
+
+  it('classifies certificate failures separately', async () => {
+    const certificateError = Object.assign(new Error('certificate details'), {
+      code: 'CERT_HAS_EXPIRED',
+    });
+    const request = createPinnedHttpsRequester(
+      requestFactory({ requestError: certificateError }),
+    );
+
+    await expect(
+      request(new URL('https://example.com/evidence'), '8.8.8.8', 1024),
+    ).rejects.toMatchObject({ safeCode: 'VENDOR_SOURCE_TLS_FAILED' });
   });
 });
 

@@ -47,8 +47,8 @@ a deployment follow-up rather than a claim made by this stage.
 Performed locally on 2026-07-26:
 
 - `npm run check`: passed.
-- 205 tests passed.
-- Coverage: 93.29% statements, 89.09% branches, 96.47% functions, and 92.99%
+- 206 tests passed.
+- Coverage: 93.40% statements, 89.58% branches, 96.59% functions, and 93.07%
   lines.
 - Formatting, documentation lint, ESLint, strict TypeScript, contract
   validation, secret scan, service bundle verification, and production web

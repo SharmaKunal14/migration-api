@@ -87,6 +87,7 @@ export async function ingestVendorRelease(
     return;
   }
 
+  let failureStage = 'retrieve_source';
   try {
     const acquired: AcquiredSource[] = [];
     const allowedDomains = new Set(context.officialDomains);
@@ -103,6 +104,7 @@ export async function ingestVendorRelease(
       ) {
         throw new VendorEvidenceError('VENDOR_RELEASE_SOURCE_DIGEST_MISMATCH');
       }
+      failureStage = 'store_source';
       const objectKey = sourceObjectKey(
         config.APP_ENVIRONMENT,
         context.vendorSlug,
@@ -124,8 +126,10 @@ export async function ingestVendorRelease(
         },
       });
       acquired.push({ definition: source, evidence, objectKey });
+      failureStage = 'retrieve_source';
     }
 
+    failureStage = 'build_bundle';
     const manifest = JSON.stringify({
       schemaVersion: '1.0',
       vendorReleaseId: context.releaseId,
@@ -155,6 +159,7 @@ export async function ingestVendorRelease(
       context.releaseId,
       manifestDigest,
     );
+    failureStage = 'store_bundle';
     await putImmutableObject(dependencies.s3, {
       bucket: config.ARTIFACT_BUCKET,
       key: manifestKey,
@@ -192,7 +197,9 @@ export async function ingestVendorRelease(
     if (!result.bundle) {
       throw new VendorEvidenceError('VENDOR_INGESTION_RESULT_INVALID');
     }
+    failureStage = 'write_result';
     await writeResult(config, dependencies.s3, result);
+    failureStage = 'persist_success';
     await persistSuccess(
       dependencies.database,
       context,
@@ -209,6 +216,14 @@ export async function ingestVendorRelease(
     });
   } catch (error) {
     const code = classifyFailure(error);
+    writeLog('error', {
+      event: 'vendor_ingestion_failed',
+      requestId: run.id,
+      correlationId: config.CORRELATION_ID,
+      safeErrorCode: code,
+      errorClass: classifyErrorClass(error),
+      failureStage,
+    });
     await persistFailure(dependencies.database, run.id, code, dependencies.now());
     const result = vendorIngestionResultSchema.parse({
       schemaVersion: '1.0',
@@ -219,12 +234,6 @@ export async function ingestVendorRelease(
       bundle: null,
     });
     await writeResult(config, dependencies.s3, result);
-    writeLog('error', {
-      event: 'vendor_ingestion_failed',
-      requestId: run.id,
-      correlationId: config.CORRELATION_ID,
-      safeErrorCode: code,
-    });
     throw new VendorEvidenceError(code);
   }
 }
@@ -531,6 +540,12 @@ async function writeResult(
 function classifyFailure(error: unknown): string {
   const code = safeErrorCode(error);
   return code === 'INTERNAL_ERROR' ? 'VENDOR_INGESTION_FAILED' : code;
+}
+
+function classifyErrorClass(error: unknown): string {
+  if (error instanceof VendorEvidenceError) return 'VendorEvidenceError';
+  if (error instanceof S3ServiceException) return 'S3ServiceException';
+  return error instanceof Error ? 'Error' : 'UnknownError';
 }
 
 function digest(bytes: Uint8Array): string {

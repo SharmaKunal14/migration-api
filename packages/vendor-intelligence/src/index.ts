@@ -259,6 +259,7 @@ function requestPinnedHttps(
       {
         method: 'GET',
         agent: false,
+        family,
         headers: {
           accept: '*/*',
           'user-agent': 'migration-api-vendor-fetcher',
@@ -286,7 +287,7 @@ function requestPinnedHttps(
           }
           chunks.push(chunk);
         });
-        response.once('error', reject);
+        response.once('error', error => reject(classifyTransportError(error)));
         response.once('end', () => {
           resolve({
             status: response.statusCode ?? 0,
@@ -301,9 +302,24 @@ function requestPinnedHttps(
     request.setTimeout(REQUEST_TIMEOUT_MS, () => {
       request.destroy(new VendorEvidenceError('VENDOR_SOURCE_TIMEOUT'));
     });
-    request.once('error', reject);
+    request.once('error', error => reject(classifyTransportError(error)));
     request.end();
   });
+}
+
+function classifyTransportError(error: Error): VendorEvidenceError {
+  if (error instanceof VendorEvidenceError) return error;
+  const code = 'code' in error && typeof error.code === 'string' ? error.code : '';
+  if (
+    code.startsWith('ERR_TLS_') ||
+    code.startsWith('CERT_') ||
+    code === 'DEPTH_ZERO_SELF_SIGNED_CERT' ||
+    code === 'SELF_SIGNED_CERT_IN_CHAIN' ||
+    code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE'
+  ) {
+    return new VendorEvidenceError('VENDOR_SOURCE_TLS_FAILED');
+  }
+  return new VendorEvidenceError('VENDOR_SOURCE_TRANSPORT_FAILED');
 }
 
 function headerValue(value: string | string[] | undefined): string | null {
