@@ -17,3 +17,7 @@ output "source_fetcher_ecr_repository_url" {
 output "vendor_fetcher_ecr_repository_url" {
   value = aws_ecr_repository.vendor_fetcher.repository_url
 }
+
+output "change_intelligence_agent_ecr_repository_url" {
+  value = aws_ecr_repository.change_intelligence_agent.repository_url
+}

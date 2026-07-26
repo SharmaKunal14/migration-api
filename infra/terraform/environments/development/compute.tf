@@ -58,6 +58,18 @@ resource "aws_cloudwatch_log_group" "vendor_fetcher" {
   kms_key_id        = aws_kms_key.logs.arn
 }
 
+resource "aws_cloudwatch_log_group" "vendor_intelligence_control" {
+  name              = "/aws/lambda/migration-api-development-vendor-intelligence-control"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
+resource "aws_cloudwatch_log_group" "change_intelligence_agent" {
+  name              = "/migration-api/development/change-intelligence-agent"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
 resource "aws_cloudwatch_log_group" "migrator" {
   name              = "/migration-api/development/database-migrator"
   retention_in_days = 30
@@ -99,6 +111,10 @@ locals {
     repository_scan_control = {
       role = aws_iam_role.repository_scan_control.id
       arn  = aws_cloudwatch_log_group.repository_scan_control.arn
+    }
+    vendor_intelligence_control = {
+      role = aws_iam_role.vendor_intelligence_control.id
+      arn  = aws_cloudwatch_log_group.vendor_intelligence_control.arn
     }
   }
 }
@@ -185,6 +201,16 @@ data "archive_file" "repository_scan_control" {
 
   source {
     content  = file("${var.service_build_directory}/repository-scan-control.js")
+    filename = "index.mjs"
+  }
+}
+
+data "archive_file" "vendor_intelligence_control" {
+  type        = "zip"
+  output_path = "${path.module}/.terraform/vendor-intelligence-control.zip"
+
+  source {
+    content  = file("${var.service_build_directory}/vendor-intelligence-control.js")
     filename = "index.mjs"
   }
 }
@@ -376,6 +402,45 @@ resource "aws_lambda_function" "repository_scan_control" {
     aws_iam_role_policy.repository_scan_control_database,
     aws_iam_role_policy.repository_scan_control_artifacts,
     aws_iam_role_policy.lambda_vpc["repository_scan_control"]
+  ]
+}
+
+resource "aws_lambda_function" "vendor_intelligence_control" {
+  function_name                  = "migration-api-development-vendor-intelligence-control"
+  role                           = aws_iam_role.vendor_intelligence_control.arn
+  handler                        = "index.handler"
+  runtime                        = "nodejs22.x"
+  architectures                  = ["arm64"]
+  filename                       = data.archive_file.vendor_intelligence_control.output_path
+  source_code_hash               = data.archive_file.vendor_intelligence_control.output_base64sha256
+  memory_size                    = 512
+  timeout                        = 30
+  reserved_concurrent_executions = 2
+
+  environment {
+    variables = {
+      APP_ENVIRONMENT     = "development"
+      ARTIFACT_BUCKET     = aws_s3_bucket.artifacts.bucket
+      DATABASE_SECRET_ARN = var.database_secret_arn
+      OPENAI_MODEL        = var.openai_model
+      NODE_OPTIONS        = "--enable-source-maps"
+    }
+  }
+
+  vpc_config {
+    security_group_ids = [aws_security_group.control.id]
+    subnet_ids         = [for subnet in aws_subnet.control : subnet.id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.vendor_intelligence_control,
+    aws_iam_role_policy.vendor_intelligence_control_database,
+    aws_iam_role_policy.vendor_intelligence_control_artifacts,
+    aws_iam_role_policy.lambda_vpc["vendor_intelligence_control"]
   ]
 }
 
@@ -619,6 +684,56 @@ resource "aws_ecs_task_definition" "vendor_fetcher" {
   ])
 }
 
+resource "aws_ecs_task_definition" "change_intelligence_agent" {
+  family                   = "migration-api-development-change-intelligence-agent"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 1024
+  memory                   = 2048
+  execution_role_arn       = aws_iam_role.change_intelligence_execution.arn
+  task_role_arn            = aws_iam_role.change_intelligence_task.arn
+
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name                   = "change-intelligence-agent"
+      image                  = "${data.aws_ecr_repository.change_intelligence_agent.repository_url}@${var.change_intelligence_agent_image_digest}"
+      essential              = true
+      readonlyRootFilesystem = true
+      user                   = "10001:10001"
+      stopTimeout            = 30
+      linuxParameters = {
+        initProcessEnabled = true
+        capabilities       = { drop = ["ALL"] }
+      }
+      environment = [
+        { name = "APP_ENVIRONMENT", value = "development" },
+        { name = "AWS_REGION", value = var.aws_region },
+        { name = "AWS_STS_REGIONAL_ENDPOINTS", value = "regional" },
+        { name = "ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.bucket },
+        { name = "ARTIFACT_KMS_KEY_ARN", value = aws_kms_key.artifacts.arn },
+        { name = "OPENAI_IDENTITY_PROVIDER_ID", value = var.change_intelligence_openai_identity_provider_id },
+        { name = "OPENAI_SERVICE_ACCOUNT_ID", value = var.change_intelligence_openai_service_account_id },
+        { name = "OPENAI_WIF_AUDIENCE", value = "https://api.openai.com/v1" },
+        { name = "OPENAI_MODEL", value = var.openai_model },
+        { name = "OPENAI_PROJECT_ALIAS", value = "development-change-intelligence" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.change_intelligence_agent.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "change-intelligence"
+        }
+      }
+    }
+  ])
+}
+
 resource "aws_ecs_task_definition" "migrator" {
   family                   = "migration-api-development-database-migrator"
   requires_compatibilities = ["FARGATE"]
@@ -683,7 +798,8 @@ data "aws_iam_policy_document" "step_functions" {
     actions = ["lambda:InvokeFunction"]
     resources = [
       aws_lambda_function.workflow_control.arn,
-      aws_lambda_function.repository_scan_control.arn
+      aws_lambda_function.repository_scan_control.arn,
+      aws_lambda_function.vendor_intelligence_control.arn
     ]
   }
 
@@ -693,7 +809,8 @@ data "aws_iam_policy_document" "step_functions" {
     resources = [
       aws_ecs_task_definition.agent.arn,
       aws_ecs_task_definition.source_fetcher.arn,
-      aws_ecs_task_definition.vendor_fetcher.arn
+      aws_ecs_task_definition.vendor_fetcher.arn,
+      aws_ecs_task_definition.change_intelligence_agent.arn
     ]
 
     condition {
@@ -718,7 +835,9 @@ data "aws_iam_policy_document" "step_functions" {
       aws_iam_role.source_fetcher_execution.arn,
       aws_iam_role.source_fetcher_task.arn,
       aws_iam_role.vendor_fetcher_execution.arn,
-      aws_iam_role.vendor_fetcher_task.arn
+      aws_iam_role.vendor_fetcher_task.arn,
+      aws_iam_role.change_intelligence_execution.arn,
+      aws_iam_role.change_intelligence_task.arn
     ]
   }
 
@@ -1025,6 +1144,148 @@ resource "aws_sfn_state_machine" "vendor_ingestion" {
           MaxAttempts     = 2
         }]
         End = true
+      }
+    }
+  })
+}
+
+resource "aws_sfn_state_machine" "change_intelligence" {
+  name     = "migration-api-development-change-intelligence"
+  role_arn = aws_iam_role.step_functions.arn
+  type     = "STANDARD"
+
+  logging_configuration {
+    include_execution_data = false
+    level                  = "ERROR"
+    log_destination        = "${aws_cloudwatch_log_group.workflow.arn}:*"
+  }
+
+  tracing_configuration {
+    enabled = true
+  }
+
+  definition = jsonencode({
+    Comment = "Stage 3C bounded draft migration-specification generation"
+    StartAt = "PrepareChangeIntelligence"
+    States = {
+      PrepareChangeIntelligence = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.vendor_intelligence_control.arn
+          Payload = {
+            operation    = "prepare"
+            "workflow.$" = "$"
+          }
+        }
+        OutputPath = "$.Payload"
+        Next       = "AlreadySucceeded"
+      }
+      AlreadySucceeded = {
+        Type = "Choice"
+        Choices = [{
+          Variable      = "$.alreadySucceeded"
+          BooleanEquals = true
+          Next          = "Complete"
+        }]
+        Default = "GenerateDraftSpecification"
+      }
+      GenerateDraftSpecification = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::ecs:runTask.sync"
+        TimeoutSeconds = 600
+        Parameters = {
+          Cluster        = aws_ecs_cluster.agent.arn
+          TaskDefinition = aws_ecs_task_definition.change_intelligence_agent.arn
+          LaunchType     = "FARGATE"
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              AssignPublicIp = "DISABLED"
+              SecurityGroups = [aws_security_group.agent.id]
+              Subnets        = [for subnet in aws_subnet.agent : subnet.id]
+            }
+          }
+          Overrides = {
+            ContainerOverrides = [{
+              Name = "change-intelligence-agent"
+              Environment = [
+                { Name = "VENDOR_RELEASE_ID", "Value.$" = "$.vendorReleaseId" },
+                { Name = "CHANGE_INTELLIGENCE_RUN_ID", "Value.$" = "$.changeIntelligenceRunId" },
+                { Name = "EVIDENCE_OBJECT_KEY", "Value.$" = "$.evidenceObjectKey" },
+                { Name = "EVIDENCE_DIGEST", "Value.$" = "$.evidenceDigest" },
+                { Name = "SPECIFICATION_REVISION", "Value.$" = "States.Format('{}', $.specificationRevision)" },
+                { Name = "RESULT_OBJECT_KEY", "Value.$" = "$.resultObjectKey" }
+              ]
+            }]
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["ECS.AmazonECSException", "ECS.ThrottlingException"]
+          IntervalSeconds = 5
+          BackoffRate     = 2
+          MaxAttempts     = 2
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          ResultPath  = null
+          Next        = "MarkInfrastructureFailure"
+        }]
+        Next = "FinalizeChangeIntelligence"
+      }
+      FinalizeChangeIntelligence = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.vendor_intelligence_control.arn
+          Payload = {
+            operation    = "finalize"
+            "workflow.$" = "$"
+          }
+        }
+        OutputPath = "$.Payload"
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          ResultPath  = null
+          Next        = "MarkInfrastructureFailure"
+        }]
+        Next = "EvaluateChangeIntelligenceOutcome"
+      }
+      EvaluateChangeIntelligenceOutcome = {
+        Type = "Choice"
+        Choices = [{
+          Variable     = "$.status"
+          StringEquals = "succeeded"
+          Next         = "Complete"
+        }]
+        Default = "ChangeIntelligenceFailed"
+      }
+      MarkInfrastructureFailure = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.vendor_intelligence_control.arn
+          Payload = {
+            operation     = "mark_failed"
+            "workflow.$"  = "$"
+            safeErrorCode = "CHANGE_INTELLIGENCE_INFRASTRUCTURE_FAILED"
+          }
+        }
+        OutputPath = "$.Payload"
+        Next       = "ChangeIntelligenceInfrastructureFailed"
+      }
+      ChangeIntelligenceFailed = {
+        Type  = "Fail"
+        Error = "ChangeIntelligenceFailed"
+        Cause = "The bounded agent did not produce an acceptable draft."
+      }
+      ChangeIntelligenceInfrastructureFailed = {
+        Type  = "Fail"
+        Error = "ChangeIntelligenceInfrastructureFailed"
+        Cause = "The Stage 3C workflow encountered an infrastructure failure."
+      }
+      Complete = {
+        Type = "Succeed"
       }
     }
   })

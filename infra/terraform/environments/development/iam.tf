@@ -83,6 +83,21 @@ resource "aws_iam_role" "vendor_fetcher_task" {
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
 }
 
+resource "aws_iam_role" "vendor_intelligence_control" {
+  name               = "migration-api-development-vendor-intelligence-control"
+  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+}
+
+resource "aws_iam_role" "change_intelligence_execution" {
+  name               = "migration-api-development-change-intelligence-execution"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
+resource "aws_iam_role" "change_intelligence_task" {
+  name               = "migration-api-development-change-intelligence-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
 resource "aws_iam_role" "migrator_execution" {
   name               = "migration-api-development-migrator-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
@@ -95,12 +110,13 @@ resource "aws_iam_role" "migrator_task" {
 
 locals {
   lambda_roles = {
-    api                     = aws_iam_role.api.id
-    outbox                  = aws_iam_role.outbox.id
-    workflow_control        = aws_iam_role.workflow_control.id
-    github_token_broker     = aws_iam_role.github_token_broker.id
-    github_reconciler       = aws_iam_role.github_reconciler.id
-    repository_scan_control = aws_iam_role.repository_scan_control.id
+    api                         = aws_iam_role.api.id
+    outbox                      = aws_iam_role.outbox.id
+    workflow_control            = aws_iam_role.workflow_control.id
+    github_token_broker         = aws_iam_role.github_token_broker.id
+    github_reconciler           = aws_iam_role.github_reconciler.id
+    repository_scan_control     = aws_iam_role.repository_scan_control.id
+    vendor_intelligence_control = aws_iam_role.vendor_intelligence_control.id
   }
 }
 
@@ -164,6 +180,12 @@ resource "aws_iam_role_policy" "github_reconciler_database" {
 resource "aws_iam_role_policy" "repository_scan_control_database" {
   name   = "runtime-database"
   role   = aws_iam_role.repository_scan_control.id
+  policy = data.aws_iam_policy_document.database_secret.json
+}
+
+resource "aws_iam_role_policy" "vendor_intelligence_control_database" {
+  name   = "runtime-database"
+  role   = aws_iam_role.vendor_intelligence_control.id
   policy = data.aws_iam_policy_document.database_secret.json
 }
 
@@ -406,6 +428,107 @@ resource "aws_iam_role_policy" "vendor_fetcher_task" {
   name   = "bounded-vendor-ingestion"
   role   = aws_iam_role.vendor_fetcher_task.id
   policy = data.aws_iam_policy_document.vendor_fetcher_task.json
+}
+
+data "aws_iam_policy_document" "change_intelligence_execution" {
+  statement {
+    sid = "PullChangeIntelligenceImage"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer"
+    ]
+    resources = [data.aws_ecr_repository.change_intelligence_agent.arn]
+  }
+
+  # ECR authorization tokens do not support resource-level permissions.
+  statement {
+    sid       = "EcrAuthorization"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "WriteChangeIntelligenceLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.change_intelligence_agent.arn}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "change_intelligence_execution" {
+  name   = "change-intelligence-image-and-logs"
+  role   = aws_iam_role.change_intelligence_execution.id
+  policy = data.aws_iam_policy_document.change_intelligence_execution.json
+}
+
+data "aws_iam_policy_document" "change_intelligence_task" {
+  statement {
+    sid       = "ReadValidatedVendorEvidence"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/vendor/*"]
+  }
+
+  statement {
+    sid       = "WriteDraftIntelligenceResult"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/change-intelligence/*"]
+  }
+
+  statement {
+    sid = "ArtifactEncryption"
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:GenerateDataKey"
+    ]
+    resources = [aws_kms_key.artifacts.arn]
+  }
+
+  # STS does not support resource scoping for GetWebIdentityToken. These
+  # conditions constrain the audience and token lifetime.
+  statement {
+    sid       = "OpenAiWorkloadIdentity"
+    actions   = ["sts:GetWebIdentityToken"]
+    resources = ["*"]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "sts:IdentityTokenAudience"
+      values   = ["https://api.openai.com/v1"]
+    }
+
+    condition {
+      test     = "NumericLessThanEquals"
+      variable = "sts:DurationSeconds"
+      values   = ["300"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "change_intelligence_task" {
+  name   = "bounded-change-intelligence-runtime"
+  role   = aws_iam_role.change_intelligence_task.id
+  policy = data.aws_iam_policy_document.change_intelligence_task.json
+}
+
+data "aws_iam_policy_document" "vendor_intelligence_control_artifacts" {
+  statement {
+    sid       = "ReadChangeIntelligenceResults"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/change-intelligence/*"]
+  }
+
+  statement {
+    sid       = "DecryptChangeIntelligenceResults"
+    actions   = ["kms:Decrypt"]
+    resources = [aws_kms_key.artifacts.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "vendor_intelligence_control_artifacts" {
+  name   = "read-change-intelligence-results"
+  role   = aws_iam_role.vendor_intelligence_control.id
+  policy = data.aws_iam_policy_document.vendor_intelligence_control_artifacts.json
 }
 
 data "aws_iam_policy_document" "repository_scan_control_artifacts" {

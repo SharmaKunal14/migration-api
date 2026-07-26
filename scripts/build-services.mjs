@@ -21,6 +21,7 @@ await mkdir('dist/workers/agent', { recursive: true });
 await mkdir('dist/workers/database-migrator', { recursive: true });
 await mkdir('dist/workers/source-fetcher', { recursive: true });
 await mkdir('dist/workers/vendor-fetcher', { recursive: true });
+await mkdir('dist/workers/change-intelligence-agent', { recursive: true });
 
 await Promise.all([
   build({
@@ -60,6 +61,11 @@ await Promise.all([
   }),
   build({
     ...common,
+    entryPoints: ['services/vendor-intelligence-control/src/handler.ts'],
+    outfile: 'dist/services/vendor-intelligence-control.js',
+  }),
+  build({
+    ...common,
     entryPoints: ['workers/agent/src/main.ts'],
     outfile: 'dist/workers/agent/main.js',
   }),
@@ -77,5 +83,10 @@ await Promise.all([
     ...common,
     entryPoints: ['workers/vendor-fetcher/src/main.ts'],
     outfile: 'dist/workers/vendor-fetcher/main.js',
+  }),
+  build({
+    ...common,
+    entryPoints: ['workers/change-intelligence-agent/src/main.ts'],
+    outfile: 'dist/workers/change-intelligence-agent/main.js',
   }),
 ]);

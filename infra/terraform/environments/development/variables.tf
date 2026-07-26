@@ -165,3 +165,23 @@ variable "vendor_fetcher_image_digest" {
     error_message = "vendor_fetcher_image_digest must be an immutable sha256 digest."
   }
 }
+
+variable "change_intelligence_agent_image_digest" {
+  description = "Immutable sha256 digest of the reviewed change-intelligence agent image."
+  type        = string
+
+  validation {
+    condition     = can(regex("^sha256:[a-f0-9]{64}$", var.change_intelligence_agent_image_digest))
+    error_message = "change_intelligence_agent_image_digest must be an immutable sha256 digest."
+  }
+}
+
+variable "change_intelligence_openai_identity_provider_id" {
+  description = "Dedicated OpenAI WIF provider ID for the change-intelligence workload."
+  type        = string
+}
+
+variable "change_intelligence_openai_service_account_id" {
+  description = "Dedicated OpenAI service account ID for change intelligence; not a secret."
+  type        = string
+}

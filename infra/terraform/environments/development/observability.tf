@@ -58,6 +58,18 @@ resource "aws_cloudwatch_log_metric_filter" "vendor_ingestion_failure" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "change_intelligence_failure" {
+  name           = "migration-api-development-change-intelligence-failure"
+  log_group_name = aws_cloudwatch_log_group.change_intelligence_agent.name
+  pattern        = "{ $.event = \"change_intelligence_result_written\" && $.outcome = \"failed\" }"
+
+  metric_transformation {
+    name      = "ChangeIntelligenceFailed"
+    namespace = "MigrationApi/Development"
+    value     = "1"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "api_errors" {
   alarm_name          = "migration-api-development-api-errors"
   alarm_description   = "Control API returned Lambda errors."
@@ -255,6 +267,47 @@ resource "aws_cloudwatch_metric_alarm" "vendor_ingestion_failure" {
   alarm_description   = "Trusted vendor evidence could not be ingested safely."
   namespace           = "MigrationApi/Development"
   metric_name         = "VendorIngestionFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "vendor_intelligence_control_errors" {
+  alarm_name          = "migration-api-development-vendor-intelligence-control-errors"
+  alarm_description   = "Vendor-intelligence control returned an unhandled Lambda error."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.vendor_intelligence_control.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "change_intelligence_workflow_failures" {
+  alarm_name          = "migration-api-development-change-intelligence-workflow-failures"
+  alarm_description   = "Change-intelligence workflow reached an unhandled failed execution."
+  namespace           = "AWS/States"
+  metric_name         = "ExecutionsFailed"
+  dimensions          = { StateMachineArn = aws_sfn_state_machine.change_intelligence.arn }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "change_intelligence_failure" {
+  alarm_name          = "migration-api-development-change-intelligence-failure"
+  alarm_description   = "A draft migration specification could not be generated safely."
+  namespace           = "MigrationApi/Development"
+  metric_name         = "ChangeIntelligenceFailed"
   statistic           = "Sum"
   period              = 300
   evaluation_periods  = 1

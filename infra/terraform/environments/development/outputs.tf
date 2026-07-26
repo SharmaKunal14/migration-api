@@ -71,6 +71,18 @@ output "vendor_ingestion_state_machine_arn" {
   value = aws_sfn_state_machine.vendor_ingestion.arn
 }
 
+output "change_intelligence_agent_ecr_repository_url" {
+  value = data.aws_ecr_repository.change_intelligence_agent.repository_url
+}
+
+output "change_intelligence_task_definition_arn" {
+  value = aws_ecs_task_definition.change_intelligence_agent.arn
+}
+
+output "change_intelligence_state_machine_arn" {
+  value = aws_sfn_state_machine.change_intelligence.arn
+}
+
 output "migrator_task_definition_arn" {
   value = aws_ecs_task_definition.migrator.arn
 }

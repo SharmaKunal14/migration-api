@@ -377,6 +377,29 @@ export interface VendorEvidenceItemTable {
   createdAt: Timestamp;
 }
 
+export interface ChangeIntelligenceRunTable {
+  id: string;
+  vendorReleaseId: string;
+  evidenceDigest: string;
+  status: 'running' | 'succeeded' | 'failed';
+  attempt: number;
+  safeErrorCode: string | null;
+  correlationId: string;
+  resultObjectKey: string;
+  migrationSpecificationId: string | null;
+  requestedModel: string;
+  returnedModel: string | null;
+  openaiRequestId: string | null;
+  modelCalls: number;
+  toolCalls: number;
+  iterations: number;
+  inputTokens: number;
+  outputTokens: number;
+  startedAt: Timestamp;
+  completedAt: Timestamp | null;
+  updatedAt: Timestamp;
+}
+
 export interface Database {
   appUsers: AppUserTable;
   organisations: OrganisationTable;
@@ -404,6 +427,7 @@ export interface Database {
   impactReports: ImpactReportTable;
   vendorIngestionRuns: VendorIngestionRunTable;
   vendorEvidenceItems: VendorEvidenceItemTable;
+  changeIntelligenceRuns: ChangeIntelligenceRunTable;
 }
 
 export type AppDatabase = Kysely<Database>;

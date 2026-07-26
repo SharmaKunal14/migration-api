@@ -42,6 +42,10 @@ const validEnvironment: NodeJS.ProcessEnv = {
   TF_VAR_openai_model: 'gpt-5.6-sol',
   TF_VAR_openai_project_alias: 'development-agent',
   TF_VAR_openai_service_account_id: 'service-account-id',
+  TF_VAR_change_intelligence_openai_identity_provider_id:
+    'change-intelligence-provider-id',
+  TF_VAR_change_intelligence_openai_service_account_id:
+    'change-intelligence-service-account-id',
   TF_VAR_owner: 'KunalSharma',
   TF_VAR_product_domain: 'migration-api.kunal-sharma.in',
   TF_VAR_supabase_jwks_url:
@@ -64,7 +68,7 @@ describe('deployment environment validation', () => {
     const result = validate(validEnvironment);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Validated 27 deployment variables.');
+    expect(result.stdout).toContain('Validated 29 deployment variables.');
   });
 
   it('rejects a product URL instead of a hostname', () => {

@@ -540,6 +540,148 @@ export const vendorIngestionResultSchema = z
     }
   });
 
+export const ingestedVendorEvidenceManifestSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    vendorReleaseId: uuidSchema,
+    vendorSlug: z.string().regex(/^[a-z][a-z0-9-]{1,62}$/u),
+    productId: uuidSchema,
+    version: z.string().min(1).max(100),
+    sources: z
+      .array(
+        ingestedVendorSourceSchema.extend({
+          finalUrl: z.url().max(2_048),
+        }),
+      )
+      .min(1)
+      .max(50),
+  })
+  .strict()
+  .superRefine((manifest, context) => {
+    const sourceKeys = manifest.sources.map(source => source.sourceKey);
+    const sourceIds = manifest.sources.map(source => source.vendorSourceId);
+    if (
+      new Set(sourceKeys).size !== sourceKeys.length ||
+      new Set(sourceIds).size !== sourceIds.length
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Ingested vendor evidence sources must be unique.',
+        path: ['sources'],
+      });
+    }
+  });
+
+export const changeIntelligenceWorkflowInputSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    vendorReleaseId: uuidSchema,
+    correlationId: uuidSchema,
+  })
+  .strict();
+
+export const changeIntelligencePreparedInputSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    vendorReleaseId: uuidSchema,
+    changeIntelligenceRunId: uuidSchema,
+    correlationId: uuidSchema,
+    evidenceObjectKey: z.string().min(1).max(1_024),
+    evidenceDigest: sha256Schema,
+    specificationRevision: z.number().int().positive(),
+    resultObjectKey: z.string().min(1).max(1_024),
+    alreadySucceeded: z.boolean(),
+  })
+  .strict();
+
+const changeIntelligenceActionSchema = z
+  .object({
+    sequence: z.number().int().positive().max(12),
+    toolName: z.enum(['list_vendor_evidence', 'read_vendor_evidence']),
+    sourceKey: z
+      .string()
+      .regex(/^[a-z][a-z0-9_-]{2,63}$/u)
+      .nullable(),
+    status: z.enum(['succeeded', 'rejected']),
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+    inputDigest: sha256Schema,
+    outputDigest: sha256Schema.nullable(),
+  })
+  .strict();
+
+export const changeIntelligenceResultSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    vendorReleaseId: uuidSchema,
+    changeIntelligenceRunId: uuidSchema,
+    evidenceObjectKey: z.string().min(1).max(1_024),
+    evidenceDigest: sha256Schema,
+    status: z.enum(['succeeded', 'failed']),
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+    model: z
+      .object({
+        requestedModel: z.string().min(1).max(200),
+        returnedModel: z.string().min(1).max(200),
+        requestId: z
+          .string()
+          .regex(/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u)
+          .nullable(),
+      })
+      .strict(),
+    usage: z
+      .object({
+        modelCalls: z.number().int().min(0).max(3),
+        toolCalls: z.number().int().min(0).max(12),
+        iterations: z.number().int().min(0).max(4),
+        inputTokens: z.number().int().nonnegative().max(60_000),
+        outputTokens: z.number().int().nonnegative().max(12_000),
+        durationMs: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(10 * 60 * 1_000),
+      })
+      .strict(),
+    actions: z.array(changeIntelligenceActionSchema).max(12),
+    specification: migrationSpecificationSchema.nullable(),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    const succeeded = result.status === 'succeeded';
+    if (succeeded !== (result.specification !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Successful intelligence results require a specification.',
+        path: ['specification'],
+      });
+    }
+    if (succeeded === (result.safeErrorCode !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only failed intelligence results require a safe error code.',
+        path: ['safeErrorCode'],
+      });
+    }
+    if (
+      result.specification &&
+      (result.specification.trust.status !== 'draft' ||
+        result.specification.trust.generatedBy !== 'change_intelligence_agent' ||
+        result.specification.trust.reviewedAt !== null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Agent specifications must remain unreviewed drafts.',
+        path: ['specification', 'trust'],
+      });
+    }
+  });
+
 const repositoryRelativePathSchema = z
   .string()
   .min(1)
@@ -740,6 +882,16 @@ export type VendorIngestionWorkflowInput = z.infer<
   typeof vendorIngestionWorkflowInputSchema
 >;
 export type VendorIngestionResult = z.infer<typeof vendorIngestionResultSchema>;
+export type IngestedVendorEvidenceManifest = z.infer<
+  typeof ingestedVendorEvidenceManifestSchema
+>;
+export type ChangeIntelligenceWorkflowInput = z.infer<
+  typeof changeIntelligenceWorkflowInputSchema
+>;
+export type ChangeIntelligencePreparedInput = z.infer<
+  typeof changeIntelligencePreparedInputSchema
+>;
+export type ChangeIntelligenceResult = z.infer<typeof changeIntelligenceResultSchema>;
 export type AgentResultEnvelope = z.infer<typeof agentResultEnvelopeSchema>;
 export type RepositoryScanWorkflowInput = z.infer<
   typeof repositoryScanWorkflowInputSchema

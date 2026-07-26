@@ -17,6 +17,12 @@ const vendorFetcherDockerfile = readFileSync(
   fileURLToPath(new URL('../workers/vendor-fetcher/Dockerfile', import.meta.url)),
   'utf8',
 );
+const changeIntelligenceDockerfile = readFileSync(
+  fileURLToPath(
+    new URL('../workers/change-intelligence-agent/Dockerfile', import.meta.url),
+  ),
+  'utf8',
+);
 
 describe('development deployment artifact contract', () => {
   it('packages and verifies every Stage 2 Lambda archive', () => {
@@ -50,5 +56,19 @@ describe('development deployment artifact contract', () => {
     expect(deploymentWorkflow).toContain('TF_VAR_vendor_fetcher_image_digest');
     expect(deploymentWorkflow).toContain('VENDOR_FETCHER_SCAN_DIGEST');
     expect(vendorFetcherDockerfile).toContain('USER node');
+  });
+
+  it('builds, scans, and deploys the isolated change-intelligence image', () => {
+    expect(deploymentWorkflow).toContain(
+      'workers/change-intelligence-agent/Dockerfile',
+    );
+    expect(deploymentWorkflow).toContain(
+      'migration-api-development-change-intelligence-agent',
+    );
+    expect(deploymentWorkflow).toContain(
+      'TF_VAR_change_intelligence_agent_image_digest',
+    );
+    expect(deploymentWorkflow).toContain('CHANGE_INTELLIGENCE_AGENT_SCAN_DIGEST');
+    expect(changeIntelligenceDockerfile).toContain('USER 10001:10001');
   });
 });
