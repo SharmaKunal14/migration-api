@@ -19,6 +19,7 @@ import {
   RepositoryToolError,
   RepositoryTools,
 } from '../workers/impact-analysis-agent/src/tools.js';
+import { serializeJsonColumn } from '../services/impact-analysis-control/src/handler.js';
 import { OAuthError } from 'openai';
 
 const snapshotKey =
@@ -151,6 +152,20 @@ describe('Stage 3E impact-analysis boundary', () => {
 
   it('keeps the remote structured-output schema free of regex lookarounds', () => {
     expect(JSON.stringify(impactOutputJsonSchema)).not.toMatch(/\(\?[=!<]/u);
+  });
+
+  it('serializes JSON arrays before binding them to PostgreSQL jsonb columns', () => {
+    const uncertainties = [
+      {
+        code: 'NOTIFICATION_DEFAULT_UNRESOLVED',
+        summary: 'The default remains account-specific.',
+      },
+    ];
+
+    const serialized = serializeJsonColumn(uncertainties);
+
+    expect(serialized).toBe(JSON.stringify(uncertainties));
+    expect(JSON.parse(serialized)).toEqual(uncertainties);
   });
 
   it('requires successful results to remain snapshot-bound', () => {

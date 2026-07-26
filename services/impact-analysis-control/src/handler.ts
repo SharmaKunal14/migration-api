@@ -64,7 +64,25 @@ async function dependencies(): Promise<Dependencies> {
 }
 
 export async function handler(event: unknown, context: Context): Promise<unknown> {
-  return handleImpactAnalysisCommand(event, context.awsRequestId, await dependencies());
+  try {
+    return await handleImpactAnalysisCommand(
+      event,
+      context.awsRequestId,
+      await dependencies(),
+    );
+  } catch (error) {
+    const safeCode =
+      error instanceof ImpactAnalysisControlError
+        ? error.safeCode
+        : 'IMPACT_ANALYSIS_CONTROL_FAILED';
+    writeLog('error', {
+      event: 'impact_analysis_control_failed',
+      requestId: context.awsRequestId,
+      safeErrorCode: safeCode,
+      errorClass: error instanceof Error ? error.name : 'UnknownError',
+    });
+    throw new ImpactAnalysisControlError(safeCode);
+  }
 }
 
 export async function handleImpactAnalysisCommand(
@@ -425,13 +443,13 @@ async function finalize(
         impactAgentRunId: workflow.impactAnalysisRunId,
         schemaVersion: '1.0',
         outcome: result.report.outcome,
-        affectedSummary: {
+        affectedSummary: serializeJsonColumn({
           affectedFiles: result.report.affectedFiles,
           unaffectedFiles: result.report.unaffectedFiles,
-        },
+        }),
         riskCategory: result.report.risk,
-        verificationAvailability: result.report.verification,
-        uncertainty: result.report.uncertainties,
+        verificationAvailability: serializeJsonColumn(result.report.verification),
+        uncertainty: serializeJsonColumn(result.report.uncertainties),
         artifactObjectKey: workflow.resultObjectKey,
         artifactDigest: resultDigest,
         revision: workflow.reportRevision,
@@ -500,6 +518,10 @@ async function markFailed(
 
 function digest(bytes: Uint8Array): string {
   return createHash('sha256').update(bytes).digest('hex');
+}
+
+export function serializeJsonColumn(value: object): string {
+  return JSON.stringify(value);
 }
 
 export class ImpactAnalysisControlError extends Error {
