@@ -42,6 +42,18 @@ function mockS3(objects: ReadonlyMap<string, Uint8Array>): S3Client {
 }
 
 describe('Stage 3C change-intelligence boundary', () => {
+  it('permits bounded parallel reads so required evidence fits the model-call budget', () => {
+    const gatewaySource = readFileSync(
+      new URL('../workers/change-intelligence-agent/src/gateway.ts', import.meta.url),
+      'utf8',
+    );
+
+    expect(gatewaySource).toContain('parallel_tool_calls: true');
+    expect(gatewaySource).toContain(
+      'release_metadata, migration_guide, changelog, v1_api, and v2_api together',
+    );
+  });
+
   it('accepts identifier-only workflow input', () => {
     expect(
       changeIntelligenceWorkflowInputSchema.parse({
