@@ -46,6 +46,18 @@ resource "aws_cloudwatch_log_metric_filter" "repository_acquisition_failure" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "vendor_ingestion_failure" {
+  name           = "migration-api-development-vendor-ingestion-failure"
+  log_group_name = aws_cloudwatch_log_group.vendor_fetcher.name
+  pattern        = "{ $.event = \"vendor_ingestion_failed\" }"
+
+  metric_transformation {
+    name      = "VendorIngestionFailed"
+    namespace = "MigrationApi/Development"
+    value     = "1"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "api_errors" {
   alarm_name          = "migration-api-development-api-errors"
   alarm_description   = "Control API returned Lambda errors."
@@ -216,6 +228,33 @@ resource "aws_cloudwatch_metric_alarm" "repository_acquisition_failure" {
   alarm_description   = "A selected repository could not be acquired safely."
   namespace           = "MigrationApi/Development"
   metric_name         = "RepositoryAcquisitionFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "vendor_ingestion_workflow_failures" {
+  alarm_name          = "migration-api-development-vendor-ingestion-workflow-failures"
+  alarm_description   = "Vendor evidence ingestion workflow reached a failed execution."
+  namespace           = "AWS/States"
+  metric_name         = "ExecutionsFailed"
+  dimensions          = { StateMachineArn = aws_sfn_state_machine.vendor_ingestion.arn }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "vendor_ingestion_failure" {
+  alarm_name          = "migration-api-development-vendor-ingestion-failure"
+  alarm_description   = "Trusted vendor evidence could not be ingested safely."
+  namespace           = "MigrationApi/Development"
+  metric_name         = "VendorIngestionFailed"
   statistic           = "Sum"
   period              = 300
   evaluation_periods  = 1

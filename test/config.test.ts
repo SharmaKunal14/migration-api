@@ -7,6 +7,7 @@ import {
   githubWebhookConfigSchema,
   githubWebhookSecretSchema,
   parseConfig,
+  vendorFetcherConfigSchema,
 } from '@migration/config';
 
 const validEnvironment = {
@@ -42,6 +43,21 @@ describe('startup configuration', () => {
       APP_ENVIRONMENT: 'development',
       OPENAI_WIF_AUDIENCE: 'https://api.openai.com/v1',
     });
+  });
+
+  it('accepts identifier-only vendor fetcher configuration', () => {
+    expect(
+      parseConfig(vendorFetcherConfigSchema, {
+        APP_ENVIRONMENT: 'development',
+        AWS_REGION: 'ap-southeast-2',
+        ARTIFACT_BUCKET: 'migration-api-artifacts',
+        ARTIFACT_KMS_KEY_ARN: 'arn:aws:kms:ap-southeast-2:123456789012:key/example',
+        CORRELATION_ID: '6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624',
+        DATABASE_SECRET_ARN:
+          'arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:runtime',
+        VENDOR_RELEASE_ID: '914e7575-7dc8-40e4-9445-aa61bfdb4ade',
+      }),
+    ).toBeDefined();
   });
 
   it('fails closed for a wrong WIF audience', () => {

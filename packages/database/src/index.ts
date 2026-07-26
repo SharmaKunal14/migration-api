@@ -351,6 +351,32 @@ export interface ImpactReportTable {
   createdAt: Timestamp;
 }
 
+export interface VendorIngestionRunTable {
+  id: string;
+  vendorReleaseId: string;
+  status: 'running' | 'succeeded' | 'failed';
+  attempt: number;
+  safeErrorCode: string | null;
+  correlationId: string;
+  startedAt: Timestamp;
+  completedAt: Timestamp | null;
+  updatedAt: Timestamp;
+}
+
+export interface VendorEvidenceItemTable {
+  id: string;
+  vendorReleaseId: string;
+  vendorSourceId: string;
+  canonicalUrl: string;
+  objectKey: string;
+  digest: string;
+  bytes: ColumnType<string, number, never>;
+  mediaType: string;
+  etag: string | null;
+  retrievedAt: Timestamp;
+  createdAt: Timestamp;
+}
+
 export interface Database {
   appUsers: AppUserTable;
   organisations: OrganisationTable;
@@ -376,6 +402,8 @@ export interface Database {
   migrationSpecifications: MigrationSpecificationTable;
   migrationCandidates: MigrationCandidateTable;
   impactReports: ImpactReportTable;
+  vendorIngestionRuns: VendorIngestionRunTable;
+  vendorEvidenceItems: VendorEvidenceItemTable;
 }
 
 export type AppDatabase = Kysely<Database>;

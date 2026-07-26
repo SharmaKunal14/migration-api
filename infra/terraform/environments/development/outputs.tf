@@ -59,6 +59,18 @@ output "repository_scan_state_machine_arn" {
   value = aws_sfn_state_machine.repository_scan.arn
 }
 
+output "vendor_fetcher_ecr_repository_url" {
+  value = data.aws_ecr_repository.vendor_fetcher.repository_url
+}
+
+output "vendor_fetcher_task_definition_arn" {
+  value = aws_ecs_task_definition.vendor_fetcher.arn
+}
+
+output "vendor_ingestion_state_machine_arn" {
+  value = aws_sfn_state_machine.vendor_ingestion.arn
+}
+
 output "migrator_task_definition_arn" {
   value = aws_ecs_task_definition.migrator.arn
 }

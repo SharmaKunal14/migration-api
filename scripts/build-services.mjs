@@ -20,6 +20,7 @@ await mkdir('dist/services', { recursive: true });
 await mkdir('dist/workers/agent', { recursive: true });
 await mkdir('dist/workers/database-migrator', { recursive: true });
 await mkdir('dist/workers/source-fetcher', { recursive: true });
+await mkdir('dist/workers/vendor-fetcher', { recursive: true });
 
 await Promise.all([
   build({
@@ -71,5 +72,10 @@ await Promise.all([
     ...common,
     entryPoints: ['workers/source-fetcher/src/main.ts'],
     outfile: 'dist/workers/source-fetcher/main.js',
+  }),
+  build({
+    ...common,
+    entryPoints: ['workers/vendor-fetcher/src/main.ts'],
+    outfile: 'dist/workers/vendor-fetcher/main.js',
   }),
 ]);

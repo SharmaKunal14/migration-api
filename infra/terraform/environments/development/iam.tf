@@ -73,6 +73,16 @@ resource "aws_iam_role" "source_fetcher_task" {
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
 }
 
+resource "aws_iam_role" "vendor_fetcher_execution" {
+  name               = "migration-api-development-vendor-fetcher-execution"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
+resource "aws_iam_role" "vendor_fetcher_task" {
+  name               = "migration-api-development-vendor-fetcher-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
 resource "aws_iam_role" "migrator_execution" {
   name               = "migration-api-development-migrator-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
@@ -333,6 +343,69 @@ resource "aws_iam_role_policy" "source_fetcher_task" {
   name   = "bounded-source-acquisition"
   role   = aws_iam_role.source_fetcher_task.id
   policy = data.aws_iam_policy_document.source_fetcher_task.json
+}
+
+data "aws_iam_policy_document" "vendor_fetcher_execution" {
+  statement {
+    sid = "PullVendorFetcherImage"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer"
+    ]
+    resources = [data.aws_ecr_repository.vendor_fetcher.arn]
+  }
+
+  # ECR authorization tokens do not support resource-level permissions.
+  statement {
+    sid       = "EcrAuthorization"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "WriteVendorFetcherLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.vendor_fetcher.arn}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "vendor_fetcher_execution" {
+  name   = "vendor-fetcher-image-and-logs"
+  role   = aws_iam_role.vendor_fetcher_execution.id
+  policy = data.aws_iam_policy_document.vendor_fetcher_execution.json
+}
+
+data "aws_iam_policy_document" "vendor_fetcher_task" {
+  statement {
+    sid       = "ReadRuntimeDatabaseSecret"
+    actions   = ["secretsmanager:GetSecretValue"]
+    resources = [var.database_secret_arn]
+  }
+
+  statement {
+    sid       = "DecryptRuntimeDatabaseSecret"
+    actions   = ["kms:Decrypt"]
+    resources = [var.database_secret_kms_key_arn]
+  }
+
+  statement {
+    sid       = "WriteVendorEvidence"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/vendor/*"]
+  }
+
+  statement {
+    sid       = "EncryptVendorEvidence"
+    actions   = ["kms:Encrypt", "kms:GenerateDataKey"]
+    resources = [aws_kms_key.artifacts.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "vendor_fetcher_task" {
+  name   = "bounded-vendor-ingestion"
+  role   = aws_iam_role.vendor_fetcher_task.id
+  policy = data.aws_iam_policy_document.vendor_fetcher_task.json
 }
 
 data "aws_iam_policy_document" "repository_scan_control_artifacts" {

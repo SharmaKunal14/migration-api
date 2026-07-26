@@ -221,3 +221,7 @@ data "aws_ecr_repository" "migrator" {
 data "aws_ecr_repository" "source_fetcher" {
   name = "migration-api-development-source-fetcher"
 }
+
+data "aws_ecr_repository" "vendor_fetcher" {
+  name = "migration-api-development-vendor-fetcher"
+}

@@ -125,6 +125,14 @@ export const sourceFetcherConfigSchema = commonSchema.extend({
   WORKSPACE_DIRECTORY: z.literal('/workspace'),
 });
 
+export const vendorFetcherConfigSchema = commonSchema.extend({
+  ARTIFACT_BUCKET: nonEmpty,
+  ARTIFACT_KMS_KEY_ARN: awsArn,
+  CORRELATION_ID: z.uuid(),
+  DATABASE_SECRET_ARN: awsArn,
+  VENDOR_RELEASE_ID: z.uuid(),
+});
+
 export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type DispatcherConfig = z.infer<typeof dispatcherConfigSchema>;
 export type WorkflowControlConfig = z.infer<typeof workflowControlConfigSchema>;
@@ -137,6 +145,7 @@ export type RepositoryScanControlConfig = z.infer<
   typeof repositoryScanControlConfigSchema
 >;
 export type SourceFetcherConfig = z.infer<typeof sourceFetcherConfigSchema>;
+export type VendorFetcherConfig = z.infer<typeof vendorFetcherConfigSchema>;
 export type DatabaseCredential = z.infer<typeof databaseCredentialSchema>;
 
 export function parseConfig<T>(

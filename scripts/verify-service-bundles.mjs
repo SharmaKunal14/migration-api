@@ -13,6 +13,7 @@ const serviceBundles = [
 const workerBundles = [
   'dist/workers/agent/main.js',
   'dist/workers/database-migrator/main.js',
+  'dist/workers/vendor-fetcher/main.js',
   'dist/workers/source-fetcher/main.js',
 ];
 

@@ -472,6 +472,74 @@ export const vendorEvidenceBundleSchema = z
     }
   });
 
+export const vendorIngestionWorkflowInputSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    vendorReleaseId: uuidSchema,
+    correlationId: uuidSchema,
+  })
+  .strict();
+
+const ingestedVendorSourceSchema = z
+  .object({
+    vendorSourceId: uuidSchema,
+    sourceKey: z.string().regex(/^[a-z][a-z0-9_-]{2,63}$/u),
+    canonicalUrl: z.url().max(2_048),
+    objectKey: z.string().min(1).max(1_024),
+    digest: sha256Schema,
+    bytes: z
+      .number()
+      .int()
+      .positive()
+      .max(1024 * 1024),
+    mediaType: z.string().min(1).max(255),
+    etag: z.string().min(1).max(512).nullable(),
+  })
+  .strict();
+
+export const vendorIngestionResultSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    vendorReleaseId: uuidSchema,
+    ingestionRunId: uuidSchema,
+    status: z.enum(['succeeded', 'failed']),
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+    bundle: z
+      .object({
+        objectKey: z.string().min(1).max(1_024),
+        digest: sha256Schema,
+        bytes: z
+          .number()
+          .int()
+          .positive()
+          .max(8 * 1024 * 1024),
+        sources: z.array(ingestedVendorSourceSchema).min(1).max(50),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    const succeeded = result.status === 'succeeded';
+    if (succeeded !== (result.bundle !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Successful ingestion requires an evidence bundle.',
+        path: ['bundle'],
+      });
+    }
+    if (succeeded === (result.safeErrorCode !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only failed ingestion results require a safe error code.',
+        path: ['safeErrorCode'],
+      });
+    }
+  });
+
 const repositoryRelativePathSchema = z
   .string()
   .min(1)
@@ -668,6 +736,10 @@ export type MigrationPlan = z.infer<typeof migrationPlanSchema>;
 export type MigrationSpecification = z.infer<typeof migrationSpecificationSchema>;
 export type VendorEvidenceBundle = z.infer<typeof vendorEvidenceBundleSchema>;
 export type ImpactReport = z.infer<typeof impactReportSchema>;
+export type VendorIngestionWorkflowInput = z.infer<
+  typeof vendorIngestionWorkflowInputSchema
+>;
+export type VendorIngestionResult = z.infer<typeof vendorIngestionResultSchema>;
 export type AgentResultEnvelope = z.infer<typeof agentResultEnvelopeSchema>;
 export type RepositoryScanWorkflowInput = z.infer<
   typeof repositoryScanWorkflowInputSchema

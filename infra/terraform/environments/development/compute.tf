@@ -52,6 +52,12 @@ resource "aws_cloudwatch_log_group" "source_fetcher" {
   kms_key_id        = aws_kms_key.logs.arn
 }
 
+resource "aws_cloudwatch_log_group" "vendor_fetcher" {
+  name              = "/migration-api/development/vendor-fetcher"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
 resource "aws_cloudwatch_log_group" "migrator" {
   name              = "/migration-api/development/database-migrator"
   retention_in_days = 30
@@ -567,6 +573,52 @@ resource "aws_ecs_task_definition" "source_fetcher" {
   ])
 }
 
+resource "aws_ecs_task_definition" "vendor_fetcher" {
+  family                   = "migration-api-development-vendor-fetcher"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 512
+  memory                   = 1024
+  execution_role_arn       = aws_iam_role.vendor_fetcher_execution.arn
+  task_role_arn            = aws_iam_role.vendor_fetcher_task.arn
+
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name                   = "vendor-fetcher"
+      image                  = "${data.aws_ecr_repository.vendor_fetcher.repository_url}@${var.vendor_fetcher_image_digest}"
+      essential              = true
+      readonlyRootFilesystem = true
+      user                   = "1000:1000"
+      stopTimeout            = 30
+      linuxParameters = {
+        initProcessEnabled = true
+        capabilities       = { drop = ["ALL"] }
+      }
+      environment = [
+        { name = "APP_ENVIRONMENT", value = "development" },
+        { name = "AWS_REGION", value = var.aws_region },
+        { name = "AWS_STS_REGIONAL_ENDPOINTS", value = "regional" },
+        { name = "ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.bucket },
+        { name = "ARTIFACT_KMS_KEY_ARN", value = aws_kms_key.artifacts.arn },
+        { name = "DATABASE_SECRET_ARN", value = var.database_secret_arn }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.vendor_fetcher.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "vendor-fetcher"
+        }
+      }
+    }
+  ])
+}
+
 resource "aws_ecs_task_definition" "migrator" {
   family                   = "migration-api-development-database-migrator"
   requires_compatibilities = ["FARGATE"]
@@ -640,7 +692,8 @@ data "aws_iam_policy_document" "step_functions" {
     actions = ["ecs:RunTask"]
     resources = [
       aws_ecs_task_definition.agent.arn,
-      aws_ecs_task_definition.source_fetcher.arn
+      aws_ecs_task_definition.source_fetcher.arn,
+      aws_ecs_task_definition.vendor_fetcher.arn
     ]
 
     condition {
@@ -663,7 +716,9 @@ data "aws_iam_policy_document" "step_functions" {
       aws_iam_role.agent_execution.arn,
       aws_iam_role.agent_task.arn,
       aws_iam_role.source_fetcher_execution.arn,
-      aws_iam_role.source_fetcher_task.arn
+      aws_iam_role.source_fetcher_task.arn,
+      aws_iam_role.vendor_fetcher_execution.arn,
+      aws_iam_role.vendor_fetcher_task.arn
     ]
   }
 
@@ -913,6 +968,63 @@ resource "aws_sfn_state_machine" "repository_scan" {
         }
         ResultPath = null
         End        = true
+      }
+    }
+  })
+}
+
+resource "aws_sfn_state_machine" "vendor_ingestion" {
+  name     = "migration-api-development-vendor-ingestion"
+  role_arn = aws_iam_role.step_functions.arn
+  type     = "STANDARD"
+
+  logging_configuration {
+    include_execution_data = false
+    level                  = "ERROR"
+    log_destination        = "${aws_cloudwatch_log_group.workflow.arn}:*"
+  }
+
+  tracing_configuration {
+    enabled = true
+  }
+
+  definition = jsonencode({
+    Comment = "Stage 3B bounded and idempotent trusted-vendor evidence ingestion"
+    StartAt = "FetchVendorEvidence"
+    States = {
+      FetchVendorEvidence = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::ecs:runTask.sync"
+        TimeoutSeconds = 300
+        Parameters = {
+          Cluster        = aws_ecs_cluster.agent.arn
+          TaskDefinition = aws_ecs_task_definition.vendor_fetcher.arn
+          LaunchType     = "FARGATE"
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              AssignPublicIp = "DISABLED"
+              SecurityGroups = [aws_security_group.vendor_fetcher.id]
+              Subnets        = [for subnet in aws_subnet.control : subnet.id]
+            }
+          }
+          Overrides = {
+            ContainerOverrides = [{
+              Name = "vendor-fetcher"
+              Environment = [
+                { Name = "VENDOR_RELEASE_ID", "Value.$" = "$.vendorReleaseId" },
+                { Name = "CORRELATION_ID", "Value.$" = "$.correlationId" }
+              ]
+            }]
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["ECS.AmazonECSException", "ECS.ThrottlingException"]
+          IntervalSeconds = 5
+          BackoffRate     = 2
+          MaxAttempts     = 2
+        }]
+        End = true
       }
     }
   })

@@ -272,7 +272,7 @@ resource "aws_security_group" "vpc_endpoints" {
   vpc_id      = aws_vpc.main.id
 
   ingress {
-    description = "TLS from control, agent, and source-fetcher subnets"
+    description = "TLS from application workload subnets"
     protocol    = "tcp"
     from_port   = 443
     to_port     = 443
@@ -346,6 +346,36 @@ resource "aws_security_group" "source_fetcher" {
     protocol    = "tcp"
     from_port   = 443
     to_port     = 443
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+resource "aws_security_group" "vendor_fetcher" {
+  name        = "${local.name_prefix}-vendor-fetcher"
+  description = "Vendor-fetcher allowlisted HTTPS and database egress"
+  vpc_id      = aws_vpc.main.id
+
+  egress {
+    description = "TLS only; fetcher enforces exact vendor hosts and pinned public DNS"
+    protocol    = "tcp"
+    from_port   = 443
+    to_port     = 443
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "PostgreSQL runtime database connection"
+    protocol    = "tcp"
+    from_port   = 5432
+    to_port     = 5432
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    description = "PostgreSQL transaction pooler"
+    protocol    = "tcp"
+    from_port   = 6543
+    to_port     = 6543
     cidr_blocks = ["0.0.0.0/0"]
   }
 }
