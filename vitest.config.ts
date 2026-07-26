@@ -13,6 +13,10 @@ export default defineConfig({
       ).pathname,
       '@migration/config': new URL('./packages/config/src/index.ts', import.meta.url)
         .pathname,
+      '@migration/candidate-matching': new URL(
+        './packages/candidate-matching/src/index.ts',
+        import.meta.url,
+      ).pathname,
       '@migration/contracts': new URL(
         './packages/contracts/src/index.ts',
         import.meta.url,

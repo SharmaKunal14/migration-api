@@ -9,6 +9,10 @@ import { handleRequest, type ApiDependencies } from '../services/api/src/handler
 import type {
   PublicDependencyObservation,
   PublicGithubInstallation,
+  PublicMigrationCandidate,
+  PublicMigrationSpecification,
+  PublicMigrationSpecificationDetail,
+  PublicMigrationSpecificationReview,
   PublicRepository,
   PublicRepositoryScan,
 } from '@migration/contracts';
@@ -22,6 +26,7 @@ import type {
   CreateOrganisationInput,
   InstallationLinkRecord,
   OrganisationRecord,
+  ReviewMigrationSpecificationInput,
 } from '../services/api/src/repository.js';
 
 const organisationId = '6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624';
@@ -57,6 +62,20 @@ const queuedRun: AgentRunRecord = {
   createdAt: new Date('2026-07-24T00:00:00.000Z'),
   startedAt: null,
   completedAt: null,
+};
+
+const draftSpecification: PublicMigrationSpecification = {
+  id: runId,
+  vendorReleaseId: organisationId,
+  vendorName: 'OrbitChat',
+  productIdentifier: '@orbitchat/sdk',
+  sourceCompatibility: '1.x',
+  targetVersion: '2.0.0',
+  trustState: 'draft',
+  revision: 1,
+  evidenceDigest: 'a'.repeat(64),
+  reviewedAt: null,
+  createdAt: '2026-07-26T00:00:00.000Z',
 };
 
 class FakeRepository implements ApiRepositoryPort {
@@ -107,6 +126,22 @@ class FakeRepository implements ApiRepositoryPort {
   public readonly validateGithubInstallStateMock = vi.fn<
     (userId: string, state: string) => Promise<void>
   >(() => Promise.resolve());
+  public readonly reviewMigrationSpecificationMock = vi.fn<
+    (
+      userId: string,
+      input: ReviewMigrationSpecificationInput,
+    ) => Promise<PublicMigrationSpecificationReview>
+  >(() =>
+    Promise.resolve({
+      specification: {
+        ...draftSpecification,
+        trustState: 'reviewed',
+        reviewedAt: '2026-07-26T01:00:00.000Z',
+      },
+      matchedRepositories: 1,
+      unmatchedRepositories: 0,
+    }),
+  );
 
   public ensureUser(_actor: Actor): Promise<string> {
     return Promise.resolve(userId);
@@ -188,6 +223,55 @@ class FakeRepository implements ApiRepositoryPort {
     input: CompleteGithubInstallationInput,
   ): Promise<CompletedGithubInstallation> {
     return this.completeGithubInstallationMock(requestedBy, input);
+  }
+
+  public listMigrationSpecifications(
+    _userId: string,
+    _trustState: 'draft' | 'reviewed' | 'vendor_verified',
+  ): Promise<PublicMigrationSpecification[]> {
+    return Promise.resolve([draftSpecification]);
+  }
+
+  public reviewMigrationSpecification(
+    requestedBy: string,
+    input: ReviewMigrationSpecificationInput,
+  ): Promise<PublicMigrationSpecificationReview> {
+    return this.reviewMigrationSpecificationMock(requestedBy, input);
+  }
+
+  public getMigrationSpecification(
+    _userId: string,
+    _specificationId: string,
+  ): Promise<PublicMigrationSpecificationDetail> {
+    return Promise.resolve({
+      ...draftSpecification,
+      specification: {
+        schemaVersion: '1.0',
+        vendor: { slug: 'orbitchat', name: 'OrbitChat' },
+        product: { ecosystem: 'npm', identifier: '@orbitchat/sdk' },
+        sourceCompatibility: '1.x',
+        targetVersion: '2.0.0',
+        changes: [],
+        evidence: [],
+        preconditions: [],
+        verificationRecommendations: ['typescript_static'],
+        uncertainties: [],
+        trust: {
+          status: 'draft',
+          generatedBy: 'change_intelligence_agent',
+          reviewedAt: null,
+        },
+        revision: 1,
+        generatedAt: '2026-07-26T00:00:00.000Z',
+      },
+    });
+  }
+
+  public listMigrationCandidates(
+    _userId: string,
+    _organisationId: string,
+  ): Promise<PublicMigrationCandidate[]> {
+    return Promise.resolve([]);
   }
 }
 
@@ -382,6 +466,7 @@ describe('API handler trust boundary', () => {
       `/api/v1/organisations/${organisationId}/repositories/${runId}/dependencies`,
       'dependencies',
     ],
+    [`/api/v1/organisations/${organisationId}/migration-candidates`, 'candidates'],
   ])('returns a tenant-scoped Stage 2 collection from %s', async (path, key) => {
     const response = await handleRequest(
       event('GET', path),
@@ -389,6 +474,38 @@ describe('API handler trust boundary', () => {
     );
     expect(response.statusCode).toBe(200);
     expect(parsedBody(response)).toEqual({ [key]: [] });
+  });
+
+  it('reviews a draft only through the operator route with idempotency', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/migration-specifications/${runId}/review`,
+        { expectedRevision: 1 },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'review:01J7Y5ABCD',
+        },
+      ),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(repository.reviewMigrationSpecificationMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        specificationId: runId,
+        expectedRevision: 1,
+        idempotencyKey: 'review:01J7Y5ABCD',
+      }),
+    );
+    expect(parsedBody(response)).toMatchObject({
+      review: {
+        specification: { trustState: 'reviewed' },
+        matchedRepositories: 1,
+      },
+    });
   });
 
   it('creates a short-lived GitHub App installation URL', async () => {

@@ -18,6 +18,25 @@ export interface AppUserTable {
   updatedAt: Timestamp;
 }
 
+export interface PlatformOperatorTable {
+  userId: string;
+  status: 'active' | 'revoked';
+  grantedAt: Timestamp;
+  revokedAt: Timestamp | null;
+  reason: string;
+}
+
+export interface PlatformAuditEventTable {
+  id: string;
+  actorUserId: string;
+  action: string;
+  resourceType: string;
+  resourceId: string;
+  requestId: string;
+  metadata: unknown;
+  createdAt: Timestamp;
+}
+
 export interface OrganisationTable {
   id: string;
   slug: string;
@@ -402,6 +421,8 @@ export interface ChangeIntelligenceRunTable {
 
 export interface Database {
   appUsers: AppUserTable;
+  platformOperators: PlatformOperatorTable;
+  platformAuditEvents: PlatformAuditEventTable;
   organisations: OrganisationTable;
   organisationMemberships: OrganisationMembershipTable;
   agentRuns: AgentRunTable;

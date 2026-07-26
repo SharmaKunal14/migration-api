@@ -15,6 +15,8 @@ and measurable exit gates.
 - [Stage 1 deployment runbook](runbooks/STAGE_1_DEPLOYMENT.md)
 - [Disable demo runs](runbooks/DISABLE_DEMO_RUNS.md)
 - [Stage 1 CI/CD](runbooks/CI_CD.md)
+- [Stage 3D implementation status](stages/STAGE_3D_IMPLEMENTATION_STATUS.md)
+- [Stage 3D deployment runbook](runbooks/STAGE_3D_DEPLOYMENT.md)
 
 ## Architecture decisions
 

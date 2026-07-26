@@ -16,6 +16,7 @@ import {
   githubInstallLinkRequestSchema,
   githubInstallationVerificationSchema,
   githubSetupCompletionRequestSchema,
+  migrationSpecificationReviewRequestSchema,
   repositoryScanRequestSchema,
   type GithubInstallationVerification,
   type MigrationPlan,
@@ -159,6 +160,20 @@ export async function handleRequest(
               path,
             )
           : null;
+      const candidatesMatch =
+        method === 'GET'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-candidates$/u.exec(path)
+          : null;
+      const reviewSpecificationMatch =
+        method === 'POST'
+          ? /^\/v1\/operator\/migration-specifications\/([0-9a-f-]{36})\/review$/u.exec(
+              path,
+            )
+          : null;
+      const operatorSpecificationMatch =
+        method === 'GET'
+          ? /^\/v1\/operator\/migration-specifications\/([0-9a-f-]{36})$/u.exec(path)
+          : null;
       if (method === 'POST' && path === '/v1/github/setup/callback') {
         const input = githubSetupCompletionRequestSchema.parse(parseBody(event));
         await repository.validateGithubInstallState(userId, input.state);
@@ -218,6 +233,39 @@ export async function handleRequest(
           requestId,
         });
         response = json(202, { scan });
+      } else if (method === 'GET' && path === '/v1/operator/migration-specifications') {
+        const trustState = z
+          .enum(['draft', 'reviewed', 'vendor_verified'])
+          .default('draft')
+          .parse(event.queryStringParameters?.trustState);
+        response = json(200, {
+          specifications: await repository.listMigrationSpecifications(
+            userId,
+            trustState,
+          ),
+        });
+      } else if (reviewSpecificationMatch?.[1]) {
+        const input = migrationSpecificationReviewRequestSchema.parse(parseBody(event));
+        response = json(200, {
+          review: await repository.reviewMigrationSpecification(userId, {
+            specificationId: z.uuid().parse(reviewSpecificationMatch[1]),
+            expectedRevision: input.expectedRevision,
+            idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+            requestId,
+          }),
+        });
+      } else if (operatorSpecificationMatch?.[1]) {
+        response = json(200, {
+          specification: await repository.getMigrationSpecification(
+            userId,
+            z.uuid().parse(operatorSpecificationMatch[1]),
+          ),
+        });
+      } else if (candidatesMatch?.[1]) {
+        const organisationId = z.uuid().parse(candidatesMatch[1]);
+        response = json(200, {
+          candidates: await repository.listMigrationCandidates(userId, organisationId),
+        });
       } else if (createMatch?.[1]) {
         const input = demoRunRequestSchema.parse(parseBody(event));
         const run = await repository.createDemoRun(userId, {

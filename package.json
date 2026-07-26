@@ -40,6 +40,7 @@
     "react": "19.2.8",
     "react-dom": "19.2.8",
     "react-router": "8.3.0",
+    "semver": "7.7.4",
     "tar-stream": "^3.1.7",
     "zod": "4.4.3"
   },
@@ -50,6 +51,7 @@
     "@types/pg": "8.20.0",
     "@types/react": "19.2.17",
     "@types/react-dom": "19.2.3",
+    "@types/semver": "7.7.1",
     "@types/tar-stream": "^3.1.4",
     "@vitejs/plugin-react": "6.0.4",
     "@vitest/coverage-v8": "4.1.10",

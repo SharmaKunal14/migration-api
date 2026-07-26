@@ -10,6 +10,7 @@ import {
   type RepositoryAcquisitionResult,
   type RepositoryScanWorkflowInput,
 } from '@migration/contracts';
+import { reconcileCandidatesForRepository } from '@migration/candidate-matching';
 import {
   parseConfig,
   repositoryScanControlConfigSchema,
@@ -272,12 +273,15 @@ async function persistSuccess(
     if (existingSnapshot && existingSnapshot.digest !== snapshotResult.digest) {
       throw new ScanControlError('SNAPSHOT_DIGEST_CONFLICT');
     }
-    if (!existingSnapshot) {
-      const newSnapshotId = randomUUID();
+    const observedAt = new Date();
+    let snapshotId = existingSnapshot?.id;
+    if (!snapshotId) {
+      snapshotId = randomUUID();
+      const createdSnapshotId = snapshotId;
       await transaction
         .insertInto('repositorySnapshots')
         .values({
-          id: newSnapshotId,
+          id: createdSnapshotId,
           organisationId: workflow.organisationId,
           repositoryId: workflow.repositoryId,
           repositoryScanId: workflow.repositoryScanId,
@@ -289,8 +293,8 @@ async function persistSuccess(
           bytes: snapshotResult.bytes,
           fileCount: snapshotResult.fileCount,
           expiresAt: new Date(snapshotResult.expiresAt),
-          createdAt: new Date(),
-          updatedAt: new Date(),
+          createdAt: observedAt,
+          updatedAt: observedAt,
         })
         .executeTakeFirstOrThrow();
       if (inventoryResult.observations.length > 0) {
@@ -300,7 +304,7 @@ async function persistSuccess(
             inventoryResult.observations.map(observation => ({
               id: randomUUID(),
               organisationId: workflow.organisationId,
-              repositorySnapshotId: newSnapshotId,
+              repositorySnapshotId: createdSnapshotId,
               packageName: observation.packageName,
               dependencyKind: observation.kind,
               manifestPath: observation.manifestPath,
@@ -308,13 +312,29 @@ async function persistSuccess(
               declaredRange: observation.declaredRange,
               resolvedVersion: observation.resolvedVersion,
               discoveryMethod: observation.discoveryMethod,
-              createdAt: new Date(),
-              updatedAt: new Date(),
+              createdAt: observedAt,
+              updatedAt: observedAt,
             })),
           )
           .execute();
       }
+    } else {
+      await transaction
+        .updateTable('repositorySnapshots')
+        .set({
+          status: 'available',
+          expiresAt: new Date(snapshotResult.expiresAt),
+          updatedAt: observedAt,
+        })
+        .where('id', '=', snapshotId)
+        .executeTakeFirstOrThrow();
     }
+    await reconcileCandidatesForRepository(
+      transaction,
+      workflow.repositoryId,
+      snapshotId,
+      observedAt,
+    );
     await transaction
       .updateTable('repositoryScans')
       .set(expression => ({

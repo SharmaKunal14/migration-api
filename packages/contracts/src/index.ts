@@ -189,6 +189,12 @@ export const demoRunRequestSchema = z
   })
   .strict();
 
+export const migrationSpecificationReviewRequestSchema = z
+  .object({
+    expectedRevision: z.number().int().positive(),
+  })
+  .strict();
+
 export const workflowInputSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -986,4 +992,45 @@ export interface PublicRepositoryScan {
   readonly createdAt: string;
   readonly startedAt: string | null;
   readonly completedAt: string | null;
+}
+
+export interface PublicMigrationSpecification {
+  readonly id: string;
+  readonly vendorReleaseId: string;
+  readonly vendorName: string;
+  readonly productIdentifier: string;
+  readonly sourceCompatibility: string;
+  readonly targetVersion: string;
+  readonly trustState: 'draft' | 'reviewed' | 'vendor_verified';
+  readonly revision: number;
+  readonly evidenceDigest: string;
+  readonly reviewedAt: string | null;
+  readonly createdAt: string;
+}
+
+export interface PublicMigrationSpecificationReview {
+  readonly specification: PublicMigrationSpecification;
+  readonly matchedRepositories: number;
+  readonly unmatchedRepositories: number;
+}
+
+export interface PublicMigrationSpecificationDetail extends PublicMigrationSpecification {
+  readonly specification: MigrationSpecification;
+}
+
+export interface PublicMigrationCandidate {
+  readonly id: string;
+  readonly repositoryId: string;
+  readonly repositoryFullName: string;
+  readonly migrationSpecificationId: string;
+  readonly packageName: string;
+  readonly declaredRange: string;
+  readonly resolvedVersion: string | null;
+  readonly sourceCompatibility: string;
+  readonly targetVersion: string;
+  readonly specificationTrustState: 'reviewed' | 'vendor_verified';
+  readonly status: 'open' | 'dismissed' | 'superseded' | 'resolved';
+  readonly firstDetectedAt: string;
+  readonly lastDetectedAt: string;
+  readonly version: number;
 }

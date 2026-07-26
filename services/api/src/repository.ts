@@ -1,12 +1,22 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 
-import type { Transaction } from 'kysely';
+import { sql, type Transaction } from 'kysely';
 
+import {
+  CandidateMatchingError,
+  reconcileCandidatesForSpecification,
+} from '@migration/candidate-matching';
 import type { AppDatabase, Database } from '@migration/database';
+import { migrationSpecificationSchema } from '@migration/contracts';
 import type {
   GithubInstallationVerification,
+  MigrationSpecification,
   PublicDependencyObservation,
   PublicGithubInstallation,
+  PublicMigrationCandidate,
+  PublicMigrationSpecification,
+  PublicMigrationSpecificationDetail,
+  PublicMigrationSpecificationReview,
   PublicRepository,
   PublicRepositoryScan,
 } from '@migration/contracts';
@@ -59,6 +69,13 @@ export interface CreateDemoRunInput {
 export interface CreateRepositoryScanInput {
   readonly organisationId: string;
   readonly repositoryId: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+}
+
+export interface ReviewMigrationSpecificationInput {
+  readonly specificationId: string;
+  readonly expectedRevision: number;
   readonly idempotencyKey: string;
   readonly requestId: string;
 }
@@ -125,6 +142,22 @@ export interface ApiRepositoryPort {
     userId: string,
     input: CompleteGithubInstallationInput,
   ): Promise<CompletedGithubInstallation>;
+  listMigrationSpecifications(
+    userId: string,
+    trustState: 'draft' | 'reviewed' | 'vendor_verified',
+  ): Promise<PublicMigrationSpecification[]>;
+  getMigrationSpecification(
+    userId: string,
+    specificationId: string,
+  ): Promise<PublicMigrationSpecificationDetail>;
+  reviewMigrationSpecification(
+    userId: string,
+    input: ReviewMigrationSpecificationInput,
+  ): Promise<PublicMigrationSpecificationReview>;
+  listMigrationCandidates(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicMigrationCandidate[]>;
 }
 
 function digestJson(value: unknown): string {
@@ -495,7 +528,8 @@ export class ApiRepository implements ApiRepositoryPort {
       .where('repositoryId', '=', repositoryId)
       .where('organisationId', '=', organisationId)
       .where('status', '=', 'available')
-      .orderBy('createdAt', 'desc')
+      .orderBy('updatedAt', 'desc')
+      .orderBy('id', 'desc')
       .executeTakeFirst();
     if (!snapshot) return [];
     return this.database
@@ -673,6 +707,257 @@ export class ApiRepository implements ApiRepositoryPort {
     });
   }
 
+  public async listMigrationSpecifications(
+    userId: string,
+    trustState: 'draft' | 'reviewed' | 'vendor_verified',
+  ): Promise<PublicMigrationSpecification[]> {
+    await requirePlatformOperator(this.database, userId);
+    const rows = await this.database
+      .selectFrom('migrationSpecifications as specification')
+      .innerJoin(
+        'vendorReleases as release',
+        'release.id',
+        'specification.vendorReleaseId',
+      )
+      .innerJoin('apiProducts as product', 'product.id', 'release.apiProductId')
+      .innerJoin('vendors as vendor', 'vendor.id', 'product.vendorId')
+      .select(migrationSpecificationSummarySelection)
+      .where('specification.trustState', '=', trustState)
+      .orderBy('specification.createdAt', 'desc')
+      .limit(100)
+      .execute();
+    return rows.map(publicMigrationSpecification);
+  }
+
+  public async getMigrationSpecification(
+    userId: string,
+    specificationId: string,
+  ): Promise<PublicMigrationSpecificationDetail> {
+    await requirePlatformOperator(this.database, userId);
+    const row = await this.database
+      .selectFrom('migrationSpecifications as specification')
+      .innerJoin(
+        'vendorReleases as release',
+        'release.id',
+        'specification.vendorReleaseId',
+      )
+      .innerJoin('apiProducts as product', 'product.id', 'release.apiProductId')
+      .innerJoin('vendors as vendor', 'vendor.id', 'product.vendorId')
+      .select([
+        ...migrationSpecificationSummarySelection,
+        'specification.specification',
+      ])
+      .where('specification.id', '=', specificationId)
+      .executeTakeFirst();
+    if (!row) {
+      throw new DomainError(
+        'MIGRATION_SPECIFICATION_NOT_FOUND',
+        'The migration specification was not found.',
+        404,
+      );
+    }
+    const specification = migrationSpecificationSchema.safeParse(row.specification);
+    if (!specification.success) {
+      throw new DomainError(
+        'MIGRATION_SPECIFICATION_INVALID',
+        'The migration specification could not be loaded.',
+        500,
+      );
+    }
+    return {
+      ...publicMigrationSpecification(row),
+      specification: specification.data,
+    };
+  }
+
+  public async reviewMigrationSpecification(
+    userId: string,
+    input: ReviewMigrationSpecificationInput,
+  ): Promise<PublicMigrationSpecificationReview> {
+    const requestDigest = digestJson({
+      specificationId: input.specificationId,
+      expectedRevision: input.expectedRevision,
+    });
+    try {
+      return await this.database.transaction().execute(async transaction => {
+        await requirePlatformOperator(transaction, userId);
+        const previous = await transaction
+          .selectFrom('apiIdempotencyKeys')
+          .select(['requestDigest', 'resultResourceId'])
+          .where('actorId', '=', userId)
+          .where('action', '=', 'migration_specification:review')
+          .where('idempotencyKey', '=', input.idempotencyKey)
+          .executeTakeFirst();
+        if (previous) {
+          if (
+            previous.requestDigest !== requestDigest ||
+            previous.resultResourceId !== input.specificationId
+          ) {
+            throw new DomainError(
+              'IDEMPOTENCY_CONFLICT',
+              'The idempotency key was already used for another request.',
+              409,
+            );
+          }
+          return {
+            specification: await loadMigrationSpecificationSummary(
+              transaction,
+              input.specificationId,
+            ),
+            matchedRepositories: await countOpenCandidates(
+              transaction,
+              input.specificationId,
+            ),
+            unmatchedRepositories: 0,
+          };
+        }
+
+        const current = await transaction
+          .selectFrom('migrationSpecifications')
+          .select(['revision', 'trustState', 'specification', 'reviewedAt'])
+          .where('id', '=', input.specificationId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!current) {
+          throw new DomainError(
+            'MIGRATION_SPECIFICATION_NOT_FOUND',
+            'The migration specification was not found.',
+            404,
+          );
+        }
+        if (current.revision !== input.expectedRevision) {
+          throw new DomainError(
+            'MIGRATION_SPECIFICATION_REVISION_CONFLICT',
+            'The migration specification changed before it could be reviewed.',
+            409,
+          );
+        }
+        const parsed = migrationSpecificationSchema.safeParse(current.specification);
+        if (!parsed.success) {
+          throw new DomainError(
+            'MIGRATION_SPECIFICATION_INVALID',
+            'The migration specification could not be reviewed.',
+            500,
+          );
+        }
+        const now = new Date();
+        const reviewedAt = current.reviewedAt ?? now;
+        const reviewedSpecification: MigrationSpecification = {
+          ...parsed.data,
+          trust: {
+            ...parsed.data.trust,
+            status: 'reviewed',
+            reviewedAt: reviewedAt.toISOString(),
+          },
+        };
+        await sql`
+          select promote_migration_specification(
+            ${input.specificationId}::uuid,
+            ${userId}::uuid,
+            ${input.expectedRevision},
+            ${JSON.stringify(reviewedSpecification)}::jsonb,
+            ${reviewedAt}::timestamptz,
+            ${input.requestId}::uuid
+          )
+        `.execute(transaction);
+        const reconciliation = await reconcileCandidatesForSpecification(
+          transaction,
+          input.specificationId,
+          now,
+        );
+        await transaction
+          .insertInto('apiIdempotencyKeys')
+          .values({
+            actorId: userId,
+            action: 'migration_specification:review',
+            idempotencyKey: input.idempotencyKey,
+            requestDigest,
+            resultResourceId: input.specificationId,
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
+          })
+          .executeTakeFirstOrThrow();
+        return {
+          specification: await loadMigrationSpecificationSummary(
+            transaction,
+            input.specificationId,
+          ),
+          ...reconciliation,
+        };
+      });
+    } catch (error) {
+      if (error instanceof CandidateMatchingError) {
+        throw new DomainError(
+          error.safeCode,
+          'Migration candidate matching could not be completed.',
+          error.safeCode === 'SOURCE_COMPATIBILITY_INVALID' ? 409 : 503,
+        );
+      }
+      throw error;
+    }
+  }
+
+  public async listMigrationCandidates(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicMigrationCandidate[]> {
+    requireAction(await this.membership(organisationId, userId), 'repository:read');
+    const rows = await this.database
+      .selectFrom('migrationCandidates as candidate')
+      .innerJoin(
+        'repositories as repository',
+        'repository.id',
+        'candidate.repositoryId',
+      )
+      .innerJoin(
+        'migrationSpecifications as specification',
+        'specification.id',
+        'candidate.migrationSpecificationId',
+      )
+      .innerJoin(
+        'dependencyObservations as observation',
+        'observation.id',
+        'candidate.dependencyObservationId',
+      )
+      .select([
+        'candidate.id',
+        'candidate.repositoryId',
+        'repository.fullName as repositoryFullName',
+        'candidate.migrationSpecificationId',
+        'observation.packageName',
+        'observation.declaredRange',
+        'observation.resolvedVersion',
+        'specification.sourceCompatibility',
+        'specification.targetVersion',
+        'specification.trustState as specificationTrustState',
+        'candidate.status',
+        'candidate.firstDetectedAt',
+        'candidate.lastDetectedAt',
+        'candidate.version',
+      ])
+      .where('candidate.organisationId', '=', organisationId)
+      .where('candidate.status', '=', 'open')
+      .where('specification.trustState', 'in', ['reviewed', 'vendor_verified'])
+      .orderBy('candidate.lastDetectedAt', 'desc')
+      .limit(500)
+      .execute();
+    return rows.map(row => {
+      if (row.specificationTrustState === 'draft') {
+        throw new DomainError(
+          'MIGRATION_CANDIDATE_TRUST_INVALID',
+          'The migration candidate could not be loaded.',
+          500,
+        );
+      }
+      return {
+        ...row,
+        specificationTrustState: row.specificationTrustState,
+        firstDetectedAt: row.firstDetectedAt.toISOString(),
+        lastDetectedAt: row.lastDetectedAt.toISOString(),
+      };
+    });
+  }
+
   public async createDemoRun(
     userId: string,
     input: CreateDemoRunInput,
@@ -833,6 +1118,88 @@ async function loadRun(
     throw new DomainError('RUN_NOT_FOUND', 'The requested run was not found.', 404);
   }
   return run;
+}
+
+const migrationSpecificationSummarySelection = [
+  'specification.id',
+  'specification.vendorReleaseId',
+  'vendor.name as vendorName',
+  'product.canonicalIdentifier as productIdentifier',
+  'specification.sourceCompatibility',
+  'specification.targetVersion',
+  'specification.trustState',
+  'specification.revision',
+  'specification.evidenceDigest',
+  'specification.reviewedAt',
+  'specification.createdAt',
+] as const;
+
+async function loadMigrationSpecificationSummary(
+  database: AppDatabase | Transaction<Database>,
+  specificationId: string,
+): Promise<PublicMigrationSpecification> {
+  const row = await database
+    .selectFrom('migrationSpecifications as specification')
+    .innerJoin(
+      'vendorReleases as release',
+      'release.id',
+      'specification.vendorReleaseId',
+    )
+    .innerJoin('apiProducts as product', 'product.id', 'release.apiProductId')
+    .innerJoin('vendors as vendor', 'vendor.id', 'product.vendorId')
+    .select(migrationSpecificationSummarySelection)
+    .where('specification.id', '=', specificationId)
+    .executeTakeFirstOrThrow();
+  return publicMigrationSpecification(row);
+}
+
+function publicMigrationSpecification(row: {
+  readonly id: string;
+  readonly vendorReleaseId: string;
+  readonly vendorName: string;
+  readonly productIdentifier: string;
+  readonly sourceCompatibility: string;
+  readonly targetVersion: string;
+  readonly trustState: PublicMigrationSpecification['trustState'];
+  readonly revision: number;
+  readonly evidenceDigest: string;
+  readonly reviewedAt: Date | null;
+  readonly createdAt: Date;
+}): PublicMigrationSpecification {
+  return {
+    ...row,
+    reviewedAt: row.reviewedAt?.toISOString() ?? null,
+    createdAt: row.createdAt.toISOString(),
+  };
+}
+
+async function requirePlatformOperator(
+  database: AppDatabase | Transaction<Database>,
+  userId: string,
+): Promise<void> {
+  const result = await sql<{ isOperator: boolean }>`
+    select is_platform_operator(${userId}::uuid) as "isOperator"
+  `.execute(database);
+  if (result.rows[0]?.isOperator !== true) {
+    throw new DomainError(
+      'PLATFORM_OPERATOR_REQUIRED',
+      'Platform operator authorization is required.',
+      403,
+    );
+  }
+}
+
+async function countOpenCandidates(
+  database: AppDatabase | Transaction<Database>,
+  specificationId: string,
+): Promise<number> {
+  const result = await database
+    .selectFrom('migrationCandidates')
+    .select(expression => expression.fn.countAll<string>().as('count'))
+    .where('migrationSpecificationId', '=', specificationId)
+    .where('status', '=', 'open')
+    .executeTakeFirstOrThrow();
+  return Number(result.count);
 }
 
 interface AuditInput {
