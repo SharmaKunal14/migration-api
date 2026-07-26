@@ -96,7 +96,6 @@ describe('Stage 3D database authority', () => {
       'observation.organisation_id = repository_organisation_id',
     );
     expect(migration).toContain('observation.package_name = product_identifier');
-    expect(migration).toContain('snapshot.expires_at > p_detected_at');
     expect(migration).toMatch(
       /not exists \([\s\S]*from repository_snapshots as newer_snapshot[\s\S]*newer_snapshot\.status = 'available'/iu,
     );

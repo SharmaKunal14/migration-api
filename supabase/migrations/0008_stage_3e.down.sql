@@ -1,5 +1,8 @@
 begin;
 
+drop trigger migration_candidates_current_snapshot on migration_candidates;
+drop function enforce_current_candidate_snapshot();
+
 alter table impact_analysis_runs
   drop constraint impact_analysis_runs_report_fk;
 

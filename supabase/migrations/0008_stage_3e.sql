@@ -1,5 +1,42 @@
 begin;
 
+create function enforce_current_candidate_snapshot()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  if new.status <> 'open' then
+    return new;
+  end if;
+
+  perform 1
+  from dependency_observations as observation
+  inner join repository_snapshots as snapshot
+    on snapshot.id = observation.repository_snapshot_id
+  where observation.id = new.dependency_observation_id
+    and snapshot.repository_id = new.repository_id
+    and snapshot.status = 'available'
+    and snapshot.expires_at > statement_timestamp();
+
+  if not found then
+    raise exception using
+      errcode = '23514',
+      message = 'migration candidate requires a current repository snapshot';
+  end if;
+
+  return new;
+end;
+$$;
+
+create trigger migration_candidates_current_snapshot
+before insert or update of dependency_observation_id, last_detected_at
+on migration_candidates
+for each row execute function enforce_current_candidate_snapshot();
+
+revoke all on function enforce_current_candidate_snapshot() from public;
+
 create table impact_analysis_runs (
   id uuid primary key,
   candidate_id uuid not null references migration_candidates(id) on delete cascade,

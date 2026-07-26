@@ -173,6 +173,7 @@ describe('Stage 3E impact-analysis boundary', () => {
     expect(taskPolicy).not.toContain('secretsmanager:GetSecretValue');
     expect(taskPolicy).not.toContain('lambda:InvokeFunction');
     expect(migration).toContain('create table impact_analysis_runs');
+    expect(migration).toContain('snapshot.expires_at > statement_timestamp()');
     expect(migration).toContain('unique (');
     expect(migration).toContain('snapshot_digest');
   });
