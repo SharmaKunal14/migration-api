@@ -14,6 +14,7 @@ import {
 } from '@migration/contracts';
 
 import { classifyImpactAnalysisFailure } from '../workers/impact-analysis-agent/src/failure.js';
+import { impactOutputJsonSchema } from '../workers/impact-analysis-agent/src/gateway.js';
 import {
   RepositoryToolError,
   RepositoryTools,
@@ -146,6 +147,10 @@ describe('Stage 3E impact-analysis boundary', () => {
       errorClass: 'RepositoryToolError',
       failureStage: 'repository_snapshot',
     });
+  });
+
+  it('keeps the remote structured-output schema free of regex lookarounds', () => {
+    expect(JSON.stringify(impactOutputJsonSchema)).not.toMatch(/\(\?[=!<]/u);
   });
 
   it('requires successful results to remain snapshot-bound', () => {

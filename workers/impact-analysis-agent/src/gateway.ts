@@ -202,10 +202,12 @@ const pathSchema = {
   type: 'string',
   minLength: 1,
   maxLength: 1024,
-  pattern: '^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*\\\\).+$',
 } as const;
 
-const impactOutputJsonSchema = {
+// Repository paths are validated by impactReportSchema after generation. Keep
+// this model schema free of lookaround expressions unsupported by the remote
+// Structured Outputs schema compiler.
+export const impactOutputJsonSchema = {
   type: 'object',
   additionalProperties: false,
   required: [
