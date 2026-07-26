@@ -76,19 +76,30 @@ describe('Stage 3E impact-analysis boundary', () => {
 
     const searched = tools.execute(
       'search_repository',
-      '{"query":"messages.send","pathPrefix":"src/"}',
+      '{"queries":["messages.send","OrbitChat"],"pathPrefix":"src/"}',
       2,
     );
     expect(JSON.parse(searched.output)).toMatchObject({
-      matches: [{ path: 'src/orbit.ts', line: 2 }],
+      queries: ['messages.send', 'OrbitChat'],
+      matches: [
+        { query: 'messages.send', path: 'src/orbit.ts', line: 2 },
+        { query: 'OrbitChat', path: 'src/orbit.ts', line: 1 },
+      ],
     });
+    expect(() =>
+      tools.execute(
+        'search_repository',
+        '{"query":"messages.send","pathPrefix":"src/"}',
+        3,
+      ),
+    ).toThrow(RepositoryToolError);
 
-    const parsed = tools.execute('inspect_typescript', '{"path":"src/orbit.ts"}', 3);
+    const parsed = tools.execute('inspect_typescript', '{"path":"src/orbit.ts"}', 4);
     expect(JSON.parse(parsed.output)).toMatchObject({
       imports: ['@orbitchat/sdk'],
       calls: ['client.messages.send'],
     });
-    expect(() => tools.execute('run_shell', '{"command":"env"}', 4)).toThrow(
+    expect(() => tools.execute('run_shell', '{"command":"env"}', 5)).toThrow(
       RepositoryToolError,
     );
   });
