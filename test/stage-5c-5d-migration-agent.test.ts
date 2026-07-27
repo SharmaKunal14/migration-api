@@ -471,11 +471,15 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     expect(worker).toContain("error.name === 'AccessDenied'");
     expect(worker).toContain('error.$metadata.httpStatusCode === 403');
     expect(worker).toContain("IfNoneMatch: '*'");
+    expect(worker).toContain('const preloadReadPaths = [');
+    expect(worker).toContain('.filter(path => allowedPaths.has(path))');
     expect(gateway).toContain('store: false');
     expect(gateway).toContain('tool_choice: toolChoice');
     expect(gateway).toContain('Use only the supplied read-only repository tools');
     expect(kernel).toContain("{ type: 'function', name: requiredTool }");
     expect(kernel).toContain('migrationAgentBudgets.maximumModelCalls');
+    expect(kernel).toContain("name: 'read_repository_file'");
+    expect(kernel).toContain('call_preloaded_');
     expect(migration).toContain("'plan_created'");
     expect(migration).toContain("'patch_validated'");
   });

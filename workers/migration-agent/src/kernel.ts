@@ -44,6 +44,7 @@ export class MigrationAgentKernel {
   public constructor(
     private readonly gateway: MigrationAgentGateway,
     private readonly tools: RepositoryTools,
+    private readonly preloadReadPaths: readonly string[],
   ) {}
 
   public async run(): Promise<MigrationKernelResult> {
@@ -60,6 +61,53 @@ export class MigrationAgentKernel {
     let outputTokens = 0;
     let returnedModel: string;
     let requestId: string | null;
+
+    for (const path of this.preloadReadPaths) {
+      if (toolCalls >= migrationAgentBudgets.maximumToolCalls) {
+        throw new MigrationAgentRuntimeError('TOOL_CALL_BUDGET_EXHAUSTED');
+      }
+      toolCalls += 1;
+      const callId = `call_preloaded_${String(toolCalls)}`;
+      const rawArguments = JSON.stringify({ path });
+      let execution;
+      try {
+        execution = this.tools.execute('read_repository_file', rawArguments, toolCalls);
+      } catch (error) {
+        throw new MigrationAgentRuntimeError(
+          error instanceof RepositoryToolError
+            ? error.safeCode
+            : 'REPOSITORY_TOOL_FAILED',
+        );
+      }
+      if (
+        execution.action.status !== 'succeeded' ||
+        execution.action.safeErrorCode !== null ||
+        execution.action.outputDigest === null ||
+        execution.action.path !== path
+      ) {
+        throw new MigrationAgentRuntimeError('REPOSITORY_TOOL_FAILED');
+      }
+      actions.push({
+        ...execution.action,
+        status: 'succeeded',
+        safeErrorCode: null,
+        outputDigest: execution.action.outputDigest,
+      });
+      calledTools.add('read_repository_file');
+      readPaths.add(path);
+      const call: ResponseFunctionToolCall = {
+        type: 'function_call',
+        call_id: callId,
+        name: 'read_repository_file',
+        arguments: rawArguments,
+      };
+      const output: ResponseInputItem.FunctionCallOutput = {
+        type: 'function_call_output',
+        call_id: callId,
+        output: execution.output,
+      };
+      modelInput.push(call, output);
+    }
 
     while (iterations < migrationAgentBudgets.maximumIterations) {
       iterations += 1;

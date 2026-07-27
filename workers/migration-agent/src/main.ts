@@ -98,7 +98,19 @@ async function main(): Promise<void> {
       model: config.OPENAI_MODEL,
       input,
     });
-    const proposal = await new MigrationAgentKernel(gateway, tools).run();
+    const allowedPaths = new Set(input.authority.patchPolicy.allowedPaths);
+    const preloadReadPaths = [
+      ...new Set(
+        input.impact.affectedFiles
+          .map(file => file.path)
+          .filter(path => allowedPaths.has(path)),
+      ),
+    ].sort();
+    const proposal = await new MigrationAgentKernel(
+      gateway,
+      tools,
+      preloadReadPaths,
+    ).run();
     const patch = buildAndValidatePatch({
       migration: input,
       plan: proposal.plan,
