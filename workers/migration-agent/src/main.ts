@@ -237,8 +237,13 @@ async function readExistingResult(
   } catch (error) {
     if (
       error instanceof S3ServiceException &&
-      (error.name === 'NoSuchKey' || error.$metadata.httpStatusCode === 404)
+      (error.name === 'NoSuchKey' ||
+        error.$metadata.httpStatusCode === 404 ||
+        (error.name === 'AccessDenied' && error.$metadata.httpStatusCode === 403))
     ) {
+      // The task role intentionally has no ListBucket permission. S3 therefore
+      // returns 403, rather than 404, when this optional result key is absent.
+      // The conditional PutObject below remains the immutable write boundary.
       return null;
     }
     throw error;

@@ -461,6 +461,9 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     expect(iam).toContain('WriteMigrationAgentResult');
     expect(iam).not.toContain('migration-agent-github');
     expect(worker).not.toContain('child_process');
+    expect(worker).toContain("error.name === 'AccessDenied'");
+    expect(worker).toContain('error.$metadata.httpStatusCode === 403');
+    expect(worker).toContain("IfNoneMatch: '*'");
     expect(gateway).toContain('store: false');
     expect(gateway).toContain('Use only the supplied read-only repository tools');
     expect(migration).toContain("'plan_created'");
