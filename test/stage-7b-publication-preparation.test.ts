@@ -64,6 +64,19 @@ describe('Stage 7B trusted publication preparation', () => {
       /workflow_github_token_broker[\s\S]{0,500}resources\s*=\s*\["\*"\]/u,
     );
   });
+
+  it('keeps repair-agent artifact access bounded to the supported attempts', () => {
+    const policy =
+      /data "aws_iam_policy_document" "migration_agent_task" \{([\s\S]*?)resource "aws_iam_role_policy" "migration_agent_task"/u.exec(
+        iam,
+      )?.[1] ?? '';
+    expect(policy).not.toBe('');
+    expect(policy).toContain('/agent/repair-attempt-2/context.json"');
+    expect(policy).toContain('/agent/repair-attempt-2/result.json"');
+    expect(policy).toContain('/agent/repair-attempt-3/context.json"');
+    expect(policy).toContain('/agent/repair-attempt-3/result.json"');
+    expect(policy).not.toContain('/agent/repair-attempt-*/');
+  });
 });
 
 function read(path: string): string {

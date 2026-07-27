@@ -484,14 +484,22 @@ data "aws_iam_policy_document" "migration_agent_task" {
     resources = [
       "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/input/source/*",
       "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/context.json",
-      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/result.json"
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/result.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/repair-attempt-2/context.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/repair-attempt-2/result.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/repair-attempt-3/context.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/repair-attempt-3/result.json"
     ]
   }
 
   statement {
-    sid       = "WriteMigrationAgentResult"
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/result.json"]
+    sid     = "WriteMigrationAgentResult"
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/result.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/repair-attempt-2/result.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/repair-attempt-3/result.json"
+    ]
   }
 
   statement {
