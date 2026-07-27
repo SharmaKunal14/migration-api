@@ -1,5 +1,6 @@
 import { createHash } from 'node:crypto';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtemp, readFile, realpath, rm } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGzip } from 'node:zlib';
 
@@ -247,7 +248,7 @@ describe('Stage 6C exact verification workspace', () => {
 });
 
 async function temporaryRoot(): Promise<string> {
-  const root = await mkdtemp('/private/tmp/migration-verifier-');
+  const root = await realpath(await mkdtemp(join(tmpdir(), 'migration-verifier-')));
   temporaryRoots.push(root);
   return root;
 }
