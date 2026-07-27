@@ -14,6 +14,7 @@ import { z } from 'zod';
 
 import {
   agentResultEnvelopeSchema,
+  githubDraftPublicationResultSchema,
   githubPublicationAccessResultSchema,
   migrationAgentInputArtifactSchema,
   migrationAgentPreparedInputSchema,
@@ -177,6 +178,12 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
   z
     .object({
       operation: z.literal('prepare_migration_publication'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('publish_migration_draft_pr'),
       workflow: migrationWorkflowInputSchema,
     })
     .strict(),
@@ -381,6 +388,18 @@ export async function handleWorkflowCommand(
         : {}),
     });
     return prepared;
+  }
+  if (command.operation === 'publish_migration_draft_pr') {
+    const status = await publishMigrationDraftPullRequest(dependency, command.workflow);
+    writeLog(status === 'completed' ? 'info' : 'warn', {
+      event: 'migration_publication_completed',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      outcome: status,
+    });
+    return { status, stage: 'publishing' };
   }
   if (command.operation === 'evaluate_migration_stage_capability') {
     const status = await evaluateMigrationStageCapability(
@@ -2844,6 +2863,7 @@ async function persistPublicationAttempt(
       ])
       .where('migrationRun.id', '=', workflow.migrationRunId)
       .where('migrationRun.organisationId', '=', workflow.organisationId)
+      .orderBy('verification.attemptNumber', 'desc')
       .executeTakeFirstOrThrow();
     if (
       access.githubRepositoryId !== source.githubRepositoryId ||
@@ -2948,6 +2968,305 @@ async function persistPublicationAttempt(
       createdAt: now,
     });
     return { status: 'completed', publicationAttemptId };
+  });
+}
+
+async function publishMigrationDraftPullRequest(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+): Promise<'completed' | 'failed' | 'stale' | 'cancelled'> {
+  const prepared = await startPublicationAttempt(dependency.database, workflow);
+  if (prepared.status !== 'ready') return prepared.status;
+  const patch = await readBoundedArtifact(
+    dependency,
+    prepared.patchObjectKey,
+    1024 * 1024,
+  );
+  if (sha256(patch) !== prepared.patchDigest) {
+    throw new Error('The publication patch digest is invalid.');
+  }
+  const response = await dependency.lambda.send(
+    new InvokeCommand({
+      FunctionName: dependency.config.GITHUB_TOKEN_BROKER_FUNCTION_NAME,
+      InvocationType: 'RequestResponse',
+      Payload: Buffer.from(
+        JSON.stringify({
+          operation: 'publish_draft_pr',
+          migrationRunId: workflow.migrationRunId,
+          repositoryId: workflow.repositoryId,
+          publicationAttemptId: prepared.publicationAttemptId,
+          patchDigest: prepared.patchDigest,
+          patch: patch.toString('utf8'),
+        }),
+      ),
+    }),
+  );
+  if (
+    response.FunctionError !== undefined ||
+    response.Payload === undefined ||
+    response.Payload.byteLength > 32 * 1024
+  ) {
+    throw new Error('The GitHub draft pull request operation failed.');
+  }
+  let result: z.infer<typeof githubDraftPublicationResultSchema>;
+  try {
+    result = githubDraftPublicationResultSchema.parse(
+      JSON.parse(Buffer.from(response.Payload).toString('utf8')),
+    );
+  } catch {
+    throw new Error('The GitHub draft pull request response is invalid.');
+  }
+  return persistPublishedDraftPullRequest(
+    dependency.database,
+    workflow,
+    prepared.publicationAttemptId,
+    result,
+  );
+}
+
+async function startPublicationAttempt(
+  database: AppDatabase,
+  workflow: MigrationWorkflowInput,
+): Promise<
+  | {
+      readonly status: 'ready';
+      readonly publicationAttemptId: string;
+      readonly patchObjectKey: string;
+      readonly patchDigest: string;
+    }
+  | { readonly status: 'completed' | 'cancelled' | 'stale' }
+> {
+  return database.transaction().execute(async transaction => {
+    const run = await lockedMigrationRun(transaction, workflow);
+    if (run.status === 'succeeded') return { status: 'completed' };
+    if (run.status === 'cancelled') return { status: 'cancelled' };
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return { status: 'cancelled' };
+    }
+    if (run.status !== 'running' || run.currentStage !== 'publishing') {
+      throw new Error('The migration run cannot publish a draft pull request.');
+    }
+    const approval = await loadMigrationApprovalState(transaction, workflow);
+    if (isMigrationApprovalStale(approval, new Date())) {
+      await markMigrationStale(
+        transaction,
+        workflow,
+        run.version,
+        'MIGRATION_APPROVAL_STALE',
+      );
+      return { status: 'stale' };
+    }
+    const attempt = await transaction
+      .selectFrom('publicationAttempts as attempt')
+      .innerJoin('migrationArtifacts as patch', join =>
+        join
+          .onRef('patch.id', '=', 'attempt.patchArtifactId')
+          .onRef('patch.organisationId', '=', 'attempt.organisationId')
+          .onRef('patch.migrationRunId', '=', 'attempt.migrationRunId')
+          .onRef('patch.digest', '=', 'attempt.patchDigest'),
+      )
+      .select([
+        'attempt.id',
+        'attempt.status',
+        'attempt.attemptCount',
+        'attempt.patchDigest',
+        'patch.objectKey as patchObjectKey',
+      ])
+      .where('attempt.migrationRunId', '=', workflow.migrationRunId)
+      .where('attempt.organisationId', '=', workflow.organisationId)
+      .forUpdate('attempt')
+      .executeTakeFirstOrThrow();
+    if (attempt.status === 'succeeded') return { status: 'completed' };
+    if (attempt.status === 'cancelled') return { status: 'cancelled' };
+    if (attempt.status === 'stale') return { status: 'stale' };
+    if (attempt.status === 'failed') {
+      throw new Error('The publication attempt has already failed.');
+    }
+    const now = new Date();
+    if (attempt.status === 'queued') {
+      await transaction
+        .updateTable('publicationAttempts')
+        .set({
+          status: 'validating',
+          attemptCount: 1,
+          startedAt: now,
+          updatedAt: now,
+        })
+        .where('id', '=', attempt.id)
+        .where('status', '=', 'queued')
+        .executeTakeFirstOrThrow();
+    }
+    if (attempt.status === 'queued' || attempt.status === 'validating') {
+      await transaction
+        .updateTable('publicationAttempts')
+        .set({ status: 'publishing', updatedAt: now })
+        .where('id', '=', attempt.id)
+        .where('status', '=', 'validating')
+        .executeTakeFirstOrThrow();
+      await appendMigrationRunEvent(transaction, {
+        workflow,
+        eventKey: `run:${workflow.migrationRunId}:publication-started`,
+        eventType: 'publication_started',
+        status: 'running',
+        stage: 'publishing',
+        safeErrorCode: null,
+        createdAt: now,
+      });
+    }
+    return {
+      status: 'ready',
+      publicationAttemptId: attempt.id,
+      patchObjectKey: attempt.patchObjectKey,
+      patchDigest: attempt.patchDigest,
+    };
+  });
+}
+
+async function persistPublishedDraftPullRequest(
+  database: AppDatabase,
+  workflow: MigrationWorkflowInput,
+  publicationAttemptId: string,
+  result: z.infer<typeof githubDraftPublicationResultSchema>,
+): Promise<'completed' | 'failed' | 'stale' | 'cancelled'> {
+  return database.transaction().execute(async transaction => {
+    const run = await lockedMigrationRun(transaction, workflow);
+    if (run.status === 'succeeded') return 'completed';
+    if (run.status === 'cancelled') return 'cancelled';
+    const attempt = await transaction
+      .selectFrom('publicationAttempts')
+      .selectAll()
+      .where('id', '=', publicationAttemptId)
+      .where('organisationId', '=', workflow.organisationId)
+      .where('migrationRunId', '=', workflow.migrationRunId)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+    if (result.status === 'denied') {
+      const now = new Date();
+      const stale = result.safeErrorCode === 'MIGRATION_PUBLICATION_BASE_STALE';
+      await transaction
+        .updateTable('publicationAttempts')
+        .set({
+          status: stale ? 'stale' : 'failed',
+          safeErrorCode: result.safeErrorCode,
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where('id', '=', attempt.id)
+        .where('status', 'in', ['publishing', 'reconciling'])
+        .executeTakeFirstOrThrow();
+      if (stale) {
+        await markMigrationStale(
+          transaction,
+          workflow,
+          run.version,
+          result.safeErrorCode,
+        );
+        return 'stale';
+      }
+      await markMigrationFailedInTransaction(
+        transaction,
+        workflow,
+        run.version,
+        result.safeErrorCode,
+        'publishing',
+      );
+      return 'failed';
+    }
+    if (
+      result.githubRepositoryId !== attempt.githubRepositoryId ||
+      result.headBranch !== attempt.headBranch ||
+      result.baseBranch !== attempt.baseBranch ||
+      result.baseCommitSha !== attempt.baseCommitSha
+    ) {
+      throw new Error('The GitHub publication identity is not bound to its attempt.');
+    }
+    const now = new Date();
+    const existing = await transaction
+      .selectFrom('githubPublications')
+      .selectAll()
+      .where('publicationAttemptId', '=', attempt.id)
+      .executeTakeFirst();
+    if (
+      existing !== undefined &&
+      (existing.commitSha !== result.commitSha ||
+        existing.pullRequestNumber !== result.pullRequestNumber ||
+        existing.pullRequestNodeId !== result.pullRequestNodeId ||
+        existing.pullRequestUrl !== result.pullRequestUrl)
+    ) {
+      throw new Error('The reconciled GitHub publication identity changed.');
+    }
+    if (existing === undefined) {
+      await transaction
+        .insertInto('githubPublications')
+        .values({
+          id: randomUUID(),
+          organisationId: workflow.organisationId,
+          migrationRunId: workflow.migrationRunId,
+          publicationAttemptId: attempt.id,
+          repositoryId: workflow.repositoryId,
+          githubRepositoryId: result.githubRepositoryId,
+          headBranch: result.headBranch,
+          baseBranch: result.baseBranch,
+          baseCommitSha: result.baseCommitSha,
+          commitSha: result.commitSha,
+          pullRequestNumber: result.pullRequestNumber,
+          pullRequestNodeId: result.pullRequestNodeId,
+          pullRequestUrl: result.pullRequestUrl,
+          state: result.state,
+          isDraft: result.isDraft,
+          createdAt: now,
+          lastReconciledAt: now,
+        })
+        .executeTakeFirstOrThrow();
+    }
+    if (!['succeeded'].includes(attempt.status)) {
+      await transaction
+        .updateTable('publicationAttempts')
+        .set({
+          status: 'succeeded',
+          safeErrorCode: null,
+          completedAt: now,
+          updatedAt: now,
+        })
+        .where('id', '=', attempt.id)
+        .where('status', 'in', ['publishing', 'reconciling'])
+        .executeTakeFirstOrThrow();
+    }
+    await transaction
+      .updateTable('migrationRuns')
+      .set({
+        status: 'succeeded',
+        currentStage: 'completed',
+        terminalResult: 'completed',
+        safeErrorCode: null,
+        completedAt: now,
+        updatedAt: now,
+        version: run.version + 1,
+      })
+      .where('id', '=', workflow.migrationRunId)
+      .where('organisationId', '=', workflow.organisationId)
+      .where('version', '=', run.version)
+      .executeTakeFirstOrThrow();
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:publication-reconciled`,
+      eventType: 'publication_reconciled',
+      status: 'running',
+      stage: 'publishing',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:completed`,
+      eventType: 'run_completed',
+      status: 'succeeded',
+      stage: 'completed',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    return 'completed';
   });
 }
 
@@ -3202,10 +3521,11 @@ interface SystemMigrationRunEvent {
     | 'publication_started'
     | 'publication_reconciled'
     | 'notification_queued'
+    | 'run_completed'
     | 'run_cancelled'
     | 'run_failed'
     | 'run_stale';
-  readonly status: 'running' | 'failed' | 'cancelled' | 'stale';
+  readonly status: 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
   readonly stage:
     | 'revalidating'
     | 'acquiring'
@@ -3214,6 +3534,7 @@ interface SystemMigrationRunEvent {
     | 'verifying'
     | 'repairing'
     | 'publishing'
+    | 'completed'
     | 'failed'
     | 'cancelled'
     | 'stale';

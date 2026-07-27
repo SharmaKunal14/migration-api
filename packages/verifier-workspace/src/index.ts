@@ -93,6 +93,39 @@ export interface MaterializedVerificationWorkspace {
   readonly manifest: VerificationWorkspaceManifest;
 }
 
+export interface AppliedTextPatchFile {
+  readonly path: string;
+  readonly content: string;
+  readonly beforeDigest: string;
+  readonly afterDigest: string;
+}
+
+export function applyValidatedTextPatch(
+  patch: string,
+  sourceFiles: ReadonlyMap<string, string>,
+): readonly AppliedTextPatchFile[] {
+  const files = parsePatch(patch);
+  if (
+    files.length !== sourceFiles.size ||
+    files.some(file => !sourceFiles.has(file.path))
+  ) {
+    throw new VerificationWorkspaceError('VERIFICATION_PATCH_BASE_MISMATCH');
+  }
+  return files.map(file => {
+    const source = sourceFiles.get(file.path);
+    if (source === undefined) {
+      throw new VerificationWorkspaceError('VERIFICATION_PATCH_BASE_MISMATCH');
+    }
+    const content = applyFileHunk(source, file);
+    return {
+      path: file.path,
+      content,
+      beforeDigest: digest(Buffer.from(source, 'utf8')),
+      afterDigest: digest(Buffer.from(content, 'utf8')),
+    };
+  });
+}
+
 export async function downloadBoundedArtifact(
   input: BoundedArtifactDownload,
 ): Promise<Buffer> {

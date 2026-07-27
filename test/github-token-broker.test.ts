@@ -1,4 +1,4 @@
-import { generateKeyPairSync } from 'node:crypto';
+import { createHash, generateKeyPairSync } from 'node:crypto';
 
 import { decodeProtectedHeader, importSPKI, jwtVerify } from 'jose';
 import { describe, expect, it, vi } from 'vitest';
@@ -71,6 +71,9 @@ function dependencies(
       name: 'widgets',
       defaultBranch: 'main',
       baseCommitSha: 'a'.repeat(40),
+      publicationAttemptId: '9c694c4d-8b78-44bf-960f-77ea1de2cc81',
+      patchDigest: 'c'.repeat(64),
+      headBranch: 'migration-api/run-8955ed33-d1d8-4fdb-bd48-3a0835562934',
     }),
 ): BrokerDependencies {
   return {
@@ -268,6 +271,9 @@ describe('GitHub token broker', () => {
           name: 'widgets',
           defaultBranch: 'main',
           baseCommitSha: 'a'.repeat(40),
+          publicationAttemptId: '9c694c4d-8b78-44bf-960f-77ea1de2cc81',
+          patchDigest: 'c'.repeat(64),
+          headBranch: 'migration-api/run-8955ed33-d1d8-4fdb-bd48-3a0835562934',
         }),
     );
 
@@ -318,6 +324,170 @@ describe('GitHub token broker', () => {
     expect(result).toEqual({
       status: 'denied',
       safeErrorCode: 'GITHUB_PUBLICATION_ACCESS_DENIED',
+    });
+  });
+
+  it('publishes one deterministic commit and draft pull request', async () => {
+    const migrationRunId = '8955ed33-d1d8-4fdb-bd48-3a0835562934';
+    const publicationAttemptId = '9c694c4d-8b78-44bf-960f-77ea1de2cc81';
+    const patch = [
+      'diff --git a/package.json b/package.json',
+      '--- a/package.json',
+      '+++ b/package.json',
+      '@@ -1,1 +1,1 @@',
+      '-{"version":1}',
+      '+{"version":2}',
+      '',
+    ].join('\n');
+    const patchDigest = createHash('sha256').update(patch).digest('hex');
+    const fetchMock = vi.fn<typeof globalThis.fetch>((input, init) => {
+      const url = requestUrl(input);
+      if (url.endsWith('/access_tokens')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              token: 'github-publication-token-never-returned',
+              expires_at: '2026-07-25T01:00:00.000Z',
+            }),
+            { status: 201 },
+          ),
+        );
+      }
+      if (url.endsWith('/git/ref/heads/main')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ object: { sha: 'a'.repeat(40) } })),
+        );
+      }
+      if (url.includes('/git/ref/heads/migration-api/')) {
+        return Promise.resolve(new Response('{}', { status: 404 }));
+      }
+      if (url.includes('/contents/package.json')) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              type: 'file',
+              encoding: 'base64',
+              content: Buffer.from('{"version":1}\n').toString('base64'),
+            }),
+          ),
+        );
+      }
+      if (url.endsWith(`/git/commits/${'a'.repeat(40)}`)) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              sha: 'a'.repeat(40),
+              message: 'base',
+              tree: { sha: 'b'.repeat(40) },
+              parents: [{ sha: '0'.repeat(40) }],
+            }),
+          ),
+        );
+      }
+      if (url.endsWith('/git/blobs')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ sha: 'c'.repeat(40) }), { status: 201 }),
+        );
+      }
+      if (url.includes(`/git/trees/${'b'.repeat(40)}?recursive=1`)) {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              truncated: false,
+              tree: [{ path: 'package.json', mode: '100644', type: 'blob' }],
+            }),
+          ),
+        );
+      }
+      if (url.endsWith('/git/trees')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ sha: 'd'.repeat(40) }), { status: 201 }),
+        );
+      }
+      if (url.endsWith('/git/commits') && init?.method === 'POST') {
+        return Promise.resolve(
+          new Response(JSON.stringify({ sha: 'e'.repeat(40) }), { status: 201 }),
+        );
+      }
+      if (url.endsWith('/git/refs')) {
+        return Promise.resolve(
+          new Response(JSON.stringify({ object: { sha: 'e'.repeat(40) } }), {
+            status: 201,
+          }),
+        );
+      }
+      if (url.includes('/pulls?')) {
+        return Promise.resolve(new Response(JSON.stringify([])));
+      }
+      if (url.endsWith('/pulls') && init?.method === 'POST') {
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              number: 42,
+              node_id: 'PR_test',
+              html_url: 'https://github.com/acme/widgets/pull/42',
+              state: 'open',
+              draft: true,
+              head: { sha: 'e'.repeat(40) },
+            }),
+            { status: 201 },
+          ),
+        );
+      }
+      throw new Error(`Unexpected GitHub request: ${init?.method ?? 'GET'} ${url}`);
+    });
+    const lookupPublication = vi.fn(
+      (): ReturnType<BrokerDependencies['lookupPublicationRepositoryAccess']> =>
+        Promise.resolve({
+          githubInstallationId: '12345',
+          githubRepositoryId: '67890',
+          owner: 'acme',
+          name: 'widgets',
+          defaultBranch: 'main',
+          baseCommitSha: 'a'.repeat(40),
+          publicationAttemptId,
+          patchDigest,
+          headBranch: `migration-api/run-${migrationRunId}`,
+        }),
+    );
+
+    const result = await handleBrokerCommand(
+      {
+        operation: 'publish_draft_pr',
+        migrationRunId,
+        repositoryId,
+        publicationAttemptId,
+        patchDigest,
+        patch,
+      },
+      'request-id',
+      dependencies(fetchMock, undefined, undefined, undefined, lookupPublication),
+    );
+
+    expect(result).toEqual({
+      status: 'published',
+      githubRepositoryId: '67890',
+      headBranch: `migration-api/run-${migrationRunId}`,
+      baseBranch: 'main',
+      baseCommitSha: 'a'.repeat(40),
+      commitSha: 'e'.repeat(40),
+      pullRequestNumber: 42,
+      pullRequestNodeId: 'PR_test',
+      pullRequestUrl: 'https://github.com/acme/widgets/pull/42',
+      state: 'open',
+      isDraft: true,
+    });
+    const pullRequestCall = fetchMock.mock.calls.find(([input]) =>
+      requestUrl(input).endsWith('/pulls'),
+    );
+    const pullRequestBody = pullRequestCall?.[1]?.body;
+    if (typeof pullRequestBody !== 'string') {
+      throw new Error('Expected a serialized pull request body.');
+    }
+    expect(JSON.parse(pullRequestBody)).toMatchObject({
+      draft: true,
+      head: `migration-api/run-${migrationRunId}`,
+      base: 'main',
     });
   });
 

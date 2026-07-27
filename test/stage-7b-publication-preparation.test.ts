@@ -43,15 +43,16 @@ describe('Stage 7B trusted publication preparation', () => {
     );
   });
 
-  it('wires only the preparation step and retains the safe mutation boundary', () => {
+  it('retains preparation before the separately controlled mutation step', () => {
     expect(compute).toContain('operation    = "prepare_migration_publication"');
     expect(compute).toContain('StringEquals = "stale"');
     expect(compute).toContain('StringEquals = "failed"');
     expect(compute).toContain('Next         = "ReconcilePublication"');
-    expect(compute).toContain('operation    = "evaluate_migration_stage_capability"');
+    expect(compute).toContain('operation    = "publish_migration_draft_pr"');
     expect(control).toContain('MIGRATION_PUBLICATION_NOT_IMPLEMENTED');
-    expect(broker).not.toContain('/git/refs');
-    expect(broker).not.toContain('/pulls');
+    expect(broker).toContain("operation: z.literal('publish_draft_pr')");
+    expect(broker).toContain('/git/refs');
+    expect(broker).toContain('/pulls');
   });
 
   it('grants workflow control only invocation of the exact broker Lambda', () => {

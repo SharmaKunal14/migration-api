@@ -1946,6 +1946,38 @@ export const githubPublicationAccessResultSchema = z.discriminatedUnion('status'
     .strict(),
 ]);
 
+export const githubDraftPublicationResultSchema = z.discriminatedUnion('status', [
+  z
+    .object({
+      status: z.literal('published'),
+      githubRepositoryId: githubIdSchema,
+      headBranch: z.string().min(1).max(255),
+      baseBranch: z.string().min(1).max(255),
+      baseCommitSha: commitShaSchema,
+      commitSha: commitShaSchema,
+      pullRequestNumber: z.number().int().positive(),
+      pullRequestNodeId: z.string().min(1).max(255),
+      pullRequestUrl: z
+        .url()
+        .regex(
+          /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/u,
+        ),
+      state: z.literal('open'),
+      isDraft: z.literal(true),
+    })
+    .strict(),
+  z
+    .object({
+      status: z.literal('denied'),
+      safeErrorCode: z.enum([
+        'GITHUB_PUBLICATION_ACCESS_DENIED',
+        'MIGRATION_PUBLICATION_BASE_STALE',
+        'MIGRATION_PUBLICATION_CONFLICT',
+      ]),
+    })
+    .strict(),
+]);
+
 export const publicationAttemptSchema = z
   .object({
     ...publicationAttemptBindingFields,

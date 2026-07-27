@@ -2514,8 +2514,7 @@ resource "aws_sfn_state_machine" "migration" {
         Parameters = {
           FunctionName = aws_lambda_function.workflow_control.arn
           Payload = {
-            operation    = "evaluate_migration_stage_capability"
-            stage        = "publishing"
+            operation    = "publish_migration_draft_pr"
             "workflow.$" = "$.workflow"
           }
         }
@@ -2548,8 +2547,18 @@ resource "aws_sfn_state_machine" "migration" {
           },
           {
             Variable     = "$.boundary.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "failed"
+            Next         = "SafeBoundaryReached"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
             StringEquals = "completed"
-            Next         = "RecordSuccess"
+            Next         = "Complete"
           }
         ]
         Default = "MarkInfrastructureFailure"
