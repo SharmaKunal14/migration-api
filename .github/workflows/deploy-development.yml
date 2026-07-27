@@ -10,7 +10,6 @@ on:
 
 permissions:
   actions: read
-  attestations: read
   contents: read
   id-token: write
 
@@ -51,6 +50,7 @@ jobs:
       ECR_REGISTRY:
         ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
       DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+      PROMOTION_SIGNING_KEY_ARN: ${{ vars.PROMOTION_SIGNING_KEY_ARN }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
       VITE_API_BASE_URL: /api
@@ -115,6 +115,15 @@ jobs:
             echo "actor=${GITHUB_ACTOR}"
           } > deployment-evidence/deployment.txt
 
+      - name: Configure short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
+        with:
+          aws-region: ${{ vars.AWS_REGION }}
+          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
+          role-session-name: migration-api-${{ github.run_id }}
+          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
+          mask-aws-account-id: true
+
       - name: Download and verify exact-revision CI promotion
         id: promotion
         env:
@@ -145,29 +154,33 @@ jobs:
             echo "No successful CI promotion exists for ${GITHUB_SHA}." >&2
             exit 1
           fi
+          ci_run_attempt="$(
+            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ci_run_id}" \
+              --jq '.run_attempt'
+          )"
+          if [[ ! "${ci_run_attempt}" =~ ^[1-9][0-9]*$ ]]; then
+            echo "The CI promotion run attempt is invalid." >&2
+            exit 1
+          fi
           gh run download "${ci_run_id}" \
             --name "development-promotion-${GITHUB_SHA}" \
             --dir ci-promotion
           test -s ci-promotion/promotion-payload.tar.gz
           test -s ci-promotion/promotion-manifest.json
           test -s ci-promotion/promotion-checksums.txt
+          test -s ci-promotion/promotion-signature.json
           (
             cd ci-promotion
             sha256sum --check promotion-checksums.txt
           )
-          signer_workflow="github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml"
-          for artifact in promotion-payload.tar.gz promotion-manifest.json; do
-            gh attestation verify "ci-promotion/${artifact}" \
-              --repo "${GITHUB_REPOSITORY}" \
-              --signer-workflow "${signer_workflow}" \
-              --source-digest "${GITHUB_SHA}" \
-              --source-ref refs/heads/main \
-              --deny-self-hosted-runners
-          done
+          bash scripts/deploy/verify-promotion-signature.sh \
+            ci-promotion/promotion-manifest.json \
+            ci-promotion/promotion-signature.json
           node scripts/deploy/verify-promotion.mjs \
             ci-promotion/promotion-manifest.json \
             ci-promotion/promotion-payload.tar.gz \
-            "${ci_run_id}"
+            "${ci_run_id}" \
+            "${ci_run_attempt}"
           payload_bytes="$(stat -c '%s' ci-promotion/promotion-payload.tar.gz)"
           if (( payload_bytes <= 0 || payload_bytes > 157286400 )); then
             echo "The promotion payload exceeds the 150 MiB extraction limit." >&2
@@ -204,16 +217,11 @@ jobs:
           test -s dist/web/index.html
           cp application.cdx.json deployment-evidence/application.cdx.json
           cp ci-promotion/promotion-manifest.json deployment-evidence/promotion-manifest.json
+          cp ci-promotion/promotion-signature.json \
+            deployment-evidence/promotion-signature.json
           echo "ci_promotion_run_id=${ci_run_id}" >> deployment-evidence/deployment.txt
-
-      - name: Configure short-lived AWS credentials
-        uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
-        with:
-          aws-region: ${{ vars.AWS_REGION }}
-          role-to-assume: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-          role-session-name: migration-api-${{ github.run_id }}
-          allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
-          mask-aws-account-id: true
+          echo "ci_promotion_run_attempt=${ci_run_attempt}" \
+            >> deployment-evidence/deployment.txt
 
       - name: Verify AWS identity and deployment foundation
         run: |
@@ -254,26 +262,16 @@ jobs:
               --password-stdin \
               "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-      - name: Verify promoted image provenance and registry bindings
-        env:
-          GH_TOKEN: ${{ github.token }}
+      - name: Verify signed image digests exist in the expected repositories
         run: |
-          signer_workflow="github.com/${GITHUB_REPOSITORY}/.github/workflows/ci.yml"
           jq -c '.images[]' ci-promotion/promotion-manifest.json |
             while IFS= read -r image; do
               repository="$(jq -r '.repository' <<<"${image}")"
-              subject_name="$(jq -r '.subjectName' <<<"${image}")"
               digest="$(jq -r '.digest' <<<"${image}")"
               aws ecr describe-images \
                 --repository-name "${repository}" \
                 --image-ids "imageDigest=${digest}" \
                 --output json >/dev/null
-              gh attestation verify "oci://${subject_name}@${digest}" \
-                --repo "${GITHUB_REPOSITORY}" \
-                --signer-workflow "${signer_workflow}" \
-                --source-digest "${GITHUB_SHA}" \
-                --source-ref refs/heads/main \
-                --deny-self-hosted-runners
             done
 
       - name: Gate on ECR vulnerability scans
@@ -547,7 +545,7 @@ jobs:
             if [[ "${MIGRATION_REQUIRED}" == "true" ]]; then
               echo "- Migration: executed and passed"
             else
-              echo "- Migration: skipped; attested content already completed successfully"
+              echo "- Migration: skipped; signed content already completed successfully"
             fi
             echo "- Saved-plan approval: passed"
             echo "- Public smoke checks: passed"

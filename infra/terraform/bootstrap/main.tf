@@ -26,6 +26,22 @@ resource "aws_kms_alias" "terraform_state" {
   target_key_id = aws_kms_key.terraform_state.key_id
 }
 
+resource "aws_kms_key" "promotion_signing" {
+  description              = "Migration API development CI promotion signatures"
+  customer_master_key_spec = "ECC_NIST_P256"
+  key_usage                = "SIGN_VERIFY"
+  deletion_window_in_days  = 30
+
+  lifecycle {
+    prevent_destroy = true
+  }
+}
+
+resource "aws_kms_alias" "promotion_signing" {
+  name          = "alias/migration-api-development-promotion-signing"
+  target_key_id = aws_kms_key.promotion_signing.key_id
+}
+
 resource "aws_s3_bucket" "terraform_state" {
   bucket = var.state_bucket_name
 
@@ -303,6 +319,16 @@ data "aws_iam_policy_document" "github_deploy" {
   }
 
   statement {
+    sid = "VerifyCiPromotion"
+    actions = [
+      "kms:DescribeKey",
+      "kms:GetPublicKey",
+      "kms:Verify"
+    ]
+    resources = [aws_kms_key.promotion_signing.arn]
+  }
+
+  statement {
     sid = "StageOneInfrastructure"
     actions = [
       "acm:DescribeCertificate",
@@ -385,6 +411,16 @@ data "aws_iam_policy_document" "github_ci_artifacts" {
       "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/migration-api-development-${repository_name}"
     ]
   }
+
+  statement {
+    sid = "SignCiPromotion"
+    actions = [
+      "kms:DescribeKey",
+      "kms:GetPublicKey",
+      "kms:Sign"
+    ]
+    resources = [aws_kms_key.promotion_signing.arn]
+  }
 }
 
 resource "aws_iam_role_policy" "github_ci_artifacts" {
@@ -417,4 +453,9 @@ output "github_ci_artifacts_role_arn" {
 output "github_ci_oidc_subject" {
   description = "Exact immutable main-branch OIDC subject trusted by the CI artifact role."
   value       = local.github_ci_oidc_subject
+}
+
+output "promotion_signing_key_arn" {
+  description = "Asymmetric KMS key used to sign and verify private-repository CI promotions."
+  value       = aws_kms_key.promotion_signing.arn
 }

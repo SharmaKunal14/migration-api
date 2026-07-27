@@ -108,7 +108,7 @@ jobs:
         run: terraform validate
 
   publish:
-    name: Publish attested deployment artifacts
+    name: Publish KMS-signed deployment artifacts
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [application, terraform]
     runs-on: ubuntu-24.04
@@ -116,11 +116,11 @@ jobs:
     permissions:
       contents: read
       id-token: write
-      attestations: write
     env:
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       AWS_CI_ARTIFACT_ROLE_ARN: ${{ vars.AWS_CI_ARTIFACT_ROLE_ARN }}
+      PROMOTION_SIGNING_KEY_ARN: ${{ vars.PROMOTION_SIGNING_KEY_ARN }}
       AWS_STS_REGIONAL_ENDPOINTS: regional
       ECR_REGISTRY:
         ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
@@ -139,11 +139,14 @@ jobs:
           test -n "${AWS_ACCOUNT_ID}"
           test -n "${AWS_REGION}"
           test -n "${AWS_CI_ARTIFACT_ROLE_ARN}"
+          test -n "${PROMOTION_SIGNING_KEY_ARN}"
           test -n "${VITE_SUPABASE_URL}"
           test -n "${VITE_SUPABASE_PUBLISHABLE_KEY}"
           [[ "${AWS_ACCOUNT_ID}" =~ ^[0-9]{12}$ ]]
           [[ "${AWS_CI_ARTIFACT_ROLE_ARN}" == \
             "arn:aws:iam::${AWS_ACCOUNT_ID}:role/migration-api-development-github-ci-artifacts" ]]
+          [[ "${PROMOTION_SIGNING_KEY_ARN}" =~ \
+            ^arn:aws:kms:${AWS_REGION}:${AWS_ACCOUNT_ID}:key/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]]
 
       - name: Download verified build outputs
         uses: actions/download-artifact@018cc2cf5baa6db3ef3c5f8a56943fffe632ef53 # v6.0.0
@@ -219,64 +222,19 @@ jobs:
             promotion-evidence/promotion-images.json \
             promotion-payload.tar.gz \
             promotion-manifest.json
-          sha256sum promotion-payload.tar.gz promotion-manifest.json \
+
+      - name: Sign the exact promotion manifest with AWS KMS
+        run: |
+          bash scripts/deploy/sign-promotion-manifest.sh \
+            promotion-manifest.json \
+            promotion-signature.json
+          sha256sum \
+            promotion-payload.tar.gz \
+            promotion-manifest.json \
+            promotion-signature.json \
             > promotion-checksums.txt
 
-      - name: Attest promotion payload and manifest
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        with:
-          subject-path: |
-            promotion-payload.tar.gz
-            promotion-manifest.json
-
-      - name: Attest agent image
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        with:
-          subject-name: ${{ env.ECR_REGISTRY }}/migration-api-development-agent
-          subject-digest: ${{ steps.images.outputs.agent_image_digest }}
-
-      - name: Attest database-migrator image
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        with:
-          subject-name:
-            ${{ env.ECR_REGISTRY }}/migration-api-development-database-migrator
-          subject-digest: ${{ steps.images.outputs.migrator_image_digest }}
-
-      - name: Attest source-fetcher image
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        with:
-          subject-name: ${{ env.ECR_REGISTRY }}/migration-api-development-source-fetcher
-          subject-digest: ${{ steps.images.outputs.source_fetcher_image_digest }}
-
-      - name: Attest vendor-fetcher image
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        with:
-          subject-name: ${{ env.ECR_REGISTRY }}/migration-api-development-vendor-fetcher
-          subject-digest: ${{ steps.images.outputs.vendor_fetcher_image_digest }}
-
-      - name: Attest change-intelligence image
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        with:
-          subject-name:
-            ${{ env.ECR_REGISTRY }}/migration-api-development-change-intelligence-agent
-          subject-digest:
-            ${{ steps.images.outputs.change_intelligence_agent_image_digest }}
-
-      - name: Attest impact-analysis image
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        with:
-          subject-name:
-            ${{ env.ECR_REGISTRY }}/migration-api-development-impact-analysis-agent
-          subject-digest: ${{ steps.images.outputs.impact_analysis_agent_image_digest }}
-
-      - name: Attest migration-agent image
-        uses: actions/attest@f7c74d28b9d84cb8768d0b8ca14a4bac6ef463e6 # v4
-        with:
-          subject-name:
-            ${{ env.ECR_REGISTRY }}/migration-api-development-migration-agent
-          subject-digest: ${{ steps.images.outputs.migration_agent_image_digest }}
-
-      - name: Upload signed promotion package
+      - name: Upload KMS-signed promotion package
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: development-promotion-${{ github.sha }}
@@ -284,5 +242,6 @@ jobs:
             promotion-checksums.txt
             promotion-manifest.json
             promotion-payload.tar.gz
+            promotion-signature.json
           if-no-files-found: error
           retention-days: 14

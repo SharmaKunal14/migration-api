@@ -117,9 +117,12 @@ export function validatePromotionManifest(manifest, expected) {
   }
   if (
     !Number.isSafeInteger(manifest.workflowRunAttempt) ||
-    manifest.workflowRunAttempt <= 0
+    manifest.workflowRunAttempt <= 0 ||
+    manifest.workflowRunAttempt !== expected.workflowRunAttempt
   ) {
-    throw new Error('The promotion workflow run attempt is invalid.');
+    throw new Error(
+      'The promotion workflow run attempt does not match the downloaded artifact.',
+    );
   }
   if (manifest.publicConfigurationDigest !== expected.publicConfigurationDigest) {
     throw new Error(

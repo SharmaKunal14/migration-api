@@ -25,6 +25,18 @@ const migratorDecision = readFileSync(
   ),
   'utf8',
 );
+const promotionSigner = readFileSync(
+  fileURLToPath(
+    new URL('../scripts/deploy/sign-promotion-manifest.sh', import.meta.url),
+  ),
+  'utf8',
+);
+const promotionVerifier = readFileSync(
+  fileURLToPath(
+    new URL('../scripts/deploy/verify-promotion-signature.sh', import.meta.url),
+  ),
+  'utf8',
+);
 const sourceFetcherDockerfile = readFileSync(
   fileURLToPath(new URL('../workers/source-fetcher/Dockerfile', import.meta.url)),
   'utf8',
@@ -78,7 +90,7 @@ describe('development deployment artifact contract', () => {
 
   it('builds, scans, and passes an immutable source-fetcher image digest', () => {
     expect(promotionImageBuilder).toContain('workers/source-fetcher/Dockerfile');
-    expect(ciWorkflow).toContain('Publish attested deployment artifacts');
+    expect(ciWorkflow).toContain('Publish KMS-signed deployment artifacts');
     expect(deploymentWorkflow).toContain('migration-api-development-source-fetcher');
     expect(deploymentWorkflow).toContain('TF_VAR_source_fetcher_image_digest');
     expect(deploymentWorkflow).toContain('SOURCE_FETCHER_SCAN_DIGEST');
@@ -130,9 +142,15 @@ describe('development deployment artifact contract', () => {
   });
 
   it('uses the verified build once and restores the exact reviewed payload', () => {
-    expect(deploymentWorkflow).toContain('gh attestation verify');
-    expect(deploymentWorkflow).toContain('--source-digest "${GITHUB_SHA}"');
-    expect(deploymentWorkflow).toContain('--deny-self-hosted-runners');
+    expect(ciWorkflow).toContain('scripts/deploy/sign-promotion-manifest.sh');
+    expect(deploymentWorkflow).toContain(
+      'scripts/deploy/verify-promotion-signature.sh',
+    );
+    expect(deploymentWorkflow).not.toContain('gh attestation verify');
+    expect(promotionSigner).toContain('aws kms sign');
+    expect(promotionSigner).toContain('--message-type DIGEST');
+    expect(promotionVerifier).toContain('aws kms verify');
+    expect(promotionVerifier).toContain('ECDSA_SHA_256');
     expect(deploymentWorkflow).not.toContain('npm run check');
     expect(deploymentWorkflow).not.toContain('docker buildx build');
     expect(deploymentWorkflow).not.toContain('- name: Build deployable browser assets');
@@ -185,6 +203,13 @@ describe('development deployment artifact contract', () => {
       'resource "aws_iam_role" "github_ci_artifacts"',
     );
     expect(bootstrapInfrastructure).toContain('sid       = "EcrAuthorization"');
+    expect(bootstrapInfrastructure).toContain('sid = "SignCiPromotion"');
+    expect(bootstrapInfrastructure).toContain('"kms:Sign"');
+    expect(bootstrapInfrastructure).toContain('sid = "VerifyCiPromotion"');
+    expect(bootstrapInfrastructure).toContain('"kms:Verify"');
+    expect(bootstrapInfrastructure).toContain(
+      'resources = [aws_kms_key.promotion_signing.arn]',
+    );
     expect(bootstrapInfrastructure).not.toMatch(
       /data "aws_iam_policy_document" "github_ci_artifacts"[\s\S]*?"(lambda|iam|s3|ssm):\*"/u,
     );

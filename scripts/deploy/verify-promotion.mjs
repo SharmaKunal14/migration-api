@@ -8,14 +8,16 @@ import {
   validatePromotionManifest,
 } from './promotion-contract.mjs';
 
-const [manifestPath, payloadPath, workflowRunIdText] = process.argv.slice(2);
-if (!manifestPath || !payloadPath || !workflowRunIdText) {
+const [manifestPath, payloadPath, workflowRunIdText, workflowRunAttemptText] =
+  process.argv.slice(2);
+if (!manifestPath || !payloadPath || !workflowRunIdText || !workflowRunAttemptText) {
   throw new Error(
-    'Usage: verify-promotion.mjs <manifest.json> <payload.tar.gz> <workflow-run-id>',
+    'Usage: verify-promotion.mjs <manifest.json> <payload.tar.gz> <workflow-run-id> <workflow-run-attempt>',
   );
 }
 
 const workflowRunId = Number(workflowRunIdText);
+const workflowRunAttempt = Number(workflowRunAttemptText);
 const registry = requireEnvironment('ECR_REGISTRY');
 const manifest = validatePromotionManifest(
   JSON.parse(await readFile(manifestPath, 'utf8')),
@@ -23,6 +25,7 @@ const manifest = validatePromotionManifest(
     repository: requireEnvironment('GITHUB_REPOSITORY'),
     revision: requireEnvironment('GITHUB_SHA'),
     workflowRunId,
+    workflowRunAttempt,
     registry,
     publicConfigurationDigest: publicConfigurationDigest({
       apiBaseUrl: requireEnvironment('VITE_API_BASE_URL'),

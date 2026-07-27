@@ -10,19 +10,21 @@
 `ci.yml` runs on pull requests and pushes to `main`. It validates the application,
 contracts, secret patterns, dependency audit, production builds, Terraform
 formatting, and both Terraform roots. On a successful `main` build it assumes a
-separate ECR-only AWS role, publishes immutable images, gates their vulnerability
-scans, and signs the exact image digests and deployment payload with GitHub
-artifact attestations.
+separate artifact-publisher AWS role, publishes immutable images, gates their
+vulnerability scans, and signs one manifest containing the exact image digests
+and deployment-payload digest with a dedicated asymmetric AWS KMS key. This
+works for private repositories without GitHub Enterprise Cloud.
 
 `deploy-development.yml` is deliberately manual. The protected GitHub
 `development` environment is the deployment approval boundary. The workflow:
 
 1. rejects revisions other than `main` and requires the confirmation text;
 2. selects one successful `CI` run for the exact commit SHA;
-3. verifies the CI payload and every image attestation against `ci.yml`,
-   `refs/heads/main`, the exact source digest, and a GitHub-hosted runner;
+3. verifies the manifest's ECDSA signature with the exact bootstrap-managed KMS
+   key, then checks its repository, `refs/heads/main`, exact source digest, CI
+   run, payload digest, and public configuration;
 4. assumes the AWS deployment role through GitHub OIDC;
-5. verifies that the attested digests exist in the expected ECR repositories and
+5. verifies that the signed digests exist in the expected ECR repositories and
    still pass the high/critical vulnerability gate;
 6. compares the desired migrator content digest with the KMS-encrypted
    last-successful marker;
@@ -58,6 +60,7 @@ configuration, not secret credential values:
 | `AWS_ACCOUNT_ID` | Exact 12-digit development AWS account |
 | `AWS_REGION` | Recorded development region |
 | `AWS_DEPLOY_ROLE_ARN` | Bootstrap output `github_deploy_role_arn` |
+| `PROMOTION_SIGNING_KEY_ARN` | Bootstrap output `promotion_signing_key_arn` |
 | `TF_STATE_BUCKET` | Bootstrap output `state_bucket` |
 | `TF_STATE_KMS_KEY_ARN` | Bootstrap output `state_kms_key_arn` |
 | `OWNER` | Resource owner tag |
@@ -96,13 +99,16 @@ environment. Configure these as repository or organisation variables:
 | `AWS_ACCOUNT_ID` | Same exact account ID used by the development environment |
 | `AWS_REGION` | Same recorded development region |
 | `AWS_CI_ARTIFACT_ROLE_ARN` | Bootstrap output `github_ci_artifacts_role_arn` |
+| `PROMOTION_SIGNING_KEY_ARN` | Bootstrap output `promotion_signing_key_arn` |
 | `SUPABASE_URL` | Same public URL used by the protected environment |
 | `SUPABASE_PUBLISHABLE_KEY` | Same browser-safe publishable key used by the protected environment |
 
-The deployment compares a digest of the CI web configuration with the protected
-environment values and fails closed on drift. These values are deliberately
-public configuration, not service credentials. Do not expose database passwords,
-GitHub App secrets, or OpenAI credentials as repository variables.
+Add `PROMOTION_SIGNING_KEY_ARN` to the protected `development` environment as
+well as the repository variables. The deployment compares a digest of the CI web
+configuration with the protected environment values and fails closed on drift.
+These values are identifiers or deliberately public configuration, not service
+credentials. Do not expose database passwords, GitHub App secrets, or OpenAI
+credentials as repository variables.
 
 ## Required repository controls
 
@@ -115,7 +121,8 @@ Protect `main` and require:
 - no force pushes; and
 - no branch deletion.
 
-`Publish attested deployment artifacts` runs only after a commit reaches `main`.
+`Publish KMS-signed deployment artifacts` runs only after a commit reaches
+`main`.
 The deployment workflow independently requires that exact commit's complete `CI`
 run, including the publish job, to have succeeded before it accepts any
 artifact.
@@ -134,13 +141,20 @@ first run:
    `github_ci_artifacts` role;
 3. apply the isolated ECR foundation in `infra/terraform/foundation`;
 4. configure the required repository variables and let the successful `main` CI
-   run build, scan, and attest the images;
+   run build, scan, and sign the promotion manifest;
 5. initialize the application state backend;
 6. add the resulting NAT CIDRs to the Supabase database allowlist;
 7. configure the exact OpenAI WIF role mapping; and
 8. populate the GitHub `development` environment variables.
 
 After the foundation exists, normal deployments use only the workflow.
+
+AWS KMS does not automatically rotate asymmetric signing keys. Rotate this key
+manually by adding a new versioned Terraform key, granting the same bounded
+sign/verify permissions, updating both GitHub variable scopes to its exact ARN,
+and allowing a new `main` CI run to produce a promotion before retiring the old
+key. Never repoint only the alias: deployment deliberately trusts the immutable
+key ARN.
 
 The first full deployment is the exception for DNS: after Terraform creates
 CloudFront, the workflow emits the exact `cloudfront_cname_target` as a notice.

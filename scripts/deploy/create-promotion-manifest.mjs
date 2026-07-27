@@ -48,6 +48,7 @@ validatePromotionManifest(manifest, {
   repository,
   revision,
   workflowRunId,
+  workflowRunAttempt,
   registry,
   publicConfigurationDigest: manifest.publicConfigurationDigest,
 });
