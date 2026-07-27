@@ -110,6 +110,20 @@ resource "aws_cloudwatch_metric_alarm" "workflow_failures" {
   treat_missing_data  = "notBreaching"
 }
 
+resource "aws_cloudwatch_metric_alarm" "migration_workflow_failures" {
+  alarm_name          = "migration-api-development-migration-workflow-failures"
+  alarm_description   = "The durable migration control workflow reached an infrastructure failure."
+  namespace           = "AWS/States"
+  metric_name         = "ExecutionsFailed"
+  dimensions          = { StateMachineArn = aws_sfn_state_machine.migration.arn }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
 resource "aws_cloudwatch_metric_alarm" "outbox_failure" {
   alarm_name          = "migration-api-development-outbox-delivery-failure"
   alarm_description   = "An outbox event exhausted its delivery attempts."

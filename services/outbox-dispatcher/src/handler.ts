@@ -8,8 +8,10 @@ import {
 import type { ScheduledEvent } from 'aws-lambda';
 
 import {
+  migrationWorkflowInputSchema,
   repositoryScanWorkflowInputSchema,
   workflowInputSchema,
+  type MigrationWorkflowInput,
   type RepositoryScanWorkflowInput,
   type WorkflowInput,
 } from '@migration/contracts';
@@ -21,17 +23,21 @@ import {
 import { createDatabase, type AppDatabase } from '@migration/database';
 import { writeLog } from '@migration/observability';
 
-const BATCH_SIZE = 5;
+const PER_KIND_BATCH_SIZE = 2;
 const LEASE_MILLISECONDS = 60_000;
 const MAX_ATTEMPTS = 10;
 
 interface DispatcherDependencies {
   readonly config: DispatcherConfig;
   readonly database: AppDatabase;
-  readonly stepFunctions: SFNClient;
+  readonly stepFunctions: WorkflowStarter;
 }
 
-type ClaimedEvent =
+export interface WorkflowStarter {
+  send(command: StartExecutionCommand): Promise<unknown>;
+}
+
+export type ClaimedEvent =
   | {
       readonly kind: 'agent';
       readonly id: string;
@@ -42,6 +48,12 @@ type ClaimedEvent =
       readonly kind: 'repository_scan';
       readonly id: string;
       readonly payload: RepositoryScanWorkflowInput;
+      readonly attempts: number;
+    }
+  | {
+      readonly kind: 'migration';
+      readonly id: string;
+      readonly payload: MigrationWorkflowInput;
       readonly attempts: number;
     };
 
@@ -71,35 +83,25 @@ export async function dispatchOutbox(
   const claimed = await claimEvents(dependency.database, leaseOwner);
   for (const event of claimed) {
     try {
-      await dependency.stepFunctions.send(
-        new StartExecutionCommand({
-          stateMachineArn:
-            event.kind === 'agent'
-              ? dependency.config.STATE_MACHINE_ARN
-              : dependency.config.REPOSITORY_SCAN_STATE_MACHINE_ARN,
-          name:
-            event.kind === 'agent'
-              ? `agent-${event.payload.agentRunId}`
-              : `repository-scan-${event.payload.repositoryScanId}`,
-          input: JSON.stringify(event.payload),
-        }),
+      const executionArn = await startWorkflowExecution(
+        dependency.stepFunctions,
+        event,
+        dependency.config,
       );
-      await markDelivered(dependency.database, event, leaseOwner);
+      await markDelivered(dependency.database, event, leaseOwner, executionArn);
       writeLog('info', {
         event: 'outbox_event_delivered',
         correlationId: event.payload.correlationId,
         organisationId: event.payload.organisationId,
         ...(event.kind === 'agent'
           ? { agentRunId: event.payload.agentRunId }
-          : { repositoryScanId: event.payload.repositoryScanId }),
+          : event.kind === 'repository_scan'
+            ? { repositoryScanId: event.payload.repositoryScanId }
+            : { migrationRunId: event.payload.migrationRunId }),
       });
-    } catch (error) {
-      if (error instanceof ExecutionAlreadyExists) {
-        await markDelivered(dependency.database, event, leaseOwner);
-        continue;
-      }
+    } catch {
       const terminal = event.attempts >= MAX_ATTEMPTS;
-      const backoffSeconds = Math.min(300, 2 ** event.attempts);
+      const backoffSeconds = retryBackoffSeconds(event.attempts);
       await markRetry(dependency.database, event, leaseOwner, backoffSeconds, terminal);
       writeLog(terminal ? 'error' : 'warn', {
         event: terminal ? 'outbox_event_failed' : 'outbox_event_retry_scheduled',
@@ -107,11 +109,73 @@ export async function dispatchOutbox(
         organisationId: event.payload.organisationId,
         ...(event.kind === 'agent'
           ? { agentRunId: event.payload.agentRunId }
-          : { repositoryScanId: event.payload.repositoryScanId }),
+          : event.kind === 'repository_scan'
+            ? { repositoryScanId: event.payload.repositoryScanId }
+            : { migrationRunId: event.payload.migrationRunId }),
         safeErrorCode: terminal ? 'OUTBOX_DELIVERY_FAILED' : 'OUTBOX_RETRY_PENDING',
       });
     }
   }
+}
+
+export async function startWorkflowExecution(
+  stepFunctions: WorkflowStarter,
+  event: ClaimedEvent,
+  config: DispatcherConfig,
+): Promise<string> {
+  const executionName = workflowExecutionName(event);
+  const stateMachineArn = workflowStateMachineArn(event, config);
+  const executionArn = deterministicExecutionArn(stateMachineArn, executionName);
+  try {
+    await stepFunctions.send(
+      new StartExecutionCommand({
+        stateMachineArn,
+        name: executionName,
+        input: JSON.stringify(event.payload),
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof ExecutionAlreadyExists)) throw error;
+  }
+  return executionArn;
+}
+
+export function retryBackoffSeconds(attempt: number, random = Math.random()): number {
+  const ceiling = Math.min(300, 2 ** attempt);
+  return Math.max(1, Math.ceil(ceiling * (0.5 + Math.min(1, Math.max(0, random)) / 2)));
+}
+
+export function workflowExecutionName(event: ClaimedEvent): string {
+  if (event.kind === 'agent') return `agent-${event.payload.agentRunId}`;
+  if (event.kind === 'repository_scan') {
+    return `repository-scan-${event.payload.repositoryScanId}`;
+  }
+  return `migration-${event.payload.migrationRunId}`;
+}
+
+function workflowStateMachineArn(
+  event: ClaimedEvent,
+  config: DispatcherConfig,
+): string {
+  if (event.kind === 'agent') return config.STATE_MACHINE_ARN;
+  if (event.kind === 'repository_scan') {
+    return config.REPOSITORY_SCAN_STATE_MACHINE_ARN;
+  }
+  return config.MIGRATION_STATE_MACHINE_ARN;
+}
+
+export function deterministicExecutionArn(
+  stateMachineArn: string,
+  executionName: string,
+): string {
+  const match =
+    /^(arn:[^:]+:states:[^:]+:[0-9]{12}):stateMachine:([A-Za-z0-9+=,.@_-]+)$/u.exec(
+      stateMachineArn,
+    );
+  if (!match?.[1] || !match[2] || !/^[A-Za-z0-9+=,.@_-]{1,80}$/u.test(executionName)) {
+    throw new Error('The workflow execution identity is invalid.');
+  }
+  return `${match[1]}:execution:${match[2]}:${executionName}`;
 }
 
 async function claimEvents(
@@ -132,7 +196,7 @@ async function claimEvents(
       )
       .where('attempts', '<', MAX_ATTEMPTS)
       .orderBy('createdAt', 'asc')
-      .limit(BATCH_SIZE)
+      .limit(PER_KIND_BATCH_SIZE)
       .forUpdate()
       .skipLocked()
       .execute();
@@ -157,8 +221,6 @@ async function claimEvents(
     }
     return claimed;
   });
-  const remaining = BATCH_SIZE - agentEvents.length;
-  if (remaining === 0) return agentEvents;
   const scanEvents = await database.transaction().execute(async transaction => {
     const candidates = await transaction
       .selectFrom('repositoryScanOutbox')
@@ -173,7 +235,7 @@ async function claimEvents(
       )
       .where('attempts', '<', MAX_ATTEMPTS)
       .orderBy('createdAt', 'asc')
-      .limit(remaining)
+      .limit(PER_KIND_BATCH_SIZE)
       .forUpdate()
       .skipLocked()
       .execute();
@@ -198,13 +260,53 @@ async function claimEvents(
     }
     return claimed;
   });
-  return [...agentEvents, ...scanEvents];
+  const migrationEvents = await database.transaction().execute(async transaction => {
+    const candidates = await transaction
+      .selectFrom('migrationRunOutbox')
+      .select(['id', 'payload', 'attempts'])
+      .where('deliveredAt', 'is', null)
+      .where('availableAt', '<=', new Date())
+      .where(builder =>
+        builder.or([
+          builder('leaseExpiresAt', 'is', null),
+          builder('leaseExpiresAt', '<', new Date()),
+        ]),
+      )
+      .where('attempts', '<', MAX_ATTEMPTS)
+      .orderBy('createdAt', 'asc')
+      .limit(PER_KIND_BATCH_SIZE)
+      .forUpdate()
+      .skipLocked()
+      .execute();
+    const claimed: ClaimedEvent[] = [];
+    for (const candidate of candidates) {
+      const payload = migrationWorkflowInputSchema.parse(candidate.payload);
+      await transaction
+        .updateTable('migrationRunOutbox')
+        .set({
+          leaseOwner,
+          leaseExpiresAt: new Date(Date.now() + LEASE_MILLISECONDS),
+          attempts: candidate.attempts + 1,
+        })
+        .where('id', '=', candidate.id)
+        .executeTakeFirstOrThrow();
+      claimed.push({
+        kind: 'migration',
+        id: candidate.id,
+        payload,
+        attempts: candidate.attempts + 1,
+      });
+    }
+    return claimed;
+  });
+  return [...migrationEvents, ...agentEvents, ...scanEvents];
 }
 
 async function markDelivered(
   database: AppDatabase,
   event: ClaimedEvent,
   leaseOwner: string,
+  executionArn: string,
 ): Promise<void> {
   const values = {
     deliveredAt: new Date(),
@@ -221,12 +323,50 @@ async function markDelivered(
       .executeTakeFirstOrThrow();
     return;
   }
-  await database
-    .updateTable('repositoryScanOutbox')
-    .set(values)
-    .where('id', '=', event.id)
-    .where('leaseOwner', '=', leaseOwner)
-    .executeTakeFirstOrThrow();
+  if (event.kind === 'repository_scan') {
+    await database
+      .updateTable('repositoryScanOutbox')
+      .set(values)
+      .where('id', '=', event.id)
+      .where('leaseOwner', '=', leaseOwner)
+      .executeTakeFirstOrThrow();
+    return;
+  }
+  await database.transaction().execute(async transaction => {
+    const outbox = await transaction
+      .updateTable('migrationRunOutbox')
+      .set(values)
+      .where('id', '=', event.id)
+      .where('leaseOwner', '=', leaseOwner)
+      .where('deliveredAt', 'is', null)
+      .executeTakeFirst();
+    if (outbox.numUpdatedRows !== 1n) {
+      throw new Error('The migration outbox lease was lost before delivery.');
+    }
+    const run = await transaction
+      .selectFrom('migrationRuns')
+      .select('workflowExecutionArn')
+      .where('id', '=', event.payload.migrationRunId)
+      .where('organisationId', '=', event.payload.organisationId)
+      .where('candidateId', '=', event.payload.candidateId)
+      .where('approvalId', '=', event.payload.approvalId)
+      .where('repositoryId', '=', event.payload.repositoryId)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+    if (run.workflowExecutionArn && run.workflowExecutionArn !== executionArn) {
+      throw new Error('The migration run is bound to another workflow execution.');
+    }
+    if (!run.workflowExecutionArn) {
+      await transaction
+        .updateTable('migrationRuns')
+        .set({
+          workflowExecutionArn: executionArn,
+          updatedAt: new Date(),
+        })
+        .where('id', '=', event.payload.migrationRunId)
+        .executeTakeFirstOrThrow();
+    }
+  });
 }
 
 async function markRetry(
@@ -251,8 +391,10 @@ async function markRetry(
       .executeTakeFirstOrThrow();
     return;
   }
+  const table =
+    event.kind === 'repository_scan' ? 'repositoryScanOutbox' : 'migrationRunOutbox';
   await database
-    .updateTable('repositoryScanOutbox')
+    .updateTable(table)
     .set(values)
     .where('id', '=', event.id)
     .where('leaseOwner', '=', leaseOwner)

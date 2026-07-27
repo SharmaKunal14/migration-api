@@ -6,8 +6,10 @@ import { z } from 'zod';
 
 import {
   agentResultEnvelopeSchema,
+  migrationWorkflowInputSchema,
   workflowInputSchema,
   type AgentResultEnvelope,
+  type MigrationWorkflowInput,
 } from '@migration/contracts';
 import {
   parseConfig,
@@ -52,6 +54,24 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
       safeErrorCode: z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/u),
     })
     .strict(),
+  z
+    .object({
+      operation: z.literal('validate_migration_approval'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('mark_migration_stage_unavailable'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('mark_migration_infrastructure_failed'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
 ]);
 
 interface WorkflowDependencies {
@@ -85,6 +105,53 @@ export async function handleWorkflowCommand(
   dependency: WorkflowDependencies,
 ): Promise<{ readonly status: string }> {
   const command = workflowCommandSchema.parse(event);
+  if (command.operation === 'validate_migration_approval') {
+    const status = await validateMigrationApproval(
+      dependency.database,
+      command.workflow,
+    );
+    writeLog(status === 'running' ? 'info' : 'warn', {
+      event: 'migration_approval_revalidated',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      outcome: status,
+    });
+    return { status };
+  }
+  if (command.operation === 'mark_migration_stage_unavailable') {
+    await markMigrationFailed(
+      dependency.database,
+      command.workflow,
+      'MIGRATION_STAGE_NOT_IMPLEMENTED',
+    );
+    writeLog('info', {
+      event: 'migration_stopped_before_mutation',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      safeErrorCode: 'MIGRATION_STAGE_NOT_IMPLEMENTED',
+    });
+    return { status: 'failed' };
+  }
+  if (command.operation === 'mark_migration_infrastructure_failed') {
+    await markMigrationFailed(
+      dependency.database,
+      command.workflow,
+      'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
+    );
+    writeLog('error', {
+      event: 'migration_control_failed',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      safeErrorCode: 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
+    });
+    return { status: 'failed' };
+  }
   const { workflow } = command;
   if (command.operation === 'mark_started') {
     const result = await dependency.database
@@ -166,6 +233,247 @@ export async function handleWorkflowCommand(
     outcome: 'completed',
   });
   return { status: 'succeeded' };
+}
+
+interface MigrationApprovalState {
+  readonly expiresAt: Date | null;
+  readonly approvedBaseBranch: string;
+  readonly baseCommitSha: string;
+  readonly approvedGithubRepositoryId: string;
+  readonly approvedSnapshotDigest: string;
+  readonly migrationSpecificationRevision: number;
+  readonly migrationSpecificationDigest: string;
+  readonly impactReportRevision: number;
+  readonly impactReportDigest: string;
+  readonly candidateStatus: 'open' | 'dismissed' | 'superseded' | 'resolved';
+  readonly selected: boolean;
+  readonly enabled: boolean;
+  readonly archived: boolean;
+  readonly currentBaseBranch: string;
+  readonly currentGithubRepositoryId: string;
+  readonly installationStatus: 'active' | 'suspended' | 'removed';
+  readonly snapshotStatus: 'available' | 'expired' | 'deleted';
+  readonly commitSha: string;
+  readonly currentSnapshotDigest: string;
+  readonly snapshotExpiresAt: Date;
+  readonly trustState: 'draft' | 'reviewed' | 'vendor_verified';
+  readonly specificationRevision: number;
+  readonly evidenceDigest: string;
+  readonly reportRevision: number;
+  readonly artifactDigest: string;
+  readonly revokedApprovalId: string | null;
+}
+
+export function isMigrationApprovalStale(
+  approval: MigrationApprovalState | undefined,
+  now: Date,
+): boolean {
+  return (
+    approval?.revokedApprovalId !== null ||
+    (approval.expiresAt !== null && approval.expiresAt <= now) ||
+    approval.approvedBaseBranch !== approval.currentBaseBranch ||
+    approval.approvedGithubRepositoryId !== approval.currentGithubRepositoryId ||
+    approval.candidateStatus !== 'open' ||
+    !approval.selected ||
+    !approval.enabled ||
+    approval.archived ||
+    approval.installationStatus !== 'active' ||
+    approval.snapshotStatus !== 'available' ||
+    approval.snapshotExpiresAt <= now ||
+    approval.baseCommitSha !== approval.commitSha ||
+    approval.approvedSnapshotDigest !== approval.currentSnapshotDigest ||
+    approval.trustState === 'draft' ||
+    approval.migrationSpecificationRevision !== approval.specificationRevision ||
+    approval.migrationSpecificationDigest !== approval.evidenceDigest ||
+    approval.impactReportRevision !== approval.reportRevision ||
+    approval.impactReportDigest !== approval.artifactDigest
+  );
+}
+
+async function validateMigrationApproval(
+  database: AppDatabase,
+  workflow: MigrationWorkflowInput,
+): Promise<'running' | 'stale'> {
+  return database.transaction().execute(async transaction => {
+    const run = await transaction
+      .selectFrom('migrationRuns')
+      .select([
+        'id',
+        'organisationId',
+        'candidateId',
+        'approvalId',
+        'repositoryId',
+        'status',
+        'currentStage',
+        'attempt',
+        'version',
+      ])
+      .where('id', '=', workflow.migrationRunId)
+      .where('organisationId', '=', workflow.organisationId)
+      .forUpdate()
+      .executeTakeFirst();
+    if (
+      run?.candidateId !== workflow.candidateId ||
+      run.approvalId !== workflow.approvalId ||
+      run.repositoryId !== workflow.repositoryId ||
+      run.attempt !== workflow.expectedAttempt
+    ) {
+      throw new Error('The migration workflow identity does not match its run.');
+    }
+    if (
+      run.status === 'running' &&
+      run.currentStage === 'revalidating' &&
+      run.version === workflow.expectedVersion + 1
+    ) {
+      return 'running';
+    }
+    if (run.status === 'stale') return 'stale';
+    if (run.status !== 'queued' || run.version !== workflow.expectedVersion) {
+      throw new Error('The migration run is not in the expected queued state.');
+    }
+
+    const approval = await transaction
+      .selectFrom('migrationApprovals as approval')
+      .innerJoin('migrationCandidates as candidate', join =>
+        join
+          .onRef('candidate.id', '=', 'approval.candidateId')
+          .onRef('candidate.organisationId', '=', 'approval.organisationId')
+          .onRef('candidate.repositoryId', '=', 'approval.repositoryId'),
+      )
+      .innerJoin('repositories as repository', join =>
+        join
+          .onRef('repository.id', '=', 'approval.repositoryId')
+          .onRef('repository.organisationId', '=', 'approval.organisationId')
+          .onRef('repository.installationId', '=', 'approval.installationId'),
+      )
+      .innerJoin(
+        'githubInstallations as installation',
+        'installation.id',
+        'approval.installationId',
+      )
+      .innerJoin(
+        'repositorySnapshots as snapshot',
+        'snapshot.id',
+        'approval.repositorySnapshotId',
+      )
+      .innerJoin(
+        'migrationSpecifications as specification',
+        'specification.id',
+        'approval.migrationSpecificationId',
+      )
+      .innerJoin('impactReports as report', 'report.id', 'approval.impactReportId')
+      .leftJoin(
+        'migrationApprovalRevocations as revocation',
+        'revocation.approvalId',
+        'approval.id',
+      )
+      .select([
+        'approval.expiresAt',
+        'approval.baseBranch as approvedBaseBranch',
+        'approval.baseCommitSha',
+        'approval.githubRepositoryId as approvedGithubRepositoryId',
+        'approval.snapshotDigest as approvedSnapshotDigest',
+        'approval.migrationSpecificationRevision',
+        'approval.migrationSpecificationDigest',
+        'approval.impactReportRevision',
+        'approval.impactReportDigest',
+        'candidate.status as candidateStatus',
+        'repository.selected',
+        'repository.enabled',
+        'repository.archived',
+        'repository.defaultBranch as currentBaseBranch',
+        'repository.githubRepositoryId as currentGithubRepositoryId',
+        'installation.status as installationStatus',
+        'snapshot.status as snapshotStatus',
+        'snapshot.commitSha',
+        'snapshot.digest as currentSnapshotDigest',
+        'snapshot.expiresAt as snapshotExpiresAt',
+        'specification.trustState',
+        'specification.revision as specificationRevision',
+        'specification.evidenceDigest',
+        'report.revision as reportRevision',
+        'report.artifactDigest',
+        'revocation.approvalId as revokedApprovalId',
+      ])
+      .where('approval.id', '=', workflow.approvalId)
+      .where('approval.organisationId', '=', workflow.organisationId)
+      .where('approval.candidateId', '=', workflow.candidateId)
+      .where('approval.repositoryId', '=', workflow.repositoryId)
+      .executeTakeFirst();
+    const now = new Date();
+    const stale = isMigrationApprovalStale(approval, now);
+    if (stale) {
+      await transaction
+        .updateTable('migrationRuns')
+        .set({
+          status: 'stale',
+          currentStage: 'stale',
+          terminalResult: 'stale',
+          safeErrorCode: 'MIGRATION_APPROVAL_STALE',
+          completedAt: now,
+          updatedAt: now,
+          version: run.version + 1,
+        })
+        .where('id', '=', run.id)
+        .where('version', '=', run.version)
+        .executeTakeFirstOrThrow();
+      return 'stale';
+    }
+    const updated = await transaction
+      .updateTable('migrationRuns')
+      .set({
+        status: 'running',
+        currentStage: 'revalidating',
+        startedAt: now,
+        updatedAt: now,
+        version: run.version + 1,
+      })
+      .where('id', '=', run.id)
+      .where('status', '=', 'queued')
+      .where('version', '=', run.version)
+      .executeTakeFirst();
+    if (updated.numUpdatedRows !== 1n) {
+      throw new Error('The migration run changed during approval validation.');
+    }
+    return 'running';
+  });
+}
+
+async function markMigrationFailed(
+  database: AppDatabase,
+  workflow: MigrationWorkflowInput,
+  safeErrorCode:
+    'MIGRATION_STAGE_NOT_IMPLEMENTED' | 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
+): Promise<void> {
+  await database.transaction().execute(async transaction => {
+    const run = await transaction
+      .selectFrom('migrationRuns')
+      .select(['status', 'safeErrorCode', 'version'])
+      .where('id', '=', workflow.migrationRunId)
+      .where('organisationId', '=', workflow.organisationId)
+      .where('candidateId', '=', workflow.candidateId)
+      .where('approvalId', '=', workflow.approvalId)
+      .where('repositoryId', '=', workflow.repositoryId)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+    if (run.status === 'failed' && run.safeErrorCode === safeErrorCode) return;
+    if (!['queued', 'running'].includes(run.status)) return;
+    const now = new Date();
+    await transaction
+      .updateTable('migrationRuns')
+      .set({
+        status: 'failed',
+        currentStage: 'failed',
+        terminalResult: 'failed',
+        safeErrorCode,
+        completedAt: now,
+        updatedAt: now,
+        version: run.version + 1,
+      })
+      .where('id', '=', workflow.migrationRunId)
+      .where('version', '=', run.version)
+      .executeTakeFirstOrThrow();
+  });
 }
 
 async function readResult(

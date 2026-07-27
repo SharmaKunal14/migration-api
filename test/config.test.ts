@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest';
 import {
   agentConfigSchema,
   databaseCredentialSchema,
+  dispatcherConfigSchema,
   githubAppSecretSchema,
   githubWebhookConfigSchema,
   githubWebhookSecretSchema,
@@ -56,6 +57,23 @@ describe('startup configuration', () => {
         DATABASE_SECRET_ARN:
           'arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:runtime',
         VENDOR_RELEASE_ID: '914e7575-7dc8-40e4-9445-aa61bfdb4ade',
+      }),
+    ).toBeDefined();
+  });
+
+  it('requires exact workflow ARNs for every outbox event type', () => {
+    expect(
+      parseConfig(dispatcherConfigSchema, {
+        APP_ENVIRONMENT: 'development',
+        AWS_REGION: 'ap-southeast-2',
+        DATABASE_SECRET_ARN:
+          'arn:aws:secretsmanager:ap-southeast-2:123456789012:secret:runtime',
+        MIGRATION_STATE_MACHINE_ARN:
+          'arn:aws:states:ap-southeast-2:123456789012:stateMachine:migration',
+        REPOSITORY_SCAN_STATE_MACHINE_ARN:
+          'arn:aws:states:ap-southeast-2:123456789012:stateMachine:scan',
+        STATE_MACHINE_ARN:
+          'arn:aws:states:ap-southeast-2:123456789012:stateMachine:agent',
       }),
     ).toBeDefined();
   });

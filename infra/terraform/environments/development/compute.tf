@@ -526,6 +526,7 @@ resource "aws_lambda_function" "outbox" {
     variables = {
       APP_ENVIRONMENT                   = "development"
       DATABASE_SECRET_ARN               = var.database_secret_arn
+      MIGRATION_STATE_MACHINE_ARN       = aws_sfn_state_machine.migration.arn
       STATE_MACHINE_ARN                 = aws_sfn_state_machine.agent.arn
       REPOSITORY_SCAN_STATE_MACHINE_ARN = aws_sfn_state_machine.repository_scan.arn
       NODE_OPTIONS                      = "--enable-source-maps"
@@ -1552,12 +1553,131 @@ resource "aws_sfn_state_machine" "impact_analysis" {
   })
 }
 
+resource "aws_sfn_state_machine" "migration" {
+  name     = "migration-api-development-migration"
+  role_arn = aws_iam_role.step_functions.arn
+  type     = "STANDARD"
+
+  logging_configuration {
+    include_execution_data = false
+    level                  = "ERROR"
+    log_destination        = "${aws_cloudwatch_log_group.workflow.arn}:*"
+  }
+
+  tracing_configuration {
+    enabled = true
+  }
+
+  definition = jsonencode({
+    Comment = "Stage 4C durable migration handoff; stops safely before mutation"
+    StartAt = "PrepareControlState"
+    States = {
+      PrepareControlState = {
+        Type = "Pass"
+        Parameters = {
+          "workflow.$" = "$"
+        }
+        Next = "ValidateApproval"
+      }
+      ValidateApproval = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "validate_migration_approval"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.validation"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateApproval"
+      }
+      EvaluateApproval = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.validation.Payload.status"
+            StringEquals = "running"
+            Next         = "StopBeforeMutation"
+          },
+          {
+            Variable     = "$.validation.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      StopBeforeMutation = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "mark_migration_stage_unavailable"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "SafeBoundaryReached"
+      }
+      MarkInfrastructureFailure = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "mark_migration_infrastructure_failed"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = null
+        Next       = "MigrationInfrastructureFailed"
+      }
+      StaleApproval = {
+        Type = "Succeed"
+      }
+      SafeBoundaryReached = {
+        Type = "Succeed"
+      }
+      MigrationInfrastructureFailed = {
+        Type  = "Fail"
+        Error = "MigrationInfrastructureFailed"
+        Cause = "The Stage 4C durable migration handoff failed."
+      }
+    }
+  })
+}
+
 data "aws_iam_policy_document" "outbox_workflow" {
   statement {
     actions = ["states:StartExecution"]
     resources = [
       aws_sfn_state_machine.agent.arn,
-      aws_sfn_state_machine.repository_scan.arn
+      aws_sfn_state_machine.repository_scan.arn,
+      aws_sfn_state_machine.migration.arn
     ]
   }
 }
