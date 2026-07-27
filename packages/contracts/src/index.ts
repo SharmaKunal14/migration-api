@@ -974,6 +974,13 @@ export const cancelMigrationRunRequestSchema = z
   })
   .strict();
 
+export const revokeMigrationApprovalRequestSchema = z
+  .object({
+    expectedVersion: z.number().int().positive(),
+    reasonCode: z.literal('USER_REQUESTED'),
+  })
+  .strict();
+
 export const impactAnalysisWorkflowInputSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -1208,6 +1215,9 @@ export type CreateMigrationApprovalRequest = z.infer<
 >;
 export type MigrationWorkflowInput = z.infer<typeof migrationWorkflowInputSchema>;
 export type CancelMigrationRunRequest = z.infer<typeof cancelMigrationRunRequestSchema>;
+export type RevokeMigrationApprovalRequest = z.infer<
+  typeof revokeMigrationApprovalRequestSchema
+>;
 export type ImpactAnalysisWorkflowInput = z.infer<
   typeof impactAnalysisWorkflowInputSchema
 >;
@@ -1501,18 +1511,33 @@ export interface PublicMigrationRunEvent {
     | 'stale';
   readonly safeErrorCode: string | null;
   readonly actorType: 'user' | 'system';
+  readonly actorDisplayName: string | null;
   readonly createdAt: string;
 }
 
-export interface PublicMigrationRunDetail extends PublicMigrationRun {
+export interface PublicMigrationRunApproval {
+  readonly approvedByDisplayName: string | null;
+  readonly approvedByRole: 'owner' | 'admin' | 'reviewer';
+  readonly approvedAt: string;
+  readonly revokedAt: string | null;
+  readonly revokedByDisplayName: string | null;
+  readonly revokedByRole: 'owner' | 'admin' | 'reviewer' | null;
+  readonly revocationReasonCode: string | null;
+}
+
+export interface PublicMigrationRunSummary extends PublicMigrationRun {
   readonly repositoryFullName: string;
   readonly packageName: string;
   readonly baseCommitSha: string;
   readonly targetVersion: string;
-  readonly workflowExecutionArn: string | null;
   readonly safeErrorCode: string | null;
-  readonly cancellationRequestedAt: string | null;
   readonly completedAt: string | null;
+  readonly approval: PublicMigrationRunApproval;
+}
+
+export interface PublicMigrationRunDetail extends PublicMigrationRunSummary {
+  readonly workflowExecutionArn: string | null;
+  readonly cancellationRequestedAt: string | null;
   readonly events: readonly PublicMigrationRunEvent[];
 }
 

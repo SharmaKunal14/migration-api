@@ -528,6 +528,28 @@ input {
   color: #ffd18a;
 }
 
+.heading-actions,
+.run-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+}
+
+.danger-button {
+  min-height: 44px;
+  padding: 0.7rem 1rem;
+  border: 1px solid rgb(255 157 136 / 42%);
+  border-radius: 8px;
+  color: var(--danger);
+  background: transparent;
+  cursor: pointer;
+}
+
+.danger-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
 .migration-run-summary {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
@@ -546,6 +568,47 @@ input {
   font-size: 0.68rem;
   letter-spacing: 0.08em;
   text-transform: uppercase;
+}
+
+.approval-audit-card {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 1rem;
+  align-items: start;
+  margin-bottom: 2rem;
+}
+
+.revocation-confirmation {
+  display: flex;
+  gap: 2rem;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2rem;
+  border-color: rgb(255 157 136 / 42%);
+}
+
+.revocation-confirmation h2 {
+  margin-bottom: 0.4rem;
+}
+
+.revocation-confirmation p {
+  margin-bottom: 0;
+  color: var(--muted);
+}
+
+.approval-audit-card h2 {
+  margin-bottom: 0.4rem;
+}
+
+.approval-audit-card p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.approval-revocation-note {
+  grid-column: 1 / -1;
+  padding-top: 1rem;
+  border-top: 1px solid var(--line);
 }
 
 .migration-event-list {
@@ -576,6 +639,52 @@ input {
 .migration-event-list p {
   margin: 0.35rem 0;
   color: var(--muted);
+}
+
+.migration-event-list small {
+  display: block;
+  margin-bottom: 0.35rem;
+  color: var(--muted);
+}
+
+.migration-run-list {
+  display: grid;
+  gap: 1rem;
+}
+
+.migration-run-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 2rem;
+  align-items: center;
+  color: inherit;
+  text-decoration: none;
+  transition:
+    border-color 160ms ease,
+    transform 160ms ease;
+}
+
+.migration-run-row:hover {
+  border-color: rgb(137 247 194 / 48%);
+  transform: translateY(-2px);
+}
+
+.migration-run-row h2 {
+  margin: 0.75rem 0 0.35rem;
+  font-size: 1.1rem;
+}
+
+.migration-run-row p {
+  margin: 0;
+  color: var(--muted);
+}
+
+.migration-run-row-state {
+  display: grid;
+  gap: 0.5rem;
+  justify-items: end;
+  color: var(--muted);
+  text-transform: capitalize;
 }
 
 .timeline {
@@ -1212,6 +1321,20 @@ input {
 
   .migration-run-summary {
     grid-template-columns: 1fr;
+  }
+
+  .migration-run-row,
+  .approval-audit-card {
+    grid-template-columns: 1fr;
+  }
+
+  .revocation-confirmation {
+    align-items: stretch;
+    flex-direction: column;
+  }
+
+  .migration-run-row-state {
+    justify-items: start;
   }
 
   .timeline {

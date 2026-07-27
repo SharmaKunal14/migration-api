@@ -664,6 +664,7 @@ Never use user-editable JWT metadata as the authoritative organisation role.
 | Trigger read-only scan           |   Yes |   Yes |      Yes |     No |
 | Approve migration                |   Yes |   Yes |      Yes |     No |
 | Cancel migration                 |   Yes |   Yes |      Yes |     No |
+| Revoke migration approval        |   Yes |   Yes |      Yes |     No |
 | Manage GitHub installation       |   Yes |   Yes |       No |     No |
 | Manage members                   |   Yes |    No |       No |     No |
 | Change retention policy          |   Yes |    No |       No |     No |

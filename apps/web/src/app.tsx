@@ -17,6 +17,7 @@ import type {
   PublicMigrationCandidateDetail,
   PublicMigrationApprovalResult,
   PublicMigrationRunDetail,
+  PublicMigrationRunSummary,
   PublicOrganisation,
   PublicRepository,
 } from '@migration/contracts';
@@ -35,8 +36,10 @@ import {
   loadMigrationCandidate,
   loadMigrationCandidates,
   loadMigrationRun,
+  loadMigrationRuns,
   loadRepositories,
   loadRun,
+  revokeMigrationApproval,
   startRepositoryScan,
 } from './api.js';
 import { useAuth } from './auth.js';
@@ -59,6 +62,10 @@ export function App(): React.JSX.Element {
         <Route
           path="/organisations/:orgId/migration-runs/:runId"
           element={<MigrationRunPage />}
+        />
+        <Route
+          path="/organisations/:orgId/migration-runs"
+          element={<MigrationRunHistoryPage />}
         />
         <Route
           path="/organisations/:orgId/migrations"
@@ -680,12 +687,20 @@ function MigrationInboxPage(): React.JSX.Element {
           </p>
         </div>
         {orgId && (
-          <a
-            className="secondary-button link-button"
-            href={`/organisations/${orgId}/settings/github`}
-          >
-            Repository settings
-          </a>
+          <div className="heading-actions">
+            <a
+              className="secondary-button link-button"
+              href={`/organisations/${orgId}/migration-runs`}
+            >
+              Run history
+            </a>
+            <a
+              className="secondary-button link-button"
+              href={`/organisations/${orgId}/settings/github`}
+            >
+              Repository settings
+            </a>
+          </div>
         )}
       </div>
       {loading ? (
@@ -1022,8 +1037,9 @@ function MigrationCandidatePage(): React.JSX.Element {
       />
       <p className="fine-print stage-boundary">
         Approval creates a durable authorization record and queues one migration run.
-        Stage 4D dispatches and audits the control workflow, but repository acquisition,
-        code execution, file mutation, and pull-request creation remain unavailable.
+        Stage 4 dispatches and audits the control workflow, but repository acquisition,
+        code execution, file mutation, and pull-request creation remain unavailable
+        until later stages.
       </p>
     </div>
   );
@@ -1217,7 +1233,10 @@ function MigrationRunPage(): React.JSX.Element {
   const [run, setRun] = useState<PublicMigrationRunDetail | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
+  const [revoking, setRevoking] = useState(false);
+  const [confirmingRevocation, setConfirmingRevocation] = useState(false);
   const cancellationKey = useRef(`cancel:${crypto.randomUUID()}`);
+  const revocationKey = useRef(`revoke:${crypto.randomUUID()}`);
 
   useEffect(() => {
     if (!session || !orgId || !runId) return;
@@ -1266,11 +1285,40 @@ function MigrationRunPage(): React.JSX.Element {
     }
   }
 
+  async function revoke(): Promise<void> {
+    if (!session || !orgId || !runId || !run) return;
+    setRevoking(true);
+    setError(null);
+    try {
+      const response = await revokeMigrationApproval(
+        session.access_token,
+        orgId,
+        runId,
+        revocationKey.current,
+        {
+          expectedVersion: run.version,
+          reasonCode: 'USER_REQUESTED',
+        },
+      );
+      setRun(response.run);
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setRevoking(false);
+    }
+  }
+
   if (error && !run) return <FullPageMessage>{error}</FullPageMessage>;
   if (!run) return <FullPageMessage>Loading migration run…</FullPageMessage>;
   const active = run.status === 'queued' || run.status === 'running';
+  const canCancel = active && run.cancellationRequestedAt === null;
+  const canRevoke = canCancel && run.approval.revokedAt === null;
+  const outcome = migrationRunOutcome(run.safeErrorCode);
   return (
     <div className="page migration-run-page">
+      <a className="back-link" href={`/organisations/${orgId ?? ''}/migration-runs`}>
+        ← Run history
+      </a>
       <div className="run-heading">
         <div>
           <p className="eyebrow">Durable migration run</p>
@@ -1298,19 +1346,97 @@ function MigrationRunPage(): React.JSX.Element {
             {run.workflowExecutionArn ? 'Recorded' : 'Pending'}
           </code>
         </div>
-        {active && (
-          <button
-            className="secondary-button"
-            disabled={cancelling}
-            type="button"
-            onClick={() => void cancel()}
-          >
-            {cancelling ? 'Requesting cancellation…' : 'Cancel run'}
-          </button>
+        {canCancel && (
+          <div className="run-actions">
+            <button
+              className="secondary-button"
+              disabled={cancelling || revoking}
+              type="button"
+              onClick={() => void cancel()}
+            >
+              {cancelling ? 'Requesting cancellation…' : 'Cancel run'}
+            </button>
+            {canRevoke && (
+              <button
+                className="danger-button"
+                disabled={cancelling || revoking}
+                type="button"
+                onClick={() => setConfirmingRevocation(true)}
+              >
+                Revoke approval
+              </button>
+            )}
+          </div>
         )}
       </section>
 
       {error && <p className="error-message">{error}</p>}
+      {canRevoke && confirmingRevocation && (
+        <section className="panel revocation-confirmation" role="alert">
+          <div>
+            <p className="section-kicker">Permanent authorization change</p>
+            <h2>Revoke this immutable approval?</h2>
+            <p>
+              The approval record remains in the audit trail, but this run will be
+              stopped and the authorization cannot be restored.
+            </p>
+          </div>
+          <div className="run-actions">
+            <button
+              className="danger-button"
+              disabled={revoking}
+              type="button"
+              onClick={() => void revoke()}
+            >
+              {revoking ? 'Revoking approval…' : 'Confirm revocation'}
+            </button>
+            <button
+              className="secondary-button"
+              disabled={revoking}
+              type="button"
+              onClick={() => setConfirmingRevocation(false)}
+            >
+              Keep approval
+            </button>
+          </div>
+        </section>
+      )}
+      {active && run.cancellationRequestedAt && (
+        <section className="panel warning-panel">
+          <p className="section-kicker">Stop requested</p>
+          <h2>Waiting for the next safe workflow boundary</h2>
+          <p>
+            The control plane has recorded the request and will not silently continue
+            into another authorized stage.
+          </p>
+        </section>
+      )}
+      <section className="panel approval-audit-card">
+        <div>
+          <p className="section-kicker">Immutable authorization</p>
+          <h2>
+            Approved by {run.approval.approvedByDisplayName ?? 'a workspace reviewer'}
+          </h2>
+          <p>
+            {run.approval.approvedByRole} ·{' '}
+            {new Date(run.approval.approvedAt).toLocaleString()}
+          </p>
+        </div>
+        <span
+          className={`status ${
+            run.approval.revokedAt ? 'status-stale' : 'status-succeeded'
+          }`}
+        >
+          {run.approval.revokedAt ? 'revoked' : 'active'}
+        </span>
+        {run.approval.revokedAt && (
+          <p className="approval-revocation-note">
+            Revoked by {run.approval.revokedByDisplayName ?? 'a workspace reviewer'} (
+            {run.approval.revokedByRole}) on{' '}
+            {new Date(run.approval.revokedAt).toLocaleString()}.
+          </p>
+        )}
+      </section>
       <section className="panel">
         <p className="section-kicker">Persisted workflow evidence</p>
         <h2>Run timeline</h2>
@@ -1324,6 +1450,11 @@ function MigrationRunPage(): React.JSX.Element {
                   {event.stage.replaceAll('_', ' ')} ·{' '}
                   {new Date(event.createdAt).toLocaleString()}
                 </p>
+                <small>
+                  {event.actorType === 'system'
+                    ? 'Migration control plane'
+                    : (event.actorDisplayName ?? 'Workspace member')}
+                </small>
                 {event.safeErrorCode && <code>{event.safeErrorCode}</code>}
               </div>
             </li>
@@ -1331,15 +1462,11 @@ function MigrationRunPage(): React.JSX.Element {
         </ol>
       </section>
 
-      {run.safeErrorCode === 'MIGRATION_ACQUISITION_NOT_IMPLEMENTED' && (
+      {outcome && (
         <section className="panel warning-panel">
-          <p className="section-kicker">Expected Stage 4 boundary</p>
-          <h2>Stopped before repository acquisition</h2>
-          <p>
-            The approval and orchestration controls worked. Stage 5 will add bounded
-            snapshot acquisition and patch generation; no repository content was changed
-            by this run.
-          </p>
+          <p className="section-kicker">{outcome.kicker}</p>
+          <h2>{outcome.title}</h2>
+          <p>{outcome.body}</p>
         </section>
       )}
       {run.status === 'cancelled' && (
@@ -1349,6 +1476,126 @@ function MigrationRunPage(): React.JSX.Element {
         </section>
       )}
     </div>
+  );
+}
+
+function MigrationRunHistoryPage(): React.JSX.Element {
+  const { session } = useAuth();
+  const { orgId } = useParams();
+  const [runs, setRuns] = useState<PublicMigrationRunSummary[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (!session || !orgId) return;
+    let active = true;
+    void loadMigrationRuns(session.access_token, orgId)
+      .then(response => {
+        if (active) setRuns(response.runs);
+      })
+      .catch((caught: unknown) => {
+        if (active) setError(errorText(caught));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [orgId, session]);
+
+  return (
+    <div className="page migration-run-history-page">
+      <a className="back-link" href={`/organisations/${orgId ?? ''}/migrations`}>
+        ← Migration inbox
+      </a>
+      <div className="migration-page-heading">
+        <div>
+          <p className="eyebrow">Workflow history</p>
+          <h1>Migration runs and approvals.</h1>
+          <p className="lede">
+            The most recent 100 runs are bound to immutable approvals, repository
+            commits, and persisted workflow timelines.
+          </p>
+        </div>
+      </div>
+      {loading ? (
+        <section className="panel empty-state">Loading migration runs…</section>
+      ) : error ? (
+        <section className="panel empty-state error-message">{error}</section>
+      ) : runs.length === 0 ? (
+        <section className="panel empty-state">
+          <h2>No migration runs</h2>
+          <p>Approved migration candidates will appear here.</p>
+        </section>
+      ) : (
+        <div className="migration-run-list">
+          {runs.map(run => (
+            <Link
+              className="panel migration-run-row"
+              key={run.id}
+              to={`/organisations/${orgId ?? ''}/migration-runs/${run.id}`}
+            >
+              <div>
+                <span className="package-pill">{run.packageName}</span>
+                <h2>{run.repositoryFullName}</h2>
+                <p>
+                  Commit <code>{shortSha(run.baseCommitSha)}</code> · target{' '}
+                  {run.targetVersion}
+                </p>
+              </div>
+              <div className="migration-run-row-state">
+                <span className={`status status-${run.status}`}>{run.status}</span>
+                <small>{run.currentStage.replaceAll('_', ' ')}</small>
+                <small>{new Date(run.createdAt).toLocaleString()}</small>
+              </div>
+            </Link>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function migrationRunOutcome(safeErrorCode: string | null): {
+  readonly kicker: string;
+  readonly title: string;
+  readonly body: string;
+} | null {
+  if (!safeErrorCode) return null;
+  const outcomes: Readonly<
+    Record<
+      string,
+      { readonly kicker: string; readonly title: string; readonly body: string }
+    >
+  > = {
+    MIGRATION_ACQUISITION_NOT_IMPLEMENTED: {
+      kicker: 'Expected Stage 4 boundary',
+      title: 'Stopped before repository acquisition',
+      body: 'The approval and orchestration controls worked. Stage 5 will add bounded snapshot acquisition and patch generation; this run changed no repository content.',
+    },
+    MIGRATION_APPROVAL_STALE: {
+      kicker: 'Approval no longer current',
+      title: 'The approved evidence changed',
+      body: 'The run stopped because its repository, installation, specification, impact report, or approval no longer matched the immutable authorization. Review the current candidate before approving again.',
+    },
+    MIGRATION_APPROVAL_REVOKED: {
+      kicker: 'Authorization withdrawn',
+      title: 'The approval was revoked',
+      body: 'The run stopped at a safe boundary after a reviewer withdrew authorization. This run changed no repository content.',
+    },
+    MIGRATION_REPAIR_BUDGET_EXHAUSTED: {
+      kicker: 'Bounded workflow stopped',
+      title: 'The repair limit was reached',
+      body: 'The workflow stopped rather than continuing with unbounded repair attempts. Review the persisted evidence before starting another run.',
+    },
+  };
+  return (
+    outcomes[safeErrorCode] ?? {
+      kicker: 'Workflow stopped safely',
+      title: 'The migration could not continue',
+      body: 'The control plane stopped this run without exposing internal error details. Use the request and run identifiers when reviewing operator logs.',
+    }
   );
 }
 

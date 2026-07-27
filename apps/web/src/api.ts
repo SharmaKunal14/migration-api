@@ -9,10 +9,12 @@ import type {
   PublicMigrationCandidateDetail,
   PublicMigrationApprovalResult,
   PublicMigrationRunDetail,
+  PublicMigrationRunSummary,
   PublicOrganisation,
   PublicDependencyObservation,
   PublicRepository,
   PublicRepositoryScan,
+  RevokeMigrationApprovalRequest,
 } from '@migration/contracts';
 
 import { browserConfiguration } from './config.js';
@@ -185,6 +187,13 @@ export async function loadMigrationRun(
   );
 }
 
+export async function loadMigrationRuns(
+  token: string,
+  organisationId: string,
+): Promise<{ runs: PublicMigrationRunSummary[] }> {
+  return request(token, `/v1/organisations/${organisationId}/migration-runs`);
+}
+
 export async function cancelMigrationRun(
   token: string,
   organisationId: string,
@@ -195,6 +204,24 @@ export async function cancelMigrationRun(
   return request(
     token,
     `/v1/organisations/${organisationId}/migration-runs/${migrationRunId}/cancellation`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function revokeMigrationApproval(
+  token: string,
+  organisationId: string,
+  migrationRunId: string,
+  idempotencyKey: string,
+  input: RevokeMigrationApprovalRequest,
+): Promise<{ run: PublicMigrationRunDetail }> {
+  return request(
+    token,
+    `/v1/organisations/${organisationId}/migration-runs/${migrationRunId}/approval-revocation`,
     {
       method: 'POST',
       headers: { 'idempotency-key': idempotencyKey },

@@ -13,6 +13,7 @@ import type {
   PublicMigrationCandidateDetail,
   PublicMigrationApprovalResult,
   PublicMigrationRunDetail,
+  PublicMigrationRunSummary,
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
@@ -32,6 +33,7 @@ import type {
   InstallationLinkRecord,
   OrganisationRecord,
   ReviewMigrationSpecificationInput,
+  RevokeMigrationApprovalInput,
 } from '../services/api/src/repository.js';
 
 const organisationId = '6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624';
@@ -100,6 +102,15 @@ class FakeRepository implements ApiRepositoryPort {
     version: 2,
     createdAt: '2026-07-27T00:00:00.000Z',
     completedAt: null,
+    approval: {
+      approvedByDisplayName: 'Kunal Sharma',
+      approvedByRole: 'owner',
+      approvedAt: '2026-07-27T00:00:00.000Z',
+      revokedAt: null,
+      revokedByDisplayName: null,
+      revokedByRole: null,
+      revocationReasonCode: null,
+    },
     events: [],
   };
   public readonly createMigrationApprovalMock = vi.fn<
@@ -235,6 +246,13 @@ class FakeRepository implements ApiRepositoryPort {
     return Promise.resolve(this.migrationRun);
   }
 
+  public listMigrationRuns(
+    _userId: string,
+    _organisationId: string,
+  ): Promise<PublicMigrationRunSummary[]> {
+    return Promise.resolve([this.migrationRun]);
+  }
+
   public cancelMigrationRun(
     _userId: string,
     _input: CancelMigrationRunInput,
@@ -246,6 +264,27 @@ class FakeRepository implements ApiRepositoryPort {
       cancellationRequestedAt: '2026-07-27T00:01:00.000Z',
       completedAt: '2026-07-27T00:01:00.000Z',
       version: 3,
+    });
+  }
+
+  public revokeMigrationApproval(
+    _userId: string,
+    _input: RevokeMigrationApprovalInput,
+  ): Promise<PublicMigrationRunDetail> {
+    return Promise.resolve({
+      ...this.migrationRun,
+      status: 'stale',
+      currentStage: 'stale',
+      safeErrorCode: 'MIGRATION_APPROVAL_REVOKED',
+      completedAt: '2026-07-27T00:01:00.000Z',
+      version: 3,
+      approval: {
+        ...this.migrationRun.approval,
+        revokedAt: '2026-07-27T00:01:00.000Z',
+        revokedByDisplayName: 'Kunal Sharma',
+        revokedByRole: 'owner',
+        revocationReasonCode: 'USER_REQUESTED',
+      },
     });
   }
 
@@ -778,6 +817,26 @@ describe('API handler trust boundary', () => {
     });
   });
 
+  it('returns the tenant-scoped migration run history', async () => {
+    const response = await handleRequest(
+      event('GET', `/api/v1/organisations/${organisationId}/migration-runs`),
+      dependencies(),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(parsedBody(response)).toMatchObject({
+      runs: [
+        {
+          id: runId,
+          repositoryFullName: 'SharmaKunal14/orbitchat-migration-fixture',
+          approval: {
+            approvedByDisplayName: 'Kunal Sharma',
+            approvedByRole: 'owner',
+          },
+        },
+      ],
+    });
+  });
+
   it('requires strict input and an idempotency key to cancel a migration', async () => {
     const path = `/api/v1/organisations/${organisationId}/migration-runs/${runId}/cancellation`;
     const missingKey = await handleRequest(
@@ -807,6 +866,61 @@ describe('API handler trust boundary', () => {
     expect(response.statusCode).toBe(202);
     expect(parsedBody(response)).toMatchObject({
       run: { id: runId, status: 'cancelled', currentStage: 'cancelled' },
+    });
+  });
+
+  it('requires strict input and an idempotency key to revoke an approval', async () => {
+    const path = `/api/v1/organisations/${organisationId}/migration-runs/${runId}/approval-revocation`;
+    const missingKey = await handleRequest(
+      event('POST', path, {
+        expectedVersion: 2,
+        reasonCode: 'USER_REQUESTED',
+      }),
+      dependencies(),
+    );
+    expect(missingKey.statusCode).toBe(400);
+    expect(parsedBody(missingKey)).toMatchObject({
+      error: { code: 'INVALID_IDEMPOTENCY_KEY' },
+    });
+
+    const invalidReason = await handleRequest(
+      event(
+        'POST',
+        path,
+        { expectedVersion: 2, reasonCode: 'arbitrary text' },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'revoke:01J7Y5ABCD',
+        },
+      ),
+      dependencies(),
+    );
+    expect(invalidReason.statusCode).toBe(400);
+
+    const response = await handleRequest(
+      event(
+        'POST',
+        path,
+        { expectedVersion: 2, reasonCode: 'USER_REQUESTED' },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'revoke:01J7Y5ABCD',
+        },
+      ),
+      dependencies(),
+    );
+    expect(response.statusCode).toBe(202);
+    expect(parsedBody(response)).toMatchObject({
+      run: {
+        id: runId,
+        status: 'stale',
+        currentStage: 'stale',
+        safeErrorCode: 'MIGRATION_APPROVAL_REVOKED',
+        approval: {
+          revokedAt: '2026-07-27T00:01:00.000Z',
+          revokedByRole: 'owner',
+        },
+      },
     });
   });
 

@@ -58,7 +58,8 @@ export type OrganisationAction =
   | 'repository:scan'
   | 'migration:approve'
   | 'migration:read'
-  | 'migration:cancel';
+  | 'migration:cancel'
+  | 'migration:revoke';
 
 const allowedActions: Readonly<
   Record<OrganisationRole, readonly OrganisationAction[]>
@@ -74,6 +75,7 @@ const allowedActions: Readonly<
     'migration:approve',
     'migration:read',
     'migration:cancel',
+    'migration:revoke',
   ],
   admin: [
     'organisation:read',
@@ -85,6 +87,7 @@ const allowedActions: Readonly<
     'migration:approve',
     'migration:read',
     'migration:cancel',
+    'migration:revoke',
   ],
   reviewer: [
     'organisation:read',
@@ -95,6 +98,7 @@ const allowedActions: Readonly<
     'migration:approve',
     'migration:read',
     'migration:cancel',
+    'migration:revoke',
   ],
   viewer: ['organisation:read', 'demo_run:read', 'repository:read', 'migration:read'],
 };

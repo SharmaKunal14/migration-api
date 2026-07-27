@@ -25,6 +25,7 @@ import type {
   PublicMigrationApprovalPreview,
   PublicMigrationApprovalResult,
   PublicMigrationRunDetail,
+  PublicMigrationRunSummary,
   PublicImpactReportSummary,
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
@@ -100,6 +101,15 @@ export interface CreateMigrationApprovalInput extends CreateMigrationApprovalReq
 }
 
 export interface CancelMigrationRunInput {
+  readonly organisationId: string;
+  readonly migrationRunId: string;
+  readonly expectedVersion: number;
+  readonly reasonCode: 'USER_REQUESTED';
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+}
+
+export interface RevokeMigrationApprovalInput {
   readonly organisationId: string;
   readonly migrationRunId: string;
   readonly expectedVersion: number;
@@ -200,9 +210,17 @@ export interface ApiRepositoryPort {
     organisationId: string,
     migrationRunId: string,
   ): Promise<PublicMigrationRunDetail>;
+  listMigrationRuns(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicMigrationRunSummary[]>;
   cancelMigrationRun(
     userId: string,
     input: CancelMigrationRunInput,
+  ): Promise<PublicMigrationRunDetail>;
+  revokeMigrationApproval(
+    userId: string,
+    input: RevokeMigrationApprovalInput,
   ): Promise<PublicMigrationRunDetail>;
 }
 
@@ -1855,6 +1873,14 @@ export class ApiRepository implements ApiRepositoryPort {
     return loadMigrationRun(this.database, organisationId, migrationRunId);
   }
 
+  public async listMigrationRuns(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicMigrationRunSummary[]> {
+    requireAction(await this.membership(organisationId, userId), 'migration:read');
+    return loadMigrationRuns(this.database, organisationId);
+  }
+
   public async cancelMigrationRun(
     userId: string,
     input: CancelMigrationRunInput,
@@ -1948,6 +1974,143 @@ export class ApiRepository implements ApiRepositoryPort {
         action: 'migration.cancellation_requested',
         resourceType: 'migration_run',
         resourceId: run.id,
+        requestId: input.requestId,
+      });
+    });
+    return loadMigrationRun(this.database, input.organisationId, input.migrationRunId);
+  }
+
+  public async revokeMigrationApproval(
+    userId: string,
+    input: RevokeMigrationApprovalInput,
+  ): Promise<PublicMigrationRunDetail> {
+    const membership = requireAction(
+      await this.membership(input.organisationId, userId),
+      'migration:revoke',
+    );
+    if (
+      membership.role !== 'owner' &&
+      membership.role !== 'admin' &&
+      membership.role !== 'reviewer'
+    ) {
+      throw new DomainError(
+        'AUTHORIZATION_DENIED',
+        'The actor is not authorized for this action.',
+        403,
+      );
+    }
+    const revokingRole = membership.role;
+    await this.database.transaction().execute(async transaction => {
+      const run = await transaction
+        .selectFrom('migrationRuns as run')
+        .leftJoin(
+          'migrationApprovalRevocations as revocation',
+          'revocation.approvalId',
+          'run.approvalId',
+        )
+        .select([
+          'run.id',
+          'run.approvalId',
+          'run.status',
+          'run.currentStage',
+          'run.version',
+          'run.cancellationRequestedAt',
+          'revocation.approvalId as revokedApprovalId',
+        ])
+        .where('run.id', '=', input.migrationRunId)
+        .where('run.organisationId', '=', input.organisationId)
+        .forUpdate('run')
+        .executeTakeFirst();
+      if (!run) {
+        throw new DomainError(
+          'MIGRATION_RUN_NOT_FOUND',
+          'The requested migration run was not found.',
+          404,
+        );
+      }
+      if (run.revokedApprovalId !== null) return;
+      if (!['queued', 'running'].includes(run.status)) {
+        throw new DomainError(
+          'MIGRATION_RUN_TERMINAL',
+          'A completed migration approval cannot be revoked.',
+          409,
+        );
+      }
+      if (run.version !== input.expectedVersion) {
+        throw new DomainError(
+          'MIGRATION_RUN_CHANGED',
+          'The migration run changed before revocation was recorded.',
+          409,
+        );
+      }
+      const now = new Date();
+      const queued = run.status === 'queued';
+      await transaction
+        .insertInto('migrationApprovalRevocations')
+        .values({
+          approvalId: run.approvalId,
+          revokedByUserId: userId,
+          revokedByRole: revokingRole,
+          reasonCode: input.reasonCode,
+          requestId: input.requestId,
+          revokedAt: now,
+          createdAt: now,
+        })
+        .executeTakeFirstOrThrow();
+      await transaction
+        .updateTable('migrationRuns')
+        .set({
+          cancellationRequestedAt: now,
+          cancellationRequestedByUserId: userId,
+          cancellationReasonCode: 'APPROVAL_REVOKED',
+          ...(queued
+            ? {
+                status: 'stale' as const,
+                currentStage: 'stale' as const,
+                terminalResult: 'stale' as const,
+                safeErrorCode: 'MIGRATION_APPROVAL_REVOKED',
+                completedAt: now,
+              }
+            : {}),
+          updatedAt: now,
+          version: run.version + 1,
+        })
+        .where('id', '=', run.id)
+        .where('version', '=', run.version)
+        .executeTakeFirstOrThrow();
+      await appendMigrationRunEvent(transaction, {
+        organisationId: input.organisationId,
+        migrationRunId: run.id,
+        eventKey: `revoke:${input.idempotencyKey}`,
+        eventType: queued ? 'run_stale' : 'cancellation_requested',
+        status: queued ? 'stale' : 'running',
+        stage: queued ? 'stale' : run.currentStage,
+        safeErrorCode: queued ? 'MIGRATION_APPROVAL_REVOKED' : null,
+        actorType: 'user',
+        actorUserId: userId,
+        requestId: input.requestId,
+        createdAt: now,
+      });
+      if (queued) {
+        await transaction
+          .updateTable('migrationRunOutbox')
+          .set({
+            deliveredAt: now,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            safeErrorCode: null,
+          })
+          .where('migrationRunId', '=', run.id)
+          .where('deliveredAt', 'is', null)
+          .where('leaseOwner', 'is', null)
+          .execute();
+      }
+      await writeAudit(transaction, {
+        organisationId: input.organisationId,
+        actorId: userId,
+        action: 'migration.approval_revoked',
+        resourceType: 'migration_approval',
+        resourceId: run.approvalId,
         requestId: input.requestId,
       });
     });
@@ -2246,15 +2409,96 @@ async function appendMigrationRunEvent(
     .executeTakeFirstOrThrow();
 }
 
-async function loadMigrationRun(
+const migrationRunSummarySelection = [
+  'run.id',
+  'run.candidateId',
+  'run.approvalId',
+  'run.baseCommitSha',
+  'run.status',
+  'run.currentStage',
+  'run.safeErrorCode',
+  'run.version',
+  'run.createdAt',
+  'run.completedAt',
+  'repository.fullName as repositoryFullName',
+  'product.canonicalIdentifier as packageName',
+  'specification.targetVersion',
+  'approval.approvedByRole',
+  'approval.approvedAt',
+  'approver.displayName as approvedByDisplayName',
+  'revocation.revokedAt',
+  'revocation.revokedByRole',
+  'revocation.reasonCode as revocationReasonCode',
+  'revoker.displayName as revokedByDisplayName',
+] as const;
+
+interface MigrationRunSummaryRow {
+  readonly id: string;
+  readonly candidateId: string;
+  readonly approvalId: string;
+  readonly baseCommitSha: string;
+  readonly status: PublicMigrationRunSummary['status'];
+  readonly currentStage: PublicMigrationRunSummary['currentStage'];
+  readonly safeErrorCode: string | null;
+  readonly version: number;
+  readonly createdAt: Date;
+  readonly completedAt: Date | null;
+  readonly repositoryFullName: string;
+  readonly packageName: string;
+  readonly targetVersion: string;
+  readonly approvedByRole: 'owner' | 'admin' | 'reviewer';
+  readonly approvedAt: Date;
+  readonly approvedByDisplayName: string | null;
+  readonly revokedAt: Date | null;
+  readonly revokedByRole: 'owner' | 'admin' | 'reviewer' | null;
+  readonly revocationReasonCode: string | null;
+  readonly revokedByDisplayName: string | null;
+}
+
+function migrationRunSummary(run: MigrationRunSummaryRow): PublicMigrationRunSummary {
+  return {
+    id: run.id,
+    candidateId: run.candidateId,
+    approvalId: run.approvalId,
+    repositoryFullName: run.repositoryFullName,
+    packageName: run.packageName,
+    baseCommitSha: run.baseCommitSha,
+    targetVersion: run.targetVersion,
+    status: run.status,
+    currentStage: run.currentStage,
+    safeErrorCode: run.safeErrorCode,
+    version: run.version,
+    createdAt: run.createdAt.toISOString(),
+    completedAt: run.completedAt?.toISOString() ?? null,
+    approval: {
+      approvedByDisplayName: run.approvedByDisplayName,
+      approvedByRole: run.approvedByRole,
+      approvedAt: run.approvedAt.toISOString(),
+      revokedAt: run.revokedAt?.toISOString() ?? null,
+      revokedByDisplayName: run.revokedByDisplayName,
+      revokedByRole: run.revokedByRole,
+      revocationReasonCode: run.revocationReasonCode,
+    },
+  };
+}
+
+function selectMigrationRunSummaries(
   database: AppDatabase | Transaction<Database>,
   organisationId: string,
-  migrationRunId: string,
-): Promise<PublicMigrationRunDetail> {
-  const run = await database
+  migrationRunId?: string,
+): Promise<MigrationRunSummaryRow[]> {
+  let query = database
     .selectFrom('migrationRuns as run')
     .innerJoin('migrationCandidates as candidate', 'candidate.id', 'run.candidateId')
     .innerJoin('repositories as repository', 'repository.id', 'run.repositoryId')
+    .innerJoin('migrationApprovals as approval', 'approval.id', 'run.approvalId')
+    .innerJoin('appUsers as approver', 'approver.id', 'approval.approvedByUserId')
+    .leftJoin(
+      'migrationApprovalRevocations as revocation',
+      'revocation.approvalId',
+      'approval.id',
+    )
+    .leftJoin('appUsers as revoker', 'revoker.id', 'revocation.revokedByUserId')
     .innerJoin(
       'migrationSpecifications as specification',
       'specification.id',
@@ -2266,28 +2510,32 @@ async function loadMigrationRun(
       'specification.vendorReleaseId',
     )
     .innerJoin('apiProducts as product', 'product.id', 'release.apiProductId')
-    .select([
-      'run.id',
-      'run.candidateId',
-      'run.approvalId',
-      'run.baseCommitSha',
-      'run.status',
-      'run.currentStage',
-      'run.workflowExecutionArn',
-      'run.safeErrorCode',
-      'run.cancellationRequestedAt',
-      'run.version',
-      'run.createdAt',
-      'run.completedAt',
-      'repository.fullName as repositoryFullName',
-      'product.canonicalIdentifier as packageName',
-      'specification.targetVersion',
-    ])
-    .where('run.id', '=', migrationRunId)
+    .select(migrationRunSummarySelection)
     .where('run.organisationId', '=', organisationId)
     .where('candidate.organisationId', '=', organisationId)
-    .where('repository.organisationId', '=', organisationId)
-    .executeTakeFirst();
+    .where('repository.organisationId', '=', organisationId);
+  if (migrationRunId) query = query.where('run.id', '=', migrationRunId);
+  return query.orderBy('run.createdAt', 'desc').limit(100).execute();
+}
+
+async function loadMigrationRuns(
+  database: AppDatabase | Transaction<Database>,
+  organisationId: string,
+): Promise<PublicMigrationRunSummary[]> {
+  const runs = await selectMigrationRunSummaries(database, organisationId);
+  return runs.map(migrationRunSummary);
+}
+
+async function loadMigrationRun(
+  database: AppDatabase | Transaction<Database>,
+  organisationId: string,
+  migrationRunId: string,
+): Promise<PublicMigrationRunDetail> {
+  const [run] = await selectMigrationRunSummaries(
+    database,
+    organisationId,
+    migrationRunId,
+  );
   if (!run) {
     throw new DomainError(
       'MIGRATION_RUN_NOT_FOUND',
@@ -2295,37 +2543,35 @@ async function loadMigrationRun(
       404,
     );
   }
-  const events = await database
-    .selectFrom('migrationRunEvents')
-    .select([
-      'sequence',
-      'eventType',
-      'status',
-      'stage',
-      'safeErrorCode',
-      'actorType',
-      'createdAt',
-    ])
-    .where('organisationId', '=', organisationId)
-    .where('migrationRunId', '=', migrationRunId)
-    .orderBy('sequence')
-    .execute();
+  const [workflow, events] = await Promise.all([
+    database
+      .selectFrom('migrationRuns')
+      .select(['workflowExecutionArn', 'cancellationRequestedAt'])
+      .where('organisationId', '=', organisationId)
+      .where('id', '=', migrationRunId)
+      .executeTakeFirstOrThrow(),
+    database
+      .selectFrom('migrationRunEvents as event')
+      .leftJoin('appUsers as actor', 'actor.id', 'event.actorUserId')
+      .select([
+        'event.sequence',
+        'event.eventType',
+        'event.status',
+        'event.stage',
+        'event.safeErrorCode',
+        'event.actorType',
+        'actor.displayName as actorDisplayName',
+        'event.createdAt',
+      ])
+      .where('event.organisationId', '=', organisationId)
+      .where('event.migrationRunId', '=', migrationRunId)
+      .orderBy('event.sequence')
+      .execute(),
+  ]);
   return {
-    id: run.id,
-    candidateId: run.candidateId,
-    approvalId: run.approvalId,
-    repositoryFullName: run.repositoryFullName,
-    packageName: run.packageName,
-    baseCommitSha: run.baseCommitSha,
-    targetVersion: run.targetVersion,
-    status: run.status,
-    currentStage: run.currentStage,
-    workflowExecutionArn: run.workflowExecutionArn,
-    safeErrorCode: run.safeErrorCode,
-    cancellationRequestedAt: run.cancellationRequestedAt?.toISOString() ?? null,
-    version: run.version,
-    createdAt: run.createdAt.toISOString(),
-    completedAt: run.completedAt?.toISOString() ?? null,
+    ...migrationRunSummary(run),
+    workflowExecutionArn: workflow.workflowExecutionArn,
+    cancellationRequestedAt: workflow.cancellationRequestedAt?.toISOString() ?? null,
     events: events.map(event => ({
       ...event,
       createdAt: event.createdAt.toISOString(),
