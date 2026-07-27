@@ -928,6 +928,330 @@ export const migrationApprovalAuthoritySchema = z
   })
   .strict();
 
+const migrationPatchBindingSchema = z
+  .object({
+    migrationRunId: uuidSchema,
+    approvalId: uuidSchema,
+    baseCommitSha: commitShaSchema,
+    snapshotDigest: sha256Schema,
+    migrationSpecification: z
+      .object({
+        id: uuidSchema,
+        revision: z.number().int().positive(),
+        digest: sha256Schema,
+      })
+      .strict(),
+    impactReport: z
+      .object({
+        id: uuidSchema,
+        revision: z.number().int().positive(),
+        digest: sha256Schema,
+      })
+      .strict(),
+  })
+  .strict();
+
+const migrationChangeCategorySchema = z.enum([
+  'dependency_manifest',
+  'lockfile',
+  'direct_usage',
+  'indirect_usage',
+  'test',
+]);
+
+const migrationPlanFileSchema = z
+  .object({
+    path: repositoryRelativePathSchema,
+    operation: z.enum(['create', 'modify', 'delete']),
+    changeCategory: migrationChangeCategorySchema,
+    rationale: z.string().min(1).max(2_000),
+    evidenceChangeIds: z
+      .array(z.string().regex(/^[A-Z][A-Z0-9._-]{0,63}$/u))
+      .min(1)
+      .max(50),
+    transformationIds: z.array(z.string().regex(/^[A-Z][A-Z0-9._-]{0,63}$/u)).max(50),
+  })
+  .strict()
+  .superRefine((file, context) => {
+    if (new Set(file.evidenceChangeIds).size !== file.evidenceChangeIds.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Evidence change identifiers must be unique per file.',
+        path: ['evidenceChangeIds'],
+      });
+    }
+    if (new Set(file.transformationIds).size !== file.transformationIds.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Transformation identifiers must be unique per file.',
+        path: ['transformationIds'],
+      });
+    }
+  });
+
+export const migrationExecutionPlanSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    binding: migrationPatchBindingSchema,
+    attemptNumber: z.number().int().min(1).max(10),
+    trust: z
+      .object({
+        status: z.literal('proposed'),
+        generatedBy: z.literal('migration_agent'),
+      })
+      .strict(),
+    summary: z.string().min(1).max(4_000),
+    files: z.array(migrationPlanFileSchema).min(1).max(100),
+    unresolved: z
+      .array(
+        z
+          .object({
+            code: z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/u),
+            summary: z.string().min(1).max(2_000),
+          })
+          .strict(),
+      )
+      .max(50),
+    verificationProfiles: z
+      .array(z.enum(['typescript_static', 'typescript_unit']))
+      .max(2),
+  })
+  .strict()
+  .superRefine((plan, context) => {
+    const paths = plan.files.map(file => file.path);
+    if (new Set(paths).size !== paths.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A migration plan may contain each path only once.',
+        path: ['files'],
+      });
+    }
+    const unresolvedCodes = plan.unresolved.map(item => item.code);
+    if (new Set(unresolvedCodes).size !== unresolvedCodes.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Unresolved item codes must be unique.',
+        path: ['unresolved'],
+      });
+    }
+    if (new Set(plan.verificationProfiles).size !== plan.verificationProfiles.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Verification profiles must be unique.',
+        path: ['verificationProfiles'],
+      });
+    }
+  });
+
+const migrationPatchFileSchema = z
+  .object({
+    path: repositoryRelativePathSchema,
+    operation: z.enum(['create', 'modify', 'delete']),
+    changeCategory: migrationChangeCategorySchema,
+    beforeDigest: sha256Schema.nullable(),
+    afterDigest: sha256Schema.nullable(),
+    hunkCount: z.number().int().min(1).max(1_000),
+    addedLines: z.number().int().nonnegative().max(10_000),
+    deletedLines: z.number().int().nonnegative().max(10_000),
+  })
+  .strict()
+  .superRefine((file, context) => {
+    const validDigests =
+      (file.operation === 'create' &&
+        file.beforeDigest === null &&
+        file.afterDigest !== null) ||
+      (file.operation === 'modify' &&
+        file.beforeDigest !== null &&
+        file.afterDigest !== null &&
+        file.beforeDigest !== file.afterDigest) ||
+      (file.operation === 'delete' &&
+        file.beforeDigest !== null &&
+        file.afterDigest === null);
+    if (!validDigests) {
+      context.addIssue({
+        code: 'custom',
+        message: 'File digests must match the declared patch operation.',
+        path: ['operation'],
+      });
+    }
+    if (
+      (file.operation === 'create' && file.deletedLines !== 0) ||
+      (file.operation === 'delete' && file.addedLines !== 0)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message:
+          'Created files cannot delete lines and deleted files cannot add lines.',
+        path: ['operation'],
+      });
+    }
+  });
+
+export const migrationPatchManifestSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    proposalStatus: z.literal('unvalidated'),
+    binding: migrationPatchBindingSchema,
+    attemptNumber: z.number().int().min(1).max(10),
+    planDigest: sha256Schema,
+    patchDigest: sha256Schema,
+    patchBytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(1024 * 1024),
+    changedFiles: z.number().int().min(1).max(100),
+    addedLines: z.number().int().nonnegative().max(10_000),
+    deletedLines: z.number().int().nonnegative().max(10_000),
+    files: z.array(migrationPatchFileSchema).min(1).max(100),
+  })
+  .strict()
+  .superRefine((manifest, context) => {
+    const paths = manifest.files.map(file => file.path);
+    if (new Set(paths).size !== paths.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A patch may contain each path only once.',
+        path: ['files'],
+      });
+    }
+    const addedLines = manifest.files.reduce(
+      (total, file) => total + file.addedLines,
+      0,
+    );
+    const deletedLines = manifest.files.reduce(
+      (total, file) => total + file.deletedLines,
+      0,
+    );
+    if (
+      manifest.changedFiles !== manifest.files.length ||
+      manifest.addedLines !== addedLines ||
+      manifest.deletedLines !== deletedLines
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Patch totals must equal the bounded per-file totals.',
+        path: ['changedFiles'],
+      });
+    }
+  });
+
+const patchPolicyCheckSchema = z
+  .object({
+    check: z.enum([
+      'base_binding',
+      'diff_structure',
+      'path_safety',
+      'allowed_paths',
+      'forbidden_paths',
+      'binary_files',
+      'change_budget',
+    ]),
+    outcome: z.enum(['passed', 'failed']),
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+  })
+  .strict()
+  .superRefine((check, context) => {
+    if (
+      (check.outcome === 'passed' && check.safeErrorCode !== null) ||
+      (check.outcome === 'failed' && check.safeErrorCode === null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only failed policy checks require a safe error code.',
+        path: ['safeErrorCode'],
+      });
+    }
+  });
+
+export const migrationPatchValidationResultSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    binding: migrationPatchBindingSchema,
+    attemptNumber: z.number().int().min(1).max(10),
+    planDigest: sha256Schema,
+    patchDigest: sha256Schema,
+    policyVersion: policyVersionSchema,
+    policyDigest: sha256Schema,
+    status: z.enum(['accepted', 'rejected']),
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+    checks: z.array(patchPolicyCheckSchema).min(7).max(7),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    const checkNames = result.checks.map(check => check.check);
+    if (new Set(checkNames).size !== checkNames.length) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Every patch policy check must appear exactly once.',
+        path: ['checks'],
+      });
+    }
+    const hasFailure = result.checks.some(check => check.outcome === 'failed');
+    if (
+      (result.status === 'accepted' && (hasFailure || result.safeErrorCode !== null)) ||
+      (result.status === 'rejected' && (!hasFailure || result.safeErrorCode === null))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Patch validation status must match its policy check outcomes.',
+        path: ['status'],
+      });
+    }
+  });
+
+export const migrationAgentCheckpointSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    binding: migrationPatchBindingSchema,
+    attemptNumber: z.number().int().min(1).max(10),
+    sequence: z.number().int().min(1).max(100),
+    phase: z.enum(['context', 'planning', 'patching']),
+    lastActionSequence: z.number().int().nonnegative().max(1_000),
+    remainingBudget: z
+      .object({
+        modelCalls: z.number().int().nonnegative().max(20),
+        toolCalls: z.number().int().nonnegative().max(200),
+        iterations: z.number().int().nonnegative().max(100),
+      })
+      .strict(),
+    planDigest: sha256Schema.nullable(),
+    patchDigest: sha256Schema.nullable(),
+  })
+  .strict()
+  .superRefine((checkpoint, context) => {
+    if (
+      checkpoint.phase === 'context' &&
+      (checkpoint.planDigest !== null || checkpoint.patchDigest !== null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Context checkpoints cannot claim a plan or patch proposal.',
+        path: ['planDigest'],
+      });
+    }
+    if (checkpoint.phase !== 'patching' && checkpoint.patchDigest !== null) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only patching checkpoints may bind a patch proposal.',
+        path: ['patchDigest'],
+      });
+    }
+    if (checkpoint.phase === 'patching' && checkpoint.planDigest === null) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Patching checkpoints must remain bound to a migration plan.',
+        path: ['planDigest'],
+      });
+    }
+  });
+
 export const migrationApprovalAcknowledgementsSchema = z
   .object({
     sourceProcessing: z.literal(true),
@@ -1207,6 +1531,12 @@ export type MigrationApprovalVerificationProfile = z.infer<
 export type MigrationApprovalAuthority = z.infer<
   typeof migrationApprovalAuthoritySchema
 >;
+export type MigrationExecutionPlan = z.infer<typeof migrationExecutionPlanSchema>;
+export type MigrationPatchManifest = z.infer<typeof migrationPatchManifestSchema>;
+export type MigrationPatchValidationResult = z.infer<
+  typeof migrationPatchValidationResultSchema
+>;
+export type MigrationAgentCheckpoint = z.infer<typeof migrationAgentCheckpointSchema>;
 export type MigrationApprovalAcknowledgements = z.infer<
   typeof migrationApprovalAcknowledgementsSchema
 >;

@@ -541,6 +541,82 @@ export interface MigrationRunEventTable {
   createdAt: Timestamp;
 }
 
+export interface MigrationArtifactTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  artifactType:
+    | 'context_manifest'
+    | 'agent_checkpoint'
+    | 'migration_plan'
+    | 'patch_proposal'
+    | 'patch_manifest'
+    | 'patch_validation';
+  objectKey: string;
+  digest: string;
+  bytes: ColumnType<string, number, never>;
+  mediaType: string;
+  retentionClass: 'workflow_ephemeral' | 'audit';
+  createdAt: Timestamp;
+  expiresAt: Timestamp | null;
+}
+
+export interface MigrationPlanTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  approvalId: string;
+  attemptNumber: number;
+  artifactId: string;
+  artifactDigest: string;
+  schemaVersion: '1.0';
+  trustState: 'proposed';
+  baseCommitSha: string;
+  snapshotDigest: string;
+  migrationSpecificationId: string;
+  migrationSpecificationRevision: number;
+  migrationSpecificationDigest: string;
+  impactReportId: string;
+  impactReportRevision: number;
+  impactReportDigest: string;
+  createdAt: Timestamp;
+}
+
+export interface PatchAttemptTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  attemptNumber: number;
+  parentPatchAttemptId: string | null;
+  migrationPlanId: string;
+  patchArtifactId: string | null;
+  patchDigest: string | null;
+  validationArtifactId: string | null;
+  validationDigest: string | null;
+  policyVersion: string;
+  policyDigest: string;
+  status: 'accepted' | 'rejected' | 'failed';
+  safeErrorCode: string | null;
+  summaryCode: string;
+  changedFiles: number;
+  addedLines: number;
+  deletedLines: number;
+  patchBytes: number;
+  createdAt: Timestamp;
+}
+
+export interface MigrationAgentCheckpointTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  attemptNumber: number;
+  sequence: number;
+  phase: 'context' | 'planning' | 'patching';
+  artifactId: string;
+  artifactDigest: string;
+  createdAt: Timestamp;
+}
+
 export interface VendorIngestionRunTable {
   id: string;
   vendorReleaseId: string;
@@ -623,6 +699,10 @@ export interface Database {
   migrationRuns: MigrationRunTable;
   migrationRunOutbox: MigrationRunOutboxTable;
   migrationRunEvents: MigrationRunEventTable;
+  migrationArtifacts: MigrationArtifactTable;
+  migrationPlans: MigrationPlanTable;
+  patchAttempts: PatchAttemptTable;
+  migrationAgentCheckpoints: MigrationAgentCheckpointTable;
   vendorIngestionRuns: VendorIngestionRunTable;
   vendorEvidenceItems: VendorEvidenceItemTable;
   changeIntelligenceRuns: ChangeIntelligenceRunTable;

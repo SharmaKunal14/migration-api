@@ -1105,6 +1105,22 @@ by S3 key and digest, not stored in PostgreSQL.
 - Duration.
 - Unique run/sequence.
 
+`migration_artifacts`
+
+- Organisation and migration run.
+- Bounded run-specific S3 object key.
+- Artifact type, digest, media type, and bytes.
+- Workflow or audit retention class.
+- Immutable after insertion.
+
+`migration_plans`
+
+- Migration run, approval, and attempt number.
+- Exact base commit and snapshot digest.
+- Migration-specification and impact-report revisions/digests.
+- Proposed-plan artifact and digest.
+- Immutable after insertion.
+
 `patch_attempts`
 
 - Migration run.
@@ -1112,7 +1128,14 @@ by S3 key and digest, not stored in PostgreSQL.
 - Parent attempt.
 - Patch artifact and digest.
 - Policy validation result.
-- Summary.
+- Safe summary code and bounded change totals.
+
+`migration_agent_checkpoints`
+
+- Migration run, attempt, and global checkpoint sequence.
+- Context, planning, or patching phase.
+- Structured checkpoint artifact and digest.
+- No prompt, source body, or hidden model reasoning in PostgreSQL.
 
 `verification_runs`
 
