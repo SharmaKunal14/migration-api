@@ -328,6 +328,20 @@ data "aws_iam_policy_document" "github_deploy" {
     resources = [aws_kms_key.promotion_signing.arn]
   }
 
+  # The deployment role also manages application KMS resources. This explicit
+  # deny prevents those broad infrastructure permissions from being used to
+  # mutate the independent CI signing trust root or grant signing access.
+  statement {
+    sid    = "ProtectCiPromotionKey"
+    effect = "Deny"
+    not_actions = [
+      "kms:DescribeKey",
+      "kms:GetPublicKey",
+      "kms:Verify"
+    ]
+    resources = [aws_kms_key.promotion_signing.arn]
+  }
+
   statement {
     sid = "StageOneInfrastructure"
     actions = [

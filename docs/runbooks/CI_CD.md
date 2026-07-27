@@ -14,6 +14,8 @@ separate artifact-publisher AWS role, publishes immutable images, gates their
 vulnerability scans, and signs one manifest containing the exact image digests
 and deployment-payload digest with a dedicated asymmetric AWS KMS key. This
 works for private repositories without GitHub Enterprise Cloud.
+An explicit deny prevents the broader application-infrastructure role from
+mutating that key or granting itself signing access.
 
 `deploy-development.yml` is deliberately manual. The protected GitHub
 `development` environment is the deployment approval boundary. The workflow:

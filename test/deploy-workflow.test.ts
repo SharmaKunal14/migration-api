@@ -207,6 +207,9 @@ describe('development deployment artifact contract', () => {
     expect(bootstrapInfrastructure).toContain('"kms:Sign"');
     expect(bootstrapInfrastructure).toContain('sid = "VerifyCiPromotion"');
     expect(bootstrapInfrastructure).toContain('"kms:Verify"');
+    expect(bootstrapInfrastructure).toContain('sid    = "ProtectCiPromotionKey"');
+    expect(bootstrapInfrastructure).toContain('effect = "Deny"');
+    expect(bootstrapInfrastructure).toContain('not_actions = [');
     expect(bootstrapInfrastructure).toContain(
       'resources = [aws_kms_key.promotion_signing.arn]',
     );
