@@ -2873,6 +2873,10 @@ interface SystemMigrationRunEvent {
     | 'verification_prepared'
     | 'verification_completed'
     | 'repair_requested'
+    | 'publication_prepared'
+    | 'publication_started'
+    | 'publication_reconciled'
+    | 'notification_queued'
     | 'run_cancelled'
     | 'run_failed'
     | 'run_stale';

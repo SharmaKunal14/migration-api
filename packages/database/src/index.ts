@@ -523,6 +523,10 @@ export interface MigrationRunEventTable {
     | 'verification_started'
     | 'verification_completed'
     | 'repair_requested'
+    | 'publication_prepared'
+    | 'publication_started'
+    | 'publication_reconciled'
+    | 'notification_queued'
     | 'cancellation_requested'
     | 'run_cancelled'
     | 'run_failed'
@@ -676,6 +680,83 @@ export interface VerificationAttemptResultTable {
   createdAt: Timestamp;
 }
 
+export interface PublicationAttemptTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  approvalId: string;
+  repositoryId: string;
+  installationId: string;
+  githubRepositoryId: string;
+  verificationAttemptId: string;
+  verificationResultId: string;
+  verificationOutcome: 'passed';
+  patchAttemptId: string;
+  patchArtifactId: string;
+  patchDigest: string;
+  patchValidationArtifactId: string;
+  patchValidationDigest: string;
+  baseBranch: string;
+  baseCommitSha: string;
+  headBranch: string;
+  publicationPolicyVersion: string;
+  status:
+    | 'queued'
+    | 'validating'
+    | 'publishing'
+    | 'reconciling'
+    | 'succeeded'
+    | 'failed'
+    | 'stale'
+    | 'cancelled';
+  attemptCount: number;
+  safeErrorCode: string | null;
+  idempotencyKey: string;
+  correlationId: string;
+  createdAt: Timestamp;
+  startedAt: Timestamp | null;
+  completedAt: Timestamp | null;
+  updatedAt: Timestamp;
+}
+
+export interface GithubPublicationTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  publicationAttemptId: string;
+  repositoryId: string;
+  githubRepositoryId: string;
+  headBranch: string;
+  baseBranch: string;
+  baseCommitSha: string;
+  commitSha: string;
+  pullRequestNumber: number;
+  pullRequestNodeId: string;
+  pullRequestUrl: string;
+  state: 'open' | 'closed' | 'merged';
+  isDraft: boolean;
+  createdAt: Timestamp;
+  lastReconciledAt: Timestamp;
+}
+
+export interface PublicationNotificationOutboxTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  publicationId: string;
+  recipientUserId: string;
+  eventType: 'draft_pr_created';
+  channel: 'in_app' | 'email';
+  idempotencyKey: string;
+  availableAt: Timestamp;
+  leaseOwner: string | null;
+  leaseExpiresAt: Timestamp | null;
+  attempts: number;
+  deliveredAt: Timestamp | null;
+  safeErrorCode: string | null;
+  createdAt: Timestamp;
+}
+
 export interface VendorIngestionRunTable {
   id: string;
   vendorReleaseId: string;
@@ -764,6 +845,9 @@ export interface Database {
   migrationAgentCheckpoints: MigrationAgentCheckpointTable;
   verificationAttempts: VerificationAttemptTable;
   verificationAttemptResults: VerificationAttemptResultTable;
+  publicationAttempts: PublicationAttemptTable;
+  githubPublications: GithubPublicationTable;
+  publicationNotificationOutbox: PublicationNotificationOutboxTable;
   vendorIngestionRuns: VendorIngestionRunTable;
   vendorEvidenceItems: VendorEvidenceItemTable;
   changeIntelligenceRuns: ChangeIntelligenceRunTable;

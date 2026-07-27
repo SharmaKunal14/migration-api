@@ -2172,6 +2172,10 @@ function migrationRunEventLabel(
     verification_started: 'Verification started',
     verification_completed: 'Verification completed',
     repair_requested: 'Bounded repair requested',
+    publication_prepared: 'Publication evidence bound',
+    publication_started: 'Draft pull request publication started',
+    publication_reconciled: 'Draft pull request reconciled',
+    notification_queued: 'Publication notification queued',
   };
   return labels[eventType];
 }

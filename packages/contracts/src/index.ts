@@ -1850,6 +1850,268 @@ export const migrationVerificationResultSchema = z
     }
   });
 
+export const publicationAttemptStatusSchema = z.enum([
+  'queued',
+  'validating',
+  'publishing',
+  'reconciling',
+  'succeeded',
+  'failed',
+  'stale',
+  'cancelled',
+]);
+
+const publicationSafeErrorCodeSchema = z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/u);
+
+function isValidGitReferenceName(reference: string): boolean {
+  const forbiddenCharacters = new Set([' ', '~', '^', ':', '?', '*', '[', '\\']);
+  const components = reference.split('/');
+  for (const character of reference) {
+    const codePoint = character.codePointAt(0) ?? 0;
+    if (codePoint <= 0x20 || codePoint === 0x7f || forbiddenCharacters.has(character)) {
+      return false;
+    }
+  }
+  return (
+    reference !== '@' &&
+    !reference.startsWith('/') &&
+    !reference.endsWith('/') &&
+    !reference.endsWith('.') &&
+    !reference.includes('//') &&
+    !reference.includes('..') &&
+    !reference.includes('@{') &&
+    components.every(component => component.length > 0 && !component.endsWith('.lock'))
+  );
+}
+
+const publicationAttemptBindingFields = {
+  schemaVersion: z.literal('1.0'),
+  organisationId: uuidSchema,
+  migrationRunId: uuidSchema,
+  approvalId: uuidSchema,
+  repositoryId: uuidSchema,
+  installationId: uuidSchema,
+  githubRepositoryId: githubIdSchema,
+  verificationAttemptId: uuidSchema,
+  verificationResultId: uuidSchema,
+  verificationOutcome: z.literal('passed'),
+  patchAttemptId: uuidSchema,
+  patchArtifactId: uuidSchema,
+  patchDigest: sha256Schema,
+  patchValidationArtifactId: uuidSchema,
+  patchValidationDigest: sha256Schema,
+  baseBranch: z
+    .string()
+    .min(1)
+    .max(255)
+    .refine(branch => isValidGitReferenceName(branch), {
+      message: 'Base branch must be a valid bounded Git reference name.',
+    }),
+  baseCommitSha: commitShaSchema,
+  headBranch: z.string().min(1).max(255),
+  publicationPolicyVersion: policyVersionSchema,
+} as const;
+
+export const publicationAttemptBindingSchema = z
+  .object(publicationAttemptBindingFields)
+  .strict()
+  .superRefine((binding, context) => {
+    if (binding.headBranch !== `migration-api/run-${binding.migrationRunId}`) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Publication branch must be derived from the migration run.',
+        path: ['headBranch'],
+      });
+    }
+  });
+
+export const publicationAttemptSchema = z
+  .object({
+    ...publicationAttemptBindingFields,
+    id: uuidSchema,
+    status: publicationAttemptStatusSchema,
+    attemptCount: z.number().int().min(0).max(20),
+    safeErrorCode: publicationSafeErrorCodeSchema.nullable(),
+    idempotencyKey: z.string().min(1).max(128),
+    correlationId: uuidSchema,
+    createdAt: z.iso.datetime(),
+    startedAt: z.iso.datetime().nullable(),
+    completedAt: z.iso.datetime().nullable(),
+    updatedAt: z.iso.datetime(),
+  })
+  .strict()
+  .superRefine((attempt, context) => {
+    if (attempt.headBranch !== `migration-api/run-${attempt.migrationRunId}`) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Publication branch must be derived from the migration run.',
+        path: ['headBranch'],
+      });
+    }
+    if (attempt.idempotencyKey !== `publication:${attempt.migrationRunId}`) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Publication idempotency key must be derived from the migration run.',
+        path: ['idempotencyKey'],
+      });
+    }
+    const terminal = ['succeeded', 'failed', 'stale', 'cancelled'].includes(
+      attempt.status,
+    );
+    if (terminal !== (attempt.completedAt !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only terminal publication attempts may have a completion time.',
+        path: ['completedAt'],
+      });
+    }
+    const failed = ['failed', 'stale'].includes(attempt.status);
+    if (failed !== (attempt.safeErrorCode !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Failed or stale publication attempts require a safe error code.',
+        path: ['safeErrorCode'],
+      });
+    }
+    if (attempt.status === 'queued' && attempt.attemptCount !== 0) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Queued publication attempts cannot have started.',
+        path: ['attemptCount'],
+      });
+    }
+    if (
+      !['queued', 'cancelled'].includes(attempt.status) &&
+      (attempt.startedAt === null || attempt.attemptCount === 0)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Started publication attempts require a start time and attempt.',
+        path: ['startedAt'],
+      });
+    }
+    if (
+      attempt.completedAt !== null &&
+      attempt.startedAt !== null &&
+      Date.parse(attempt.completedAt) < Date.parse(attempt.startedAt)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Publication cannot complete before it starts.',
+        path: ['completedAt'],
+      });
+    }
+    if (Date.parse(attempt.updatedAt) < Date.parse(attempt.createdAt)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Publication update time cannot precede creation.',
+        path: ['updatedAt'],
+      });
+    }
+    if (
+      attempt.startedAt !== null &&
+      Date.parse(attempt.startedAt) < Date.parse(attempt.createdAt)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Publication cannot start before it is created.',
+        path: ['startedAt'],
+      });
+    }
+    if (
+      attempt.status === 'queued' &&
+      (attempt.startedAt !== null || attempt.completedAt !== null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Queued publication attempts cannot have timestamps.',
+        path: ['startedAt'],
+      });
+    }
+  });
+
+export const githubPublicationSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    id: uuidSchema,
+    organisationId: uuidSchema,
+    migrationRunId: uuidSchema,
+    publicationAttemptId: uuidSchema,
+    repositoryId: uuidSchema,
+    githubRepositoryId: githubIdSchema,
+    headBranch: z.string().min(1).max(255),
+    baseBranch: z.string().min(1).max(255),
+    baseCommitSha: commitShaSchema,
+    commitSha: commitShaSchema,
+    pullRequestNumber: z.number().int().positive(),
+    pullRequestNodeId: z.string().min(1).max(255),
+    pullRequestUrl: z
+      .url()
+      .regex(
+        /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/u,
+      ),
+    state: z.enum(['open', 'closed', 'merged']),
+    isDraft: z.boolean(),
+    createdAt: z.iso.datetime(),
+    lastReconciledAt: z.iso.datetime(),
+  })
+  .strict()
+  .superRefine((publication, context) => {
+    if (publication.state === 'merged' && publication.isDraft) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A merged pull request cannot remain a draft.',
+        path: ['isDraft'],
+      });
+    }
+    if (Date.parse(publication.lastReconciledAt) < Date.parse(publication.createdAt)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Publication reconciliation cannot precede creation.',
+        path: ['lastReconciledAt'],
+      });
+    }
+  });
+
+export const publicationNotificationSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    id: uuidSchema,
+    organisationId: uuidSchema,
+    migrationRunId: uuidSchema,
+    publicationId: uuidSchema,
+    recipientUserId: uuidSchema,
+    eventType: z.literal('draft_pr_created'),
+    channel: z.enum(['in_app', 'email']),
+    idempotencyKey: z
+      .string()
+      .min(8)
+      .max(128)
+      .regex(/^[A-Za-z0-9][A-Za-z0-9:_-]{7,127}$/u),
+    availableAt: z.iso.datetime(),
+    attempts: z.number().int().min(0).max(10),
+    deliveredAt: z.iso.datetime().nullable(),
+    safeErrorCode: publicationSafeErrorCodeSchema.nullable(),
+    createdAt: z.iso.datetime(),
+  })
+  .strict()
+  .superRefine((notification, context) => {
+    if (notification.deliveredAt !== null && notification.safeErrorCode !== null) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Delivered notifications cannot have an error.',
+        path: ['safeErrorCode'],
+      });
+    }
+    if (Date.parse(notification.availableAt) < Date.parse(notification.createdAt)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Notification cannot become available before creation.',
+        path: ['availableAt'],
+      });
+    }
+  });
+
 export const cancelMigrationRunRequestSchema = z
   .object({
     expectedVersion: z.number().int().positive(),
@@ -2140,6 +2402,11 @@ export type MigrationVerificationDispatch = z.infer<
 export type MigrationVerificationResult = z.infer<
   typeof migrationVerificationResultSchema
 >;
+export type PublicationAttemptStatus = z.infer<typeof publicationAttemptStatusSchema>;
+export type PublicationAttemptBinding = z.infer<typeof publicationAttemptBindingSchema>;
+export type PublicationAttempt = z.infer<typeof publicationAttemptSchema>;
+export type GithubPublication = z.infer<typeof githubPublicationSchema>;
+export type PublicationNotification = z.infer<typeof publicationNotificationSchema>;
 export type CancelMigrationRunRequest = z.infer<typeof cancelMigrationRunRequestSchema>;
 export type RevokeMigrationApprovalRequest = z.infer<
   typeof revokeMigrationApprovalRequestSchema
@@ -2441,7 +2708,11 @@ export interface PublicMigrationRunEvent {
     | 'verification_prepared'
     | 'verification_started'
     | 'verification_completed'
-    | 'repair_requested';
+    | 'repair_requested'
+    | 'publication_prepared'
+    | 'publication_started'
+    | 'publication_reconciled'
+    | 'notification_queued';
   readonly status:
     'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
   readonly stage:
