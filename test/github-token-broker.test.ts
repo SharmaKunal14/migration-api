@@ -47,11 +47,25 @@ function dependencies(
       accountLogin: 'acme',
       accountType: 'Organisation',
     }),
+  lookupMigrationRepositoryAccess: BrokerDependencies['lookupMigrationRepositoryAccess'] = (
+    _migrationRunId,
+    _repositoryId,
+  ) =>
+    Promise.resolve({
+      githubInstallationId: '12345',
+      githubRepositoryId: '67890',
+      owner: 'acme',
+      name: 'widgets',
+      defaultBranch: 'main',
+      commitSha: 'a'.repeat(40),
+      snapshotDigest: 'b'.repeat(64),
+    }),
 ): BrokerDependencies {
   return {
     appId: '98765',
     privateKey,
     lookupRepositoryAccess,
+    lookupMigrationRepositoryAccess,
     lookupInstallationAccess,
     fetch: fetchImplementation,
     now: (): Date => new Date('2026-07-25T00:00:00.000Z'),
@@ -141,6 +155,63 @@ describe('GitHub token broker', () => {
       owner: 'acme',
       name: 'widgets',
       defaultBranch: 'main',
+    });
+  });
+
+  it('issues a migration token bound to the approved commit and digest', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>((_input, init) => {
+      if (typeof init?.body !== 'string') {
+        throw new Error('Expected a serialized JSON request body.');
+      }
+      expect(JSON.parse(init.body)).toEqual({
+        repository_ids: [67890],
+        permissions: { contents: 'read' },
+      });
+      return Promise.resolve(
+        new Response(
+          JSON.stringify({
+            token: 'github-installation-token-never-persisted',
+            expires_at: '2026-07-25T01:00:00.000Z',
+          }),
+          { status: 201 },
+        ),
+      );
+    });
+    const lookupMigration = vi.fn(
+      (): ReturnType<BrokerDependencies['lookupMigrationRepositoryAccess']> =>
+        Promise.resolve({
+          githubInstallationId: '12345',
+          githubRepositoryId: '67890',
+          owner: 'acme',
+          name: 'widgets',
+          defaultBranch: 'main',
+          commitSha: 'a'.repeat(40),
+          snapshotDigest: 'b'.repeat(64),
+        }),
+    );
+
+    const result = await handleBrokerCommand(
+      {
+        operation: 'issue_migration_repository_read_token',
+        migrationRunId: '8955ed33-d1d8-4fdb-bd48-3a0835562934',
+        repositoryId,
+      },
+      'request-id',
+      dependencies(fetchMock, undefined, undefined, lookupMigration),
+    );
+
+    expect(lookupMigration).toHaveBeenCalledWith(
+      '8955ed33-d1d8-4fdb-bd48-3a0835562934',
+      repositoryId,
+    );
+    expect(result).toEqual({
+      token: 'github-installation-token-never-persisted',
+      expiresAt: '2026-07-25T01:00:00.000Z',
+      githubRepositoryId: '67890',
+      owner: 'acme',
+      name: 'widgets',
+      commitSha: 'a'.repeat(40),
+      snapshotDigest: 'b'.repeat(64),
     });
   });
 

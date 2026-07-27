@@ -239,6 +239,15 @@ data "aws_iam_policy_document" "workflow_artifacts" {
   }
 
   statement {
+    sid     = "ReadMigrationAcquisition"
+    actions = ["s3:GetObject"]
+    resources = [
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/input/acquisition-result.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/input/source/*"
+    ]
+  }
+
+  statement {
     sid       = "DecryptAgentResult"
     actions   = ["kms:Decrypt"]
     resources = [aws_kms_key.artifacts.arn]
@@ -371,9 +380,12 @@ data "aws_iam_policy_document" "source_fetcher_task" {
   }
 
   statement {
-    sid       = "WriteRepositoryScanArtifacts"
-    actions   = ["s3:PutObject"]
-    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/org/*/repository/*/scan/*"]
+    sid     = "WriteSourceAcquisitionArtifacts"
+    actions = ["s3:PutObject"]
+    resources = [
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/repository/*/scan/*",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/input/*"
+    ]
   }
 
   statement {

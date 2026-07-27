@@ -9,10 +9,16 @@ import { z } from 'zod';
 import {
   commitShaSchema,
   githubIdSchema,
+  migrationAcquisitionResultSchema,
   repositoryAcquisitionResultSchema,
+  type MigrationAcquisitionResult,
   type RepositoryAcquisitionResult,
 } from '@migration/contracts';
-import { parseConfig, sourceFetcherConfigSchema } from '@migration/config';
+import {
+  migrationSourceFetcherConfigSchema,
+  parseConfig,
+  sourceFetcherConfigSchema,
+} from '@migration/config';
 import { writeLog } from '@migration/observability';
 import { InventoryError, inventoryRepository } from '@migration/repository-inventory';
 import {
@@ -40,6 +46,14 @@ const tokenResponseSchema = z
   })
   .strict();
 
+const migrationTokenResponseSchema = tokenResponseSchema
+  .omit({ defaultBranch: true })
+  .extend({
+    commitSha: commitShaSchema,
+    snapshotDigest: z.string().regex(/^[a-f0-9]{64}$/u),
+  })
+  .strict();
+
 const commitResponseSchema = z
   .object({
     sha: commitShaSchema,
@@ -54,6 +68,10 @@ interface SourceFetcherDependencies {
 }
 
 async function main(): Promise<void> {
+  if (process.env.ACQUISITION_MODE === 'migration') {
+    await runMigrationAcquisition();
+    return;
+  }
   const config = parseConfig(sourceFetcherConfigSchema);
   const dependencies: SourceFetcherDependencies = {
     lambda: new LambdaClient({ region: config.AWS_REGION }),
@@ -91,6 +109,49 @@ async function main(): Promise<void> {
     organisationId: config.ORGANISATION_ID,
     repositoryId: config.REPOSITORY_ID,
     repositoryScanId: config.REPOSITORY_SCAN_ID,
+    outcome: result.status,
+    safeErrorCode: result.safeErrorCode ?? undefined,
+  });
+}
+
+async function runMigrationAcquisition(): Promise<void> {
+  const config = parseConfig(migrationSourceFetcherConfigSchema);
+  const dependencies: SourceFetcherDependencies = {
+    lambda: new LambdaClient({ region: config.AWS_REGION }),
+    s3: new S3Client({ region: config.AWS_REGION }),
+    fetch: globalThis.fetch,
+    now: () => new Date(),
+  };
+  const result = await acquireMigrationRepository(config, dependencies);
+  const resultKey = migrationResultObjectKey(
+    config.APP_ENVIRONMENT,
+    config.ORGANISATION_ID,
+    config.MIGRATION_RUN_ID,
+  );
+  const body = JSON.stringify(migrationAcquisitionResultSchema.parse(result));
+  if (Buffer.byteLength(body, 'utf8') > MAX_JSON_BYTES) {
+    throw new Error('The migration acquisition result exceeds its size limit.');
+  }
+  await dependencies.s3.send(
+    new PutObjectCommand({
+      Bucket: config.ARTIFACT_BUCKET,
+      Key: resultKey,
+      Body: body,
+      ContentType: 'application/json',
+      ServerSideEncryption: 'aws:kms',
+      SSEKMSKeyId: config.ARTIFACT_KMS_KEY_ARN,
+      Metadata: {
+        'schema-version': '1.0',
+        'migration-run-id': config.MIGRATION_RUN_ID,
+        'approval-id': config.APPROVAL_ID,
+      },
+    }),
+  );
+  writeLog(result.status === 'succeeded' ? 'info' : 'warn', {
+    event: 'migration_acquisition_result_written',
+    organisationId: config.ORGANISATION_ID,
+    repositoryId: config.REPOSITORY_ID,
+    migrationRunId: config.MIGRATION_RUN_ID,
     outcome: result.status,
     safeErrorCode: result.safeErrorCode ?? undefined,
   });
@@ -198,6 +259,105 @@ export async function acquireRepository(
   }
 }
 
+export async function acquireMigrationRepository(
+  config: z.infer<typeof migrationSourceFetcherConfigSchema>,
+  dependency: SourceFetcherDependencies,
+): Promise<MigrationAcquisitionResult> {
+  await mkdir(config.WORKSPACE_DIRECTORY, { recursive: true });
+  const inputPath = `${config.WORKSPACE_DIRECTORY}/source.tar.gz`;
+  const outputPath = `${config.WORKSPACE_DIRECTORY}/snapshot.tar.gz`;
+  let failureStage = 'issue_token';
+  try {
+    const access = await issueMigrationReadToken(config, dependency.lambda);
+    failureStage = 'download_archive';
+    await downloadGithubArchive(
+      dependency.fetch,
+      access.owner,
+      access.name,
+      access.commitSha,
+      access.token,
+      inputPath,
+    );
+    failureStage = 'normalize_archive';
+    const normalized = await normalizeGithubTarball(inputPath, outputPath);
+    if (normalized.digest !== access.snapshotDigest) {
+      return migrationAcquisitionResultSchema.parse({
+        schemaVersion: '1.0',
+        organisationId: config.ORGANISATION_ID,
+        repositoryId: config.REPOSITORY_ID,
+        migrationRunId: config.MIGRATION_RUN_ID,
+        approvalId: config.APPROVAL_ID,
+        status: 'stale',
+        safeErrorCode: 'MIGRATION_SNAPSHOT_DIGEST_MISMATCH',
+        snapshot: null,
+      });
+    }
+    const snapshotKey = migrationSnapshotObjectKey(
+      config.APP_ENVIRONMENT,
+      config.ORGANISATION_ID,
+      config.MIGRATION_RUN_ID,
+      access.commitSha,
+    );
+    failureStage = 'write_snapshot';
+    await dependency.s3.send(
+      new PutObjectCommand({
+        Bucket: config.ARTIFACT_BUCKET,
+        Key: snapshotKey,
+        Body: createReadStream(outputPath),
+        ContentLength: normalized.bytes,
+        ContentType: 'application/gzip',
+        ServerSideEncryption: 'aws:kms',
+        SSEKMSKeyId: config.ARTIFACT_KMS_KEY_ARN,
+        Metadata: {
+          digest: normalized.digest,
+          'migration-run-id': config.MIGRATION_RUN_ID,
+          'approval-id': config.APPROVAL_ID,
+          'commit-sha': access.commitSha,
+        },
+      }),
+    );
+    return migrationAcquisitionResultSchema.parse({
+      schemaVersion: '1.0',
+      organisationId: config.ORGANISATION_ID,
+      repositoryId: config.REPOSITORY_ID,
+      migrationRunId: config.MIGRATION_RUN_ID,
+      approvalId: config.APPROVAL_ID,
+      status: 'succeeded',
+      safeErrorCode: null,
+      snapshot: {
+        commitSha: access.commitSha,
+        objectKey: snapshotKey,
+        digest: normalized.digest,
+        bytes: normalized.bytes,
+        fileCount: normalized.fileCount,
+        expiresAt: new Date(
+          dependency.now().getTime() + SNAPSHOT_RETENTION_MS,
+        ).toISOString(),
+      },
+    });
+  } catch (error) {
+    const failure = classifyFailure(error);
+    writeLog('warn', {
+      event: 'migration_acquisition_failed',
+      organisationId: config.ORGANISATION_ID,
+      repositoryId: config.REPOSITORY_ID,
+      migrationRunId: config.MIGRATION_RUN_ID,
+      safeErrorCode: failure.safeErrorCode,
+      failureStage,
+    });
+    return migrationAcquisitionResultSchema.parse({
+      schemaVersion: '1.0',
+      organisationId: config.ORGANISATION_ID,
+      repositoryId: config.REPOSITORY_ID,
+      migrationRunId: config.MIGRATION_RUN_ID,
+      approvalId: config.APPROVAL_ID,
+      status: failure.status,
+      safeErrorCode: failure.safeErrorCode,
+      snapshot: null,
+    });
+  }
+}
+
 async function issueReadToken(
   config: z.infer<typeof sourceFetcherConfigSchema>,
   lambda: LambdaClient,
@@ -225,6 +385,40 @@ async function issueReadToken(
   }
   try {
     return tokenResponseSchema.parse(
+      JSON.parse(Buffer.from(response.Payload).toString('utf8')),
+    );
+  } catch {
+    throw new SourceFetcherError('TOKEN_BROKER_RESPONSE_INVALID');
+  }
+}
+
+async function issueMigrationReadToken(
+  config: z.infer<typeof migrationSourceFetcherConfigSchema>,
+  lambda: LambdaClient,
+): Promise<z.infer<typeof migrationTokenResponseSchema>> {
+  let response;
+  try {
+    response = await lambda.send(
+      new InvokeCommand({
+        FunctionName: config.GITHUB_TOKEN_BROKER_FUNCTION_NAME,
+        InvocationType: 'RequestResponse',
+        Payload: Buffer.from(
+          JSON.stringify({
+            operation: 'issue_migration_repository_read_token',
+            migrationRunId: config.MIGRATION_RUN_ID,
+            repositoryId: config.REPOSITORY_ID,
+          }),
+        ),
+      }),
+    );
+  } catch {
+    throw new SourceFetcherError('TOKEN_BROKER_FAILED');
+  }
+  if (response.FunctionError || !response.Payload) {
+    throw new SourceFetcherError('TOKEN_BROKER_FAILED');
+  }
+  try {
+    return migrationTokenResponseSchema.parse(
       JSON.parse(Buffer.from(response.Payload).toString('utf8')),
     );
   } catch {
@@ -392,6 +586,23 @@ export function snapshotObjectKey(
   commitSha: string,
 ): string {
   return `env/${environment}/org/${organisationId}/repository/${repositoryId}/scan/${scanId}/snapshot/${commitSha}.tar.gz`;
+}
+
+export function migrationResultObjectKey(
+  environment: string,
+  organisationId: string,
+  migrationRunId: string,
+): string {
+  return `env/${environment}/org/${organisationId}/run/${migrationRunId}/input/acquisition-result.json`;
+}
+
+export function migrationSnapshotObjectKey(
+  environment: string,
+  organisationId: string,
+  migrationRunId: string,
+  commitSha: string,
+): string {
+  return `env/${environment}/org/${organisationId}/run/${migrationRunId}/input/source/${commitSha}.tar.gz`;
 }
 
 if (process.env.NODE_ENV !== 'test') {

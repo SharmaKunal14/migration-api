@@ -117,12 +117,25 @@ export const repositoryScanControlConfigSchema = commonSchema.extend({
 });
 
 export const sourceFetcherConfigSchema = commonSchema.extend({
+  ACQUISITION_MODE: z.literal('repository_scan'),
   ARTIFACT_BUCKET: nonEmpty,
   ARTIFACT_KMS_KEY_ARN: awsArn,
   GITHUB_TOKEN_BROKER_FUNCTION_NAME: z.string().regex(/^[A-Za-z0-9-_]{1,64}$/u),
   ORGANISATION_ID: z.uuid(),
   REPOSITORY_ID: z.uuid(),
   REPOSITORY_SCAN_ID: z.uuid(),
+  WORKSPACE_DIRECTORY: z.literal('/workspace'),
+});
+
+export const migrationSourceFetcherConfigSchema = commonSchema.extend({
+  ACQUISITION_MODE: z.literal('migration'),
+  APPROVAL_ID: z.uuid(),
+  ARTIFACT_BUCKET: nonEmpty,
+  ARTIFACT_KMS_KEY_ARN: awsArn,
+  GITHUB_TOKEN_BROKER_FUNCTION_NAME: z.string().regex(/^[A-Za-z0-9-_]{1,64}$/u),
+  MIGRATION_RUN_ID: z.uuid(),
+  ORGANISATION_ID: z.uuid(),
+  REPOSITORY_ID: z.uuid(),
   WORKSPACE_DIRECTORY: z.literal('/workspace'),
 });
 
@@ -190,6 +203,9 @@ export type RepositoryScanControlConfig = z.infer<
   typeof repositoryScanControlConfigSchema
 >;
 export type SourceFetcherConfig = z.infer<typeof sourceFetcherConfigSchema>;
+export type MigrationSourceFetcherConfig = z.infer<
+  typeof migrationSourceFetcherConfigSchema
+>;
 export type VendorFetcherConfig = z.infer<typeof vendorFetcherConfigSchema>;
 export type ChangeIntelligenceAgentConfig = z.infer<
   typeof changeIntelligenceAgentConfigSchema

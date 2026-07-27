@@ -685,6 +685,7 @@ resource "aws_ecs_task_definition" "source_fetcher" {
         }
       ]
       environment = [
+        { name = "ACQUISITION_MODE", value = "repository_scan" },
         { name = "APP_ENVIRONMENT", value = "development" },
         { name = "AWS_REGION", value = var.aws_region },
         { name = "AWS_STS_REGIONAL_ENDPOINTS", value = "regional" },
@@ -1569,7 +1570,7 @@ resource "aws_sfn_state_machine" "migration" {
   }
 
   definition = jsonencode({
-    Comment = "Stage 4E full fail-closed migration workflow skeleton"
+    Comment = "Stage 5B exact-source acquisition with fail-closed future boundaries"
     StartAt = "PrepareControlState"
     States = {
       PrepareControlState = {
@@ -1666,13 +1667,54 @@ resource "aws_sfn_state_machine" "migration" {
         Default = "MarkInfrastructureFailure"
       }
       AcquireExactSnapshot = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::ecs:runTask.sync"
+        TimeoutSeconds = 600
+        Parameters = {
+          Cluster        = aws_ecs_cluster.agent.arn
+          TaskDefinition = aws_ecs_task_definition.source_fetcher.arn
+          LaunchType     = "FARGATE"
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              AssignPublicIp = "DISABLED"
+              SecurityGroups = [aws_security_group.source_fetcher.id]
+              Subnets        = [for subnet in aws_subnet.source_fetcher : subnet.id]
+            }
+          }
+          Overrides = {
+            ContainerOverrides = [{
+              Name = "source-fetcher"
+              Environment = [
+                { Name = "ACQUISITION_MODE", Value = "migration" },
+                { Name = "APPROVAL_ID", "Value.$" = "$.workflow.approvalId" },
+                { Name = "MIGRATION_RUN_ID", "Value.$" = "$.workflow.migrationRunId" },
+                { Name = "ORGANISATION_ID", "Value.$" = "$.workflow.organisationId" },
+                { Name = "REPOSITORY_ID", "Value.$" = "$.workflow.repositoryId" }
+              ]
+            }]
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["ECS.AmazonECSException", "ECS.ThrottlingException"]
+          IntervalSeconds = 5
+          BackoffRate     = 2
+          MaxAttempts     = 2
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "IngestMigrationAcquisition"
+      }
+      IngestMigrationAcquisition = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
           FunctionName = aws_lambda_function.workflow_control.arn
           Payload = {
-            operation    = "evaluate_migration_stage_capability"
-            stage        = "acquiring"
+            operation    = "ingest_migration_acquisition"
             "workflow.$" = "$.workflow"
           }
         }
@@ -1695,11 +1737,6 @@ resource "aws_sfn_state_machine" "migration" {
         Choices = [
           {
             Variable     = "$.boundary.Payload.status"
-            StringEquals = "unavailable"
-            Next         = "StopAtUnavailableBoundary"
-          },
-          {
-            Variable     = "$.boundary.Payload.status"
             StringEquals = "cancelled"
             Next         = "Cancelled"
           },
@@ -1707,6 +1744,16 @@ resource "aws_sfn_state_machine" "migration" {
             Variable     = "$.boundary.Payload.status"
             StringEquals = "completed"
             Next         = "RunMigrationAgent"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "failed"
+            Next         = "SafeBoundaryReached"
           }
         ]
         Default = "MarkInfrastructureFailure"
@@ -2152,7 +2199,7 @@ resource "aws_sfn_state_machine" "migration" {
       MigrationInfrastructureFailed = {
         Type  = "Fail"
         Error = "MigrationInfrastructureFailed"
-        Cause = "The Stage 4E durable migration workflow failed."
+        Cause = "The durable migration workflow encountered an infrastructure failure."
       }
     }
   })

@@ -1609,6 +1609,7 @@ function migrationRunEventLabel(
     run_requested: 'Run requested',
     approval_validated: 'Approval revalidated',
     stage_entered: 'Stage entered',
+    source_acquired: 'Exact source snapshot acquired',
     cancellation_requested: 'Cancellation requested',
     run_cancelled: 'Run cancelled',
     run_failed: 'Run stopped',

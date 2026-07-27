@@ -515,6 +515,7 @@ export interface MigrationRunEventTable {
     | 'run_requested'
     | 'approval_validated'
     | 'stage_entered'
+    | 'source_acquired'
     | 'cancellation_requested'
     | 'run_cancelled'
     | 'run_failed'
@@ -546,6 +547,7 @@ export interface MigrationArtifactTable {
   organisationId: string;
   migrationRunId: string;
   artifactType:
+    | 'source_snapshot'
     | 'context_manifest'
     | 'agent_checkpoint'
     | 'migration_plan'

@@ -44,6 +44,13 @@ const brokerCommandSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('issue_migration_repository_read_token'),
+      migrationRunId: uuidSchema,
+      repositoryId: uuidSchema,
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('get_installation_inventory'),
       linkedInstallationId: uuidSchema,
     })
@@ -104,6 +111,11 @@ interface RepositoryAccess {
   readonly defaultBranch: string;
 }
 
+interface MigrationRepositoryAccess extends RepositoryAccess {
+  readonly commitSha: string;
+  readonly snapshotDigest: string;
+}
+
 interface InstallationAccess {
   readonly githubInstallationId: string;
   readonly githubAccountId: string;
@@ -118,6 +130,10 @@ interface BrokerDependencies {
     repositoryScanId: string,
     repositoryId: string,
   ) => Promise<RepositoryAccess>;
+  readonly lookupMigrationRepositoryAccess: (
+    migrationRunId: string,
+    repositoryId: string,
+  ) => Promise<MigrationRepositoryAccess>;
   readonly lookupInstallationAccess: (
     linkedInstallationId: string,
   ) => Promise<InstallationAccess>;
@@ -137,6 +153,11 @@ async function dependencies(): Promise<BrokerDependencies> {
     privateKey: secret.privateKey,
     lookupRepositoryAccess: (scanId, repositoryId): Promise<RepositoryAccess> =>
       lookupRepositoryAccess(database, scanId, repositoryId),
+    lookupMigrationRepositoryAccess: (
+      migrationRunId,
+      repositoryId,
+    ): Promise<MigrationRepositoryAccess> =>
+      lookupMigrationRepositoryAccess(database, migrationRunId, repositoryId),
     lookupInstallationAccess: (linkedInstallationId): Promise<InstallationAccess> =>
       lookupInstallationAccess(database, linkedInstallationId),
     fetch: globalThis.fetch,
@@ -199,10 +220,16 @@ export async function handleBrokerCommand(
     return inventory;
   }
 
-  const access = await dependency.lookupRepositoryAccess(
-    command.repositoryScanId,
-    command.repositoryId,
-  );
+  const access =
+    command.operation === 'issue_migration_repository_read_token'
+      ? await dependency.lookupMigrationRepositoryAccess(
+          command.migrationRunId,
+          command.repositoryId,
+        )
+      : await dependency.lookupRepositoryAccess(
+          command.repositoryScanId,
+          command.repositoryId,
+        );
   const installationId = githubIdSchema.parse(access.githubInstallationId);
   const repositoryId = safeGithubNumber(access.githubRepositoryId);
   const token = await githubRequest(
@@ -223,13 +250,29 @@ export async function handleBrokerCommand(
     requestId,
     outcome: 'issued',
   });
+  const migrationFields =
+    command.operation === 'issue_migration_repository_read_token'
+      ? migrationAccessFields(access)
+      : { defaultBranch: access.defaultBranch };
   return {
     token: token.token,
     expiresAt: token.expires_at,
     githubRepositoryId: access.githubRepositoryId,
     owner: access.owner,
     name: access.name,
-    defaultBranch: access.defaultBranch,
+    ...migrationFields,
+  };
+}
+
+function migrationAccessFields(
+  access: RepositoryAccess | MigrationRepositoryAccess,
+): Pick<MigrationRepositoryAccess, 'commitSha' | 'snapshotDigest'> {
+  if (!('commitSha' in access)) {
+    throw new BrokerError('MIGRATION_REPOSITORY_ACCESS_DENIED');
+  }
+  return {
+    commitSha: access.commitSha,
+    snapshotDigest: access.snapshotDigest,
   };
 }
 
@@ -398,6 +441,71 @@ async function lookupRepositoryAccess(
     .executeTakeFirst();
   if (!access) {
     throw new BrokerError('REPOSITORY_ACCESS_DENIED');
+  }
+  return access;
+}
+
+async function lookupMigrationRepositoryAccess(
+  database: AppDatabase,
+  migrationRunId: string,
+  repositoryId: string,
+): Promise<MigrationRepositoryAccess> {
+  const access = await database
+    .selectFrom('migrationRuns as run')
+    .innerJoin('migrationApprovals as approval', join =>
+      join
+        .onRef('approval.id', '=', 'run.approvalId')
+        .onRef('approval.organisationId', '=', 'run.organisationId')
+        .onRef('approval.repositoryId', '=', 'run.repositoryId'),
+    )
+    .innerJoin('repositories as repository', join =>
+      join
+        .onRef('repository.id', '=', 'run.repositoryId')
+        .onRef('repository.organisationId', '=', 'run.organisationId')
+        .onRef('repository.installationId', '=', 'approval.installationId'),
+    )
+    .innerJoin(
+      'githubInstallations as installation',
+      'installation.id',
+      'repository.installationId',
+    )
+    .leftJoin(
+      'migrationApprovalRevocations as revocation',
+      'revocation.approvalId',
+      'approval.id',
+    )
+    .select([
+      'installation.githubInstallationId',
+      'repository.githubRepositoryId',
+      'repository.owner',
+      'repository.name',
+      'repository.defaultBranch',
+      'approval.baseCommitSha as commitSha',
+      'approval.snapshotDigest',
+    ])
+    .where('run.id', '=', migrationRunId)
+    .where('run.repositoryId', '=', repositoryId)
+    .where('run.status', '=', 'running')
+    .where('run.currentStage', '=', 'acquiring')
+    .where('run.cancellationRequestedAt', 'is', null)
+    .where('repository.selected', '=', true)
+    .where('repository.enabled', '=', true)
+    .where('repository.archived', '=', false)
+    .where('repository.defaultBranch', '=', eb => eb.ref('approval.baseBranch'))
+    .where('repository.githubRepositoryId', '=', eb =>
+      eb.ref('approval.githubRepositoryId'),
+    )
+    .where('installation.status', '=', 'active')
+    .where('revocation.approvalId', 'is', null)
+    .where(eb =>
+      eb.or([
+        eb('approval.expiresAt', 'is', null),
+        eb('approval.expiresAt', '>', new Date()),
+      ]),
+    )
+    .executeTakeFirst();
+  if (!access) {
+    throw new BrokerError('MIGRATION_REPOSITORY_ACCESS_DENIED');
   }
   return access;
 }

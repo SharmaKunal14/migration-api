@@ -163,6 +163,53 @@ export const repositoryAcquisitionResultSchema = z
     }
   });
 
+export const migrationAcquisitionResultSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    organisationId: uuidSchema,
+    repositoryId: uuidSchema,
+    migrationRunId: uuidSchema,
+    approvalId: uuidSchema,
+    status: z.enum(['succeeded', 'stale', 'unsupported', 'failed']),
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+    snapshot: z
+      .object({
+        commitSha: commitShaSchema,
+        objectKey: z.string().min(1).max(1_024),
+        digest: sha256Schema,
+        bytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(256 * 1024 * 1024),
+        fileCount: z.number().int().min(1).max(20_000),
+        expiresAt: z.iso.datetime(),
+      })
+      .strict()
+      .nullable(),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    const succeeded = result.status === 'succeeded';
+    if (succeeded !== (result.snapshot !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Successful migration acquisition requires snapshot evidence.',
+        path: ['status'],
+      });
+    }
+    if (succeeded === (result.safeErrorCode !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only unsuccessful migration acquisition requires a safe error code.',
+        path: ['safeErrorCode'],
+      });
+    }
+  });
+
 export const githubWebhookEnvelopeSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -1579,6 +1626,9 @@ export type RepositoryScanWorkflowInput = z.infer<
 export type RepositoryAcquisitionResult = z.infer<
   typeof repositoryAcquisitionResultSchema
 >;
+export type MigrationAcquisitionResult = z.infer<
+  typeof migrationAcquisitionResultSchema
+>;
 export type GithubWebhookEnvelope = z.infer<typeof githubWebhookEnvelopeSchema>;
 export type GithubSetupCompletionRequest = z.infer<
   typeof githubSetupCompletionRequestSchema
@@ -1819,6 +1869,7 @@ export interface PublicMigrationRunEvent {
     | 'run_requested'
     | 'approval_validated'
     | 'stage_entered'
+    | 'source_acquired'
     | 'cancellation_requested'
     | 'run_cancelled'
     | 'run_failed'

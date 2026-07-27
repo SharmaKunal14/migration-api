@@ -92,11 +92,12 @@ describe('Stage 4E full migration workflow skeleton', () => {
     expect(workflowControl).toContain('MIGRATION_REPAIR_BUDGET_EXHAUSTED');
   });
 
-  it('does not wire source, model, verifier, or GitHub workloads yet', () => {
-    expect(migrationStateMachine).not.toContain('ecs:runTask.sync');
+  it('wires only the Stage 5B source workload and keeps later capabilities closed', () => {
+    expect(migrationStateMachine).toContain('ecs:runTask.sync');
     expect(migrationStateMachine).not.toContain('OPENAI');
     expect(migrationStateMachine).not.toContain('github-token');
-    expect(migrationStateMachine).not.toContain('source-fetcher');
+    expect(migrationStateMachine).toContain('source-fetcher');
+    expect(migrationStateMachine).toContain('ingest_migration_acquisition');
     expect(migrationStateMachine).not.toContain('impact-analysis-agent');
   });
 });

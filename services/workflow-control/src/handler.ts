@@ -1,11 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import { GetObjectCommand, HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { Context } from 'aws-lambda';
 import { z } from 'zod';
 
 import {
   agentResultEnvelopeSchema,
+  migrationAcquisitionResultSchema,
   migrationWorkflowInputSchema,
   workflowInputSchema,
   type AgentResultEnvelope,
@@ -97,6 +98,12 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('ingest_migration_acquisition'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('mark_migration_infrastructure_failed'),
       workflow: migrationWorkflowInputSchema,
     })
@@ -175,6 +182,18 @@ export async function handleWorkflowCommand(
       outcome: status,
     });
     return { status };
+  }
+  if (command.operation === 'ingest_migration_acquisition') {
+    const status = await ingestMigrationAcquisition(dependency, command.workflow);
+    writeLog(status === 'completed' ? 'info' : 'warn', {
+      event: 'migration_acquisition_ingested',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      outcome: status,
+    });
+    return { status, stage: 'acquiring' };
   }
   if (command.operation === 'evaluate_migration_stage_capability') {
     const status = await evaluateMigrationStageCapability(
@@ -454,74 +473,7 @@ async function validateMigrationApproval(
       throw new Error('The migration run is not in the expected queued state.');
     }
 
-    const approval = await transaction
-      .selectFrom('migrationApprovals as approval')
-      .innerJoin('migrationCandidates as candidate', join =>
-        join
-          .onRef('candidate.id', '=', 'approval.candidateId')
-          .onRef('candidate.organisationId', '=', 'approval.organisationId')
-          .onRef('candidate.repositoryId', '=', 'approval.repositoryId'),
-      )
-      .innerJoin('repositories as repository', join =>
-        join
-          .onRef('repository.id', '=', 'approval.repositoryId')
-          .onRef('repository.organisationId', '=', 'approval.organisationId')
-          .onRef('repository.installationId', '=', 'approval.installationId'),
-      )
-      .innerJoin(
-        'githubInstallations as installation',
-        'installation.id',
-        'approval.installationId',
-      )
-      .innerJoin(
-        'repositorySnapshots as snapshot',
-        'snapshot.id',
-        'approval.repositorySnapshotId',
-      )
-      .innerJoin(
-        'migrationSpecifications as specification',
-        'specification.id',
-        'approval.migrationSpecificationId',
-      )
-      .innerJoin('impactReports as report', 'report.id', 'approval.impactReportId')
-      .leftJoin(
-        'migrationApprovalRevocations as revocation',
-        'revocation.approvalId',
-        'approval.id',
-      )
-      .select([
-        'approval.expiresAt',
-        'approval.baseBranch as approvedBaseBranch',
-        'approval.baseCommitSha',
-        'approval.githubRepositoryId as approvedGithubRepositoryId',
-        'approval.snapshotDigest as approvedSnapshotDigest',
-        'approval.migrationSpecificationRevision',
-        'approval.migrationSpecificationDigest',
-        'approval.impactReportRevision',
-        'approval.impactReportDigest',
-        'candidate.status as candidateStatus',
-        'repository.selected',
-        'repository.enabled',
-        'repository.archived',
-        'repository.defaultBranch as currentBaseBranch',
-        'repository.githubRepositoryId as currentGithubRepositoryId',
-        'installation.status as installationStatus',
-        'snapshot.status as snapshotStatus',
-        'snapshot.commitSha',
-        'snapshot.digest as currentSnapshotDigest',
-        'snapshot.expiresAt as snapshotExpiresAt',
-        'specification.trustState',
-        'specification.revision as specificationRevision',
-        'specification.evidenceDigest',
-        'report.revision as reportRevision',
-        'report.artifactDigest',
-        'revocation.approvalId as revokedApprovalId',
-      ])
-      .where('approval.id', '=', workflow.approvalId)
-      .where('approval.organisationId', '=', workflow.organisationId)
-      .where('approval.candidateId', '=', workflow.candidateId)
-      .where('approval.repositoryId', '=', workflow.repositoryId)
-      .executeTakeFirst();
+    const approval = await loadMigrationApprovalState(transaction, workflow);
     const now = new Date();
     const stale = isMigrationApprovalStale(approval, now);
     if (stale) {
@@ -578,6 +530,80 @@ async function validateMigrationApproval(
     });
     return 'running';
   });
+}
+
+async function loadMigrationApprovalState(
+  transaction: Transaction<Database>,
+  workflow: MigrationWorkflowInput,
+): Promise<MigrationApprovalState | undefined> {
+  return transaction
+    .selectFrom('migrationApprovals as approval')
+    .innerJoin('migrationCandidates as candidate', join =>
+      join
+        .onRef('candidate.id', '=', 'approval.candidateId')
+        .onRef('candidate.organisationId', '=', 'approval.organisationId')
+        .onRef('candidate.repositoryId', '=', 'approval.repositoryId'),
+    )
+    .innerJoin('repositories as repository', join =>
+      join
+        .onRef('repository.id', '=', 'approval.repositoryId')
+        .onRef('repository.organisationId', '=', 'approval.organisationId')
+        .onRef('repository.installationId', '=', 'approval.installationId'),
+    )
+    .innerJoin(
+      'githubInstallations as installation',
+      'installation.id',
+      'approval.installationId',
+    )
+    .innerJoin(
+      'repositorySnapshots as snapshot',
+      'snapshot.id',
+      'approval.repositorySnapshotId',
+    )
+    .innerJoin(
+      'migrationSpecifications as specification',
+      'specification.id',
+      'approval.migrationSpecificationId',
+    )
+    .innerJoin('impactReports as report', 'report.id', 'approval.impactReportId')
+    .leftJoin(
+      'migrationApprovalRevocations as revocation',
+      'revocation.approvalId',
+      'approval.id',
+    )
+    .select([
+      'approval.expiresAt',
+      'approval.baseBranch as approvedBaseBranch',
+      'approval.baseCommitSha',
+      'approval.githubRepositoryId as approvedGithubRepositoryId',
+      'approval.snapshotDigest as approvedSnapshotDigest',
+      'approval.migrationSpecificationRevision',
+      'approval.migrationSpecificationDigest',
+      'approval.impactReportRevision',
+      'approval.impactReportDigest',
+      'candidate.status as candidateStatus',
+      'repository.selected',
+      'repository.enabled',
+      'repository.archived',
+      'repository.defaultBranch as currentBaseBranch',
+      'repository.githubRepositoryId as currentGithubRepositoryId',
+      'installation.status as installationStatus',
+      'snapshot.status as snapshotStatus',
+      'snapshot.commitSha',
+      'snapshot.digest as currentSnapshotDigest',
+      'snapshot.expiresAt as snapshotExpiresAt',
+      'specification.trustState',
+      'specification.revision as specificationRevision',
+      'specification.evidenceDigest',
+      'report.revision as reportRevision',
+      'report.artifactDigest',
+      'revocation.approvalId as revokedApprovalId',
+    ])
+    .where('approval.id', '=', workflow.approvalId)
+    .where('approval.organisationId', '=', workflow.organisationId)
+    .where('approval.candidateId', '=', workflow.candidateId)
+    .where('approval.repositoryId', '=', workflow.repositoryId)
+    .executeTakeFirst();
 }
 
 async function enterMigrationAcquisition(
@@ -641,6 +667,208 @@ async function enterMigrationAcquisition(
       createdAt: now,
     });
     return 'running';
+  });
+}
+
+async function ingestMigrationAcquisition(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+): Promise<'completed' | 'failed' | 'stale' | 'cancelled'> {
+  const key = migrationAcquisitionResultKey(
+    dependency.config.APP_ENVIRONMENT,
+    workflow.organisationId,
+    workflow.migrationRunId,
+  );
+  const response = await dependency.s3.send(
+    new GetObjectCommand({
+      Bucket: dependency.config.ARTIFACT_BUCKET,
+      Key: key,
+    }),
+  );
+  if (
+    response.ContentLength === undefined ||
+    response.ContentLength < 1 ||
+    response.ContentLength > MAX_RESULT_BYTES
+  ) {
+    throw new Error('The migration acquisition result has an invalid size.');
+  }
+  const bytes = await response.Body?.transformToByteArray();
+  if (bytes?.byteLength !== response.ContentLength) {
+    throw new Error('The migration acquisition result could not be read completely.');
+  }
+  const result = migrationAcquisitionResultSchema.parse(
+    JSON.parse(Buffer.from(bytes).toString('utf8')),
+  );
+  if (
+    result.organisationId !== workflow.organisationId ||
+    result.repositoryId !== workflow.repositoryId ||
+    result.migrationRunId !== workflow.migrationRunId ||
+    result.approvalId !== workflow.approvalId
+  ) {
+    throw new Error('The migration acquisition result has invalid ownership.');
+  }
+  if (result.status === 'succeeded' && result.snapshot !== null) {
+    const expectedKey = migrationSourceSnapshotKey(
+      dependency.config.APP_ENVIRONMENT,
+      workflow.organisationId,
+      workflow.migrationRunId,
+      result.snapshot.commitSha,
+    );
+    if (result.snapshot.objectKey !== expectedKey) {
+      throw new Error('The migration source snapshot has an invalid object key.');
+    }
+    const head = await dependency.s3.send(
+      new HeadObjectCommand({
+        Bucket: dependency.config.ARTIFACT_BUCKET,
+        Key: expectedKey,
+      }),
+    );
+    const metadata = head.Metadata;
+    if (metadata === undefined) {
+      throw new Error('The migration source snapshot metadata is missing.');
+    }
+    if (
+      head.ContentLength !== result.snapshot.bytes ||
+      head.ContentType !== 'application/gzip' ||
+      metadata.digest !== result.snapshot.digest ||
+      metadata['migration-run-id'] !== workflow.migrationRunId ||
+      metadata['approval-id'] !== workflow.approvalId ||
+      metadata['commit-sha'] !== result.snapshot.commitSha
+    ) {
+      throw new Error('The migration source snapshot metadata is invalid.');
+    }
+  }
+
+  return dependency.database.transaction().execute(async transaction => {
+    const run = await transaction
+      .selectFrom('migrationRuns as run')
+      .innerJoin('migrationApprovals as approval', join =>
+        join
+          .onRef('approval.id', '=', 'run.approvalId')
+          .onRef('approval.organisationId', '=', 'run.organisationId')
+          .onRef('approval.repositoryId', '=', 'run.repositoryId'),
+      )
+      .select([
+        'run.status',
+        'run.currentStage',
+        'run.attempt',
+        'run.version',
+        'run.baseCommitSha',
+        'run.cancellationRequestedAt',
+        'approval.snapshotDigest',
+      ])
+      .where('run.id', '=', workflow.migrationRunId)
+      .where('run.organisationId', '=', workflow.organisationId)
+      .where('run.candidateId', '=', workflow.candidateId)
+      .where('run.approvalId', '=', workflow.approvalId)
+      .where('run.repositoryId', '=', workflow.repositoryId)
+      .forUpdate('run')
+      .executeTakeFirstOrThrow();
+    if (run.attempt !== workflow.expectedAttempt) {
+      throw new Error('The migration acquisition attempt does not match its run.');
+    }
+    if (run.status === 'cancelled') return 'cancelled';
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return 'cancelled';
+    }
+    const approval = await loadMigrationApprovalState(transaction, workflow);
+    if (isMigrationApprovalStale(approval, new Date())) {
+      await markMigrationStale(
+        transaction,
+        workflow,
+        run.version,
+        'MIGRATION_APPROVAL_STALE',
+      );
+      return 'stale';
+    }
+    const existing = await transaction
+      .selectFrom('migrationArtifacts')
+      .select(['digest', 'objectKey'])
+      .where('migrationRunId', '=', workflow.migrationRunId)
+      .where('organisationId', '=', workflow.organisationId)
+      .where('artifactType', '=', 'source_snapshot')
+      .executeTakeFirst();
+    if (existing) {
+      const snapshot = result.snapshot;
+      if (
+        existing.digest !== snapshot?.digest ||
+        existing.objectKey !== snapshot.objectKey
+      ) {
+        throw new Error('A migration source snapshot cannot be replaced.');
+      }
+      return 'completed';
+    }
+    if (run.status !== 'running' || run.currentStage !== 'acquiring') {
+      throw new Error('The migration run cannot ingest source acquisition.');
+    }
+    if (
+      result.status === 'stale' ||
+      (result.snapshot !== null &&
+        (result.snapshot.commitSha !== run.baseCommitSha ||
+          result.snapshot.digest !== run.snapshotDigest))
+    ) {
+      await markMigrationStale(transaction, workflow, run.version);
+      return 'stale';
+    }
+    if (result.status !== 'succeeded' || result.snapshot === null) {
+      await markMigrationFailedInTransaction(
+        transaction,
+        workflow,
+        run.version,
+        result.status === 'unsupported'
+          ? 'MIGRATION_SOURCE_UNSUPPORTED'
+          : 'MIGRATION_SOURCE_ACQUISITION_FAILED',
+        'acquiring',
+      );
+      return 'failed';
+    }
+    const now = new Date();
+    await transaction
+      .insertInto('migrationArtifacts')
+      .values({
+        id: randomUUID(),
+        organisationId: workflow.organisationId,
+        migrationRunId: workflow.migrationRunId,
+        artifactType: 'source_snapshot',
+        objectKey: result.snapshot.objectKey,
+        digest: result.snapshot.digest,
+        bytes: result.snapshot.bytes,
+        mediaType: 'application/gzip',
+        retentionClass: 'workflow_ephemeral',
+        createdAt: now,
+        expiresAt: new Date(result.snapshot.expiresAt),
+      })
+      .executeTakeFirstOrThrow();
+    await transaction
+      .updateTable('migrationRuns')
+      .set({
+        currentStage: 'planning',
+        updatedAt: now,
+        version: run.version + 1,
+      })
+      .where('id', '=', workflow.migrationRunId)
+      .where('version', '=', run.version)
+      .executeTakeFirstOrThrow();
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:source-acquired:${String(run.attempt)}`,
+      eventType: 'source_acquired',
+      status: 'running',
+      stage: 'acquiring',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:stage:planning:${String(run.attempt)}`,
+      eventType: 'stage_entered',
+      status: 'running',
+      stage: 'planning',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    return 'completed';
   });
 }
 
@@ -743,31 +971,84 @@ async function markMigrationFailed(
     if (expectedStage !== undefined && run.currentStage !== expectedStage) {
       throw new Error('The migration stage failure is out of sequence.');
     }
-    const now = new Date();
-    await transaction
-      .updateTable('migrationRuns')
-      .set({
-        status: 'failed',
-        currentStage: 'failed',
-        terminalResult: 'failed',
-        safeErrorCode,
-        completedAt: now,
-        updatedAt: now,
-        version: run.version + 1,
-      })
-      .where('id', '=', workflow.migrationRunId)
-      .where('version', '=', run.version)
-      .executeTakeFirstOrThrow();
-    await appendMigrationRunEvent(transaction, {
+    await markMigrationFailedInTransaction(
+      transaction,
       workflow,
-      eventKey: `run:${workflow.migrationRunId}:failed:${safeErrorCode}`,
-      eventType: 'run_failed',
-      status: 'failed',
-      stage: 'failed',
+      run.version,
       safeErrorCode,
-      createdAt: now,
-    });
+      expectedStage,
+    );
     return 'failed';
+  });
+}
+
+async function markMigrationFailedInTransaction(
+  transaction: Transaction<Database>,
+  workflow: MigrationWorkflowInput,
+  version: number,
+  safeErrorCode: string,
+  expectedStage?: MigrationExecutionStage,
+): Promise<void> {
+  const now = new Date();
+  let update = transaction
+    .updateTable('migrationRuns')
+    .set({
+      status: 'failed',
+      currentStage: 'failed',
+      terminalResult: 'failed',
+      safeErrorCode,
+      completedAt: now,
+      updatedAt: now,
+      version: version + 1,
+    })
+    .where('id', '=', workflow.migrationRunId)
+    .where('organisationId', '=', workflow.organisationId)
+    .where('version', '=', version);
+  if (expectedStage !== undefined) {
+    update = update.where('currentStage', '=', expectedStage);
+  }
+  await update.executeTakeFirstOrThrow();
+  await appendMigrationRunEvent(transaction, {
+    workflow,
+    eventKey: `run:${workflow.migrationRunId}:failed:${safeErrorCode}`,
+    eventType: 'run_failed',
+    status: 'failed',
+    stage: 'failed',
+    safeErrorCode,
+    createdAt: now,
+  });
+}
+
+async function markMigrationStale(
+  transaction: Transaction<Database>,
+  workflow: MigrationWorkflowInput,
+  version: number,
+  safeErrorCode = 'MIGRATION_SNAPSHOT_DIGEST_MISMATCH',
+): Promise<void> {
+  const now = new Date();
+  await transaction
+    .updateTable('migrationRuns')
+    .set({
+      status: 'stale',
+      currentStage: 'stale',
+      terminalResult: 'stale',
+      safeErrorCode,
+      completedAt: now,
+      updatedAt: now,
+      version: version + 1,
+    })
+    .where('id', '=', workflow.migrationRunId)
+    .where('organisationId', '=', workflow.organisationId)
+    .where('version', '=', version)
+    .executeTakeFirstOrThrow();
+  await appendMigrationRunEvent(transaction, {
+    workflow,
+    eventKey: `run:${workflow.migrationRunId}:stale:${safeErrorCode}`,
+    eventType: 'run_stale',
+    status: 'stale',
+    stage: 'stale',
+    safeErrorCode,
+    createdAt: now,
   });
 }
 
@@ -809,11 +1090,13 @@ interface SystemMigrationRunEvent {
   readonly eventType:
     | 'approval_validated'
     | 'stage_entered'
+    | 'source_acquired'
     | 'run_cancelled'
     | 'run_failed'
     | 'run_stale';
   readonly status: 'running' | 'failed' | 'cancelled' | 'stale';
-  readonly stage: 'revalidating' | 'acquiring' | 'failed' | 'cancelled' | 'stale';
+  readonly stage:
+    'revalidating' | 'acquiring' | 'planning' | 'failed' | 'cancelled' | 'stale';
   readonly safeErrorCode: string | null;
   readonly createdAt: Date;
 }
@@ -1025,4 +1308,21 @@ function resultKey(
   agentRunId: string,
 ): string {
   return `env/${environment}/org/${organisationId}/run/${agentRunId}/result/final.json`;
+}
+
+function migrationAcquisitionResultKey(
+  environment: string,
+  organisationId: string,
+  migrationRunId: string,
+): string {
+  return `env/${environment}/org/${organisationId}/run/${migrationRunId}/input/acquisition-result.json`;
+}
+
+function migrationSourceSnapshotKey(
+  environment: string,
+  organisationId: string,
+  migrationRunId: string,
+  commitSha: string,
+): string {
+  return `env/${environment}/org/${organisationId}/run/${migrationRunId}/input/source/${commitSha}.tar.gz`;
 }

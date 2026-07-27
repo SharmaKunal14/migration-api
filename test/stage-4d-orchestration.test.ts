@@ -84,10 +84,10 @@ describe('Stage 4D durable migration orchestration', () => {
     expect(workflowControl).toContain('migration_cancelled_at_safe_boundary');
   });
 
-  it('does not acquire source, execute code, call a model, or mutate GitHub', () => {
-    expect(migrationStateMachine).not.toContain('ecs:runTask.sync');
+  it('adds only bounded Stage 5B acquisition without model or GitHub mutation', () => {
+    expect(migrationStateMachine).toContain('ecs:runTask.sync');
     expect(migrationStateMachine).not.toContain('github');
     expect(migrationStateMachine).not.toContain('OPENAI');
-    expect(workflowControl).toContain('MIGRATION_ACQUISITION_NOT_IMPLEMENTED');
+    expect(workflowControl).toContain('MIGRATION_AGENT_NOT_IMPLEMENTED');
   });
 });
