@@ -24,6 +24,7 @@ import type {
   PublicMigrationCandidateImpactReport,
   PublicMigrationApprovalPreview,
   PublicMigrationApprovalResult,
+  PublicMigrationPatchAttempt,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
   PublicImpactReportSummary,
@@ -118,6 +119,29 @@ export interface RevokeMigrationApprovalInput {
   readonly requestId: string;
 }
 
+export interface PatchReviewArtifactRecord {
+  readonly objectKey: string;
+  readonly digest: string;
+  readonly bytes: number;
+}
+
+export interface MigrationPatchReviewRecord {
+  readonly organisationId: string;
+  readonly migrationRunId: string;
+  readonly baseCommitSha: string;
+  readonly patchPolicy: unknown;
+  readonly specification: unknown;
+  readonly selectedAttemptId: string;
+  readonly attemptNumber: number;
+  readonly policyVersion: string;
+  readonly policyDigest: string;
+  readonly plan: PatchReviewArtifactRecord;
+  readonly patch: PatchReviewArtifactRecord;
+  readonly manifest: PatchReviewArtifactRecord;
+  readonly validation: PatchReviewArtifactRecord;
+  readonly attempts: readonly PublicMigrationPatchAttempt[];
+}
+
 export interface InstallationLinkRecord {
   readonly state: string;
   readonly expiresAt: Date;
@@ -210,6 +234,11 @@ export interface ApiRepositoryPort {
     organisationId: string,
     migrationRunId: string,
   ): Promise<PublicMigrationRunDetail>;
+  getMigrationPatchReview(
+    userId: string,
+    organisationId: string,
+    migrationRunId: string,
+  ): Promise<MigrationPatchReviewRecord | null>;
   listMigrationRuns(
     userId: string,
     organisationId: string,
@@ -1873,6 +1902,15 @@ export class ApiRepository implements ApiRepositoryPort {
     return loadMigrationRun(this.database, organisationId, migrationRunId);
   }
 
+  public async getMigrationPatchReview(
+    userId: string,
+    organisationId: string,
+    migrationRunId: string,
+  ): Promise<MigrationPatchReviewRecord | null> {
+    requireAction(await this.membership(organisationId, userId), 'migration:read');
+    return loadMigrationPatchReview(this.database, organisationId, migrationRunId);
+  }
+
   public async listMigrationRuns(
     userId: string,
     organisationId: string,
@@ -2575,6 +2613,137 @@ async function loadMigrationRun(
     events: events.map(event => ({
       ...event,
       createdAt: event.createdAt.toISOString(),
+    })),
+  };
+}
+
+async function loadMigrationPatchReview(
+  database: AppDatabase | Transaction<Database>,
+  organisationId: string,
+  migrationRunId: string,
+): Promise<MigrationPatchReviewRecord | null> {
+  const run = await database
+    .selectFrom('migrationRuns as run')
+    .innerJoin('migrationApprovals as approval', 'approval.id', 'run.approvalId')
+    .innerJoin(
+      'migrationSpecifications as specification',
+      'specification.id',
+      'approval.migrationSpecificationId',
+    )
+    .select([
+      'run.organisationId',
+      'run.id as migrationRunId',
+      'run.baseCommitSha',
+      'approval.patchPolicy',
+      'specification.specification',
+    ])
+    .where('run.organisationId', '=', organisationId)
+    .where('approval.organisationId', '=', organisationId)
+    .where('run.id', '=', migrationRunId)
+    .executeTakeFirst();
+  if (!run) {
+    throw new DomainError(
+      'MIGRATION_RUN_NOT_FOUND',
+      'The requested migration run was not found.',
+      404,
+    );
+  }
+  const attempts = await database
+    .selectFrom('patchAttempts')
+    .select([
+      'id',
+      'attemptNumber',
+      'parentPatchAttemptId',
+      'status',
+      'safeErrorCode',
+      'summaryCode',
+      'changedFiles',
+      'addedLines',
+      'deletedLines',
+      'patchBytes',
+      'patchArtifactId',
+      'validationArtifactId',
+      'policyVersion',
+      'policyDigest',
+      'createdAt',
+    ])
+    .where('organisationId', '=', organisationId)
+    .where('migrationRunId', '=', migrationRunId)
+    .orderBy('attemptNumber', 'desc')
+    .execute();
+  const selected = attempts.find(
+    attempt =>
+      attempt.patchArtifactId !== null && attempt.validationArtifactId !== null,
+  );
+  if (!selected?.patchArtifactId || !selected.validationArtifactId) return null;
+  const plan = await database
+    .selectFrom('migrationPlans')
+    .select(['artifactId'])
+    .where('organisationId', '=', organisationId)
+    .where('migrationRunId', '=', migrationRunId)
+    .where('attemptNumber', '=', selected.attemptNumber)
+    .executeTakeFirstOrThrow();
+  const artifacts = await database
+    .selectFrom('migrationArtifacts')
+    .select(['id', 'artifactType', 'objectKey', 'digest', 'bytes'])
+    .where('organisationId', '=', organisationId)
+    .where('migrationRunId', '=', migrationRunId)
+    .where('id', 'in', [
+      plan.artifactId,
+      selected.patchArtifactId,
+      selected.validationArtifactId,
+    ])
+    .execute();
+  const manifestArtifact = await database
+    .selectFrom('migrationArtifacts')
+    .select(['id', 'artifactType', 'objectKey', 'digest', 'bytes'])
+    .where('organisationId', '=', organisationId)
+    .where('migrationRunId', '=', migrationRunId)
+    .where('artifactType', '=', 'patch_manifest')
+    .orderBy('createdAt', 'desc')
+    .executeTakeFirstOrThrow();
+  const allArtifacts = [...artifacts, manifestArtifact];
+  const artifact = (
+    id: string | null,
+    expectedType: (typeof allArtifacts)[number]['artifactType'],
+  ): PatchReviewArtifactRecord => {
+    const value = allArtifacts.find(
+      candidate => candidate.id === id && candidate.artifactType === expectedType,
+    );
+    if (!value) throw new Error('The migration patch review artifact is missing.');
+    const bytes = Number(value.bytes);
+    if (!Number.isSafeInteger(bytes) || bytes < 1) {
+      throw new Error('The migration patch review artifact size is invalid.');
+    }
+    return {
+      objectKey: value.objectKey,
+      digest: value.digest,
+      bytes,
+    };
+  };
+  return {
+    ...run,
+    selectedAttemptId: selected.id,
+    attemptNumber: selected.attemptNumber,
+    policyVersion: selected.policyVersion,
+    policyDigest: selected.policyDigest,
+    plan: artifact(plan.artifactId, 'migration_plan'),
+    patch: artifact(selected.patchArtifactId, 'patch_proposal'),
+    manifest: artifact(manifestArtifact.id, 'patch_manifest'),
+    validation: artifact(selected.validationArtifactId, 'patch_validation'),
+    attempts: attempts.map(attempt => ({
+      id: attempt.id,
+      attemptNumber: attempt.attemptNumber,
+      parentPatchAttemptId: attempt.parentPatchAttemptId,
+      status: attempt.status,
+      safeErrorCode: attempt.safeErrorCode,
+      summaryCode: attempt.summaryCode,
+      changedFiles: attempt.changedFiles,
+      addedLines: attempt.addedLines,
+      deletedLines: attempt.deletedLines,
+      patchBytes: attempt.patchBytes,
+      selected: attempt.id === selected.id,
+      createdAt: attempt.createdAt.toISOString(),
     })),
   };
 }

@@ -35,6 +35,7 @@ import {
   type AgentRunRecord,
   type ApiRepositoryPort,
 } from './repository.js';
+import { loadPublicMigrationPatchReview } from './patch-review.js';
 
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_RESULT_BYTES = 1024 * 1024;
@@ -185,6 +186,12 @@ export async function handleRequest(
               path,
             )
           : null;
+      const migrationPatchReviewMatch =
+        method === 'GET'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-runs\/([0-9a-f-]{36})\/patch-review$/u.exec(
+              path,
+            )
+          : null;
       const migrationRunsMatch =
         method === 'GET'
           ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-runs$/u.exec(path)
@@ -324,6 +331,23 @@ export async function handleRequest(
             requestId,
           }),
         );
+      } else if (migrationPatchReviewMatch?.[1] && migrationPatchReviewMatch[2]) {
+        const reviewRecord = await repository.getMigrationPatchReview(
+          userId,
+          z.uuid().parse(migrationPatchReviewMatch[1]),
+          z.uuid().parse(migrationPatchReviewMatch[2]),
+        );
+        response = json(200, {
+          patchReview:
+            reviewRecord === null
+              ? null
+              : await loadPublicMigrationPatchReview(
+                  dependency.s3,
+                  dependency.config.ARTIFACT_BUCKET,
+                  dependency.config.APP_ENVIRONMENT,
+                  reviewRecord,
+                ),
+        });
       } else if (migrationRunMatch?.[1] && migrationRunMatch[2]) {
         response = json(200, {
           run: await repository.getMigrationRun(

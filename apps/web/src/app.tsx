@@ -16,6 +16,7 @@ import type {
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
   PublicMigrationApprovalResult,
+  PublicMigrationPatchReview,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
   PublicOrganisation,
@@ -36,6 +37,7 @@ import {
   loadMigrationCandidate,
   loadMigrationCandidates,
   loadMigrationRun,
+  loadMigrationPatchReview,
   loadMigrationRuns,
   loadRepositories,
   loadRun,
@@ -1231,12 +1233,18 @@ function MigrationRunPage(): React.JSX.Element {
   const { session } = useAuth();
   const { orgId, runId } = useParams();
   const [run, setRun] = useState<PublicMigrationRunDetail | null>(null);
+  const [patchReview, setPatchReview] = useState<PublicMigrationPatchReview | null>(
+    null,
+  );
+  const [patchReviewLoading, setPatchReviewLoading] = useState(false);
+  const [patchReviewError, setPatchReviewError] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [cancelling, setCancelling] = useState(false);
   const [revoking, setRevoking] = useState(false);
   const [confirmingRevocation, setConfirmingRevocation] = useState(false);
   const cancellationKey = useRef(`cancel:${crypto.randomUUID()}`);
   const revocationKey = useRef(`revoke:${crypto.randomUUID()}`);
+  const patchReviewRequest = useRef<string | null>(null);
 
   useEffect(() => {
     if (!session || !orgId || !runId) return;
@@ -1261,6 +1269,40 @@ function MigrationRunPage(): React.JSX.Element {
       if (timer !== undefined) window.clearTimeout(timer);
     };
   }, [orgId, runId, session]);
+
+  const patchProposed =
+    run?.events.some(event => event.eventType === 'patch_proposed') ?? false;
+  useEffect(() => {
+    if (
+      !session ||
+      !orgId ||
+      !runId ||
+      !patchProposed ||
+      patchReview !== null ||
+      patchReviewRequest.current === runId
+    ) {
+      return;
+    }
+    let active = true;
+    patchReviewRequest.current = runId;
+    setPatchReviewLoading(true);
+    void loadMigrationPatchReview(session.access_token, orgId, runId)
+      .then(review => {
+        if (active) {
+          setPatchReview(review.patchReview);
+          setPatchReviewError(null);
+        }
+      })
+      .catch((caught: unknown) => {
+        if (active) setPatchReviewError(errorText(caught));
+      })
+      .finally(() => {
+        if (active) setPatchReviewLoading(false);
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [orgId, patchProposed, patchReview, runId, session]);
 
   async function cancel(): Promise<void> {
     if (!session || !orgId || !runId || !run) return;
@@ -1437,6 +1479,13 @@ function MigrationRunPage(): React.JSX.Element {
           </p>
         )}
       </section>
+      {(patchReviewLoading || patchReviewError !== null || patchReview !== null) && (
+        <PatchReviewPanel
+          error={patchReviewError}
+          loading={patchReviewLoading}
+          review={patchReview}
+        />
+      )}
       <section className="panel">
         <p className="section-kicker">Persisted workflow evidence</p>
         <h2>Run timeline</h2>
@@ -1477,6 +1526,245 @@ function MigrationRunPage(): React.JSX.Element {
       )}
     </div>
   );
+}
+
+function PatchReviewPanel({
+  error,
+  loading,
+  review,
+}: {
+  readonly error: string | null;
+  readonly loading: boolean;
+  readonly review: PublicMigrationPatchReview | null;
+}): React.JSX.Element {
+  if (loading && !review) {
+    return (
+      <section className="panel patch-review">
+        <p className="section-kicker">Stage 5 patch review</p>
+        <h2>Loading validated patch evidence…</h2>
+      </section>
+    );
+  }
+  if (error && !review) {
+    return (
+      <section className="panel warning-panel">
+        <p className="section-kicker">Patch review unavailable</p>
+        <h2>The validated artifacts could not be displayed</h2>
+        <p>{error}</p>
+      </section>
+    );
+  }
+  if (!review) return <></>;
+  const selectedAttempt = review.attempts.find(attempt => attempt.selected);
+  return (
+    <section className="panel patch-review">
+      <div className="patch-review-heading">
+        <div>
+          <p className="section-kicker">Stage 5 patch review</p>
+          <h2>Proposed migration changes</h2>
+          <p>
+            Generated from commit <code>{shortSha(review.baseCommitSha)}</code>. No
+            branch, commit, or remote repository file has been created.
+          </p>
+        </div>
+        <span
+          className={`status status-${review.validation.status === 'accepted' ? 'succeeded' : 'failed'}`}
+        >
+          {review.validation.status}
+        </span>
+      </div>
+
+      <div className="patch-review-metrics">
+        <div>
+          <span>Changed files</span>
+          <strong>{review.manifest.changedFiles}</strong>
+        </div>
+        <div>
+          <span>Patch size</span>
+          <strong>{formatBytes(review.manifest.patchBytes)}</strong>
+        </div>
+        <div>
+          <span>Line delta</span>
+          <strong>
+            <ins>+{review.manifest.addedLines}</ins>{' '}
+            <del>−{review.manifest.deletedLines}</del>
+          </strong>
+        </div>
+        <div>
+          <span>Remote modified</span>
+          <strong>No</strong>
+        </div>
+      </div>
+
+      <div className="patch-review-grid">
+        <div>
+          <h3>Migration plan</h3>
+          <p>{review.plan.summary}</p>
+          <ol className="patch-plan-files">
+            {review.plan.files.map(file => (
+              <li key={file.path}>
+                <div>
+                  <code>{file.path}</code>
+                  <span>{file.changeCategory.replaceAll('_', ' ')}</span>
+                </div>
+                <p>{file.rationale}</p>
+                <small>
+                  Evidence: {file.evidenceChangeIds.join(', ')}
+                  {file.transformationIds.length > 0
+                    ? ` · Transformations: ${file.transformationIds.join(', ')}`
+                    : ''}
+                </small>
+              </li>
+            ))}
+          </ol>
+        </div>
+        <div>
+          <h3>Trusted validation</h3>
+          <ul className="validation-checks">
+            {review.validation.checks.map(check => (
+              <li key={check.check}>
+                <span
+                  className={`validation-dot validation-${check.outcome}`}
+                  aria-hidden="true"
+                />
+                <span>{check.check.replaceAll('_', ' ')}</span>
+                <strong>{check.outcome}</strong>
+              </li>
+            ))}
+          </ul>
+          <dl className="patch-limits">
+            <div>
+              <dt>Files</dt>
+              <dd>
+                {review.manifest.changedFiles} / {review.policy.maxChangedFiles}
+              </dd>
+            </div>
+            <div>
+              <dt>Bytes</dt>
+              <dd>
+                {formatBytes(review.manifest.patchBytes)} /{' '}
+                {formatBytes(review.policy.maxPatchBytes)}
+              </dd>
+            </div>
+            <div>
+              <dt>Added</dt>
+              <dd>
+                {review.manifest.addedLines} / {review.policy.maxAddedLines}
+              </dd>
+            </div>
+            <div>
+              <dt>Deleted</dt>
+              <dd>
+                {review.manifest.deletedLines} / {review.policy.maxDeletedLines}
+              </dd>
+            </div>
+          </dl>
+        </div>
+      </div>
+
+      {(review.plan.unresolved.length > 0 ||
+        review.plan.verificationProfiles.length > 0) && (
+        <div className="patch-review-grid patch-review-notes">
+          <div>
+            <h3>Unresolved decisions</h3>
+            {review.plan.unresolved.length === 0 ? (
+              <p>None recorded by the migration agent.</p>
+            ) : (
+              <ul>
+                {review.plan.unresolved.map(item => (
+                  <li key={item.code}>
+                    <strong>{item.code}</strong> — {item.summary}
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+          <div>
+            <h3>Suggested verification</h3>
+            <div className="tag-row">
+              {review.plan.verificationProfiles.map(profile => (
+                <span className="dependency-kind" key={profile}>
+                  {profile.replaceAll('_', ' ')}
+                </span>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className="patch-diff-heading">
+        <div>
+          <h3>Unified diff</h3>
+          <p>
+            Rendered as inert text. Repository content is never interpreted as HTML.
+          </p>
+        </div>
+        {selectedAttempt && <span>Attempt {selectedAttempt.attemptNumber}</span>}
+      </div>
+      <pre className="patch-diff" tabIndex={0}>
+        <code>
+          {review.patch.split('\n').map((line, index) => (
+            <span className={diffLineClass(line)} key={`${String(index)}:${line}`}>
+              {line || ' '}
+              {'\n'}
+            </span>
+          ))}
+        </code>
+      </pre>
+
+      <div className="patch-review-grid patch-review-footer">
+        <div>
+          <h3>Reviewed vendor evidence</h3>
+          {review.evidence.length === 0 ? (
+            <p>No directly referenced vendor evidence was returned.</p>
+          ) : (
+            <ul className="evidence-list">
+              {review.evidence.map(item => (
+                <li key={item.evidenceId}>
+                  <a href={item.sourceUrl} rel="noreferrer" target="_blank">
+                    {item.evidenceId}
+                  </a>
+                  <p>{item.summary}</p>
+                  <code title={item.digest}>{item.digest.slice(0, 12)}…</code>
+                </li>
+              ))}
+            </ul>
+          )}
+        </div>
+        <div>
+          <h3>Patch attempts</h3>
+          <ol className="patch-attempts">
+            {review.attempts.map(attempt => (
+              <li key={attempt.id}>
+                <div>
+                  <strong>Attempt {attempt.attemptNumber}</strong>
+                  {attempt.selected && <span>Displayed</span>}
+                </div>
+                <p>
+                  {attempt.status} · {attempt.changedFiles} files ·{' '}
+                  {formatBytes(attempt.patchBytes)}
+                </p>
+                {attempt.safeErrorCode && <code>{attempt.safeErrorCode}</code>}
+              </li>
+            ))}
+          </ol>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function diffLineClass(line: string): string {
+  if (line.startsWith('diff --git')) return 'diff-file';
+  if (line.startsWith('@@')) return 'diff-hunk';
+  if (line.startsWith('+') && !line.startsWith('+++')) return 'diff-added';
+  if (line.startsWith('-') && !line.startsWith('---')) return 'diff-deleted';
+  return 'diff-context';
+}
+
+function formatBytes(bytes: number): string {
+  if (bytes < 1024) return `${String(bytes)} B`;
+  return `${(bytes / 1024).toFixed(1)} KB`;
 }
 
 function MigrationRunHistoryPage(): React.JSX.Element {

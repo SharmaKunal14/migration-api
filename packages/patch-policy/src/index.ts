@@ -1,5 +1,7 @@
 import { createHash } from 'node:crypto';
 
+import ts from 'typescript';
+
 import {
   migrationPatchManifestSchema,
   migrationPatchValidationResultSchema,
@@ -9,6 +11,9 @@ import {
   type MigrationPatchManifest,
   type MigrationPatchValidationResult,
 } from '@migration/contracts';
+import { parsePatchPaths } from '@migration/patch-format';
+
+export { parsePatchPaths } from '@migration/patch-format';
 
 const safePatchPath = /^[A-Za-z0-9._/-]+$/u;
 const forbiddenPaths = [
@@ -147,6 +152,13 @@ export function buildAndValidatePatch(input: PatchBuildInput): PatchBuildResult 
       checks.set('diff_structure', 'PATCH_CONTENT_MISSING');
       continue;
     }
+    if (
+      edit.content !== null &&
+      isTypeScriptPath(edit.path) &&
+      hasTypeScriptSyntaxErrors(edit.path, edit.content)
+    ) {
+      checks.set('diff_structure', 'PATCH_SOURCE_SYNTAX_INVALID');
+    }
     if (edit.operation === 'modify' && before === edit.content) {
       checks.set('diff_structure', 'PATCH_EMPTY_CHANGE');
       continue;
@@ -205,24 +217,6 @@ export function buildAndValidatePatch(input: PatchBuildInput): PatchBuildResult 
     })),
   });
   return { patch, manifest, validation };
-}
-
-export function parsePatchPaths(patch: string): string[] {
-  if (patch.length === 0) return [];
-  const paths: string[] = [];
-  for (const line of patch.split('\n')) {
-    const match = /^diff --git a\/([A-Za-z0-9._/-]+) b\/([A-Za-z0-9._/-]+)$/u.exec(
-      line,
-    );
-    if (!match) continue;
-    const oldPath = match[1];
-    const newPath = match[2];
-    if (!oldPath || !newPath || oldPath !== newPath || paths.includes(oldPath)) {
-      return [];
-    }
-    paths.push(oldPath);
-  }
-  return paths;
 }
 
 function buildFilePatch(
@@ -356,4 +350,24 @@ function digest(value: string): string {
 
 function digestJson(value: unknown): string {
   return digest(JSON.stringify(value));
+}
+
+function isTypeScriptPath(path: string): boolean {
+  return /\.[cm]?[jt]sx?$/u.test(path);
+}
+
+function hasTypeScriptSyntaxErrors(path: string, source: string): boolean {
+  const result = ts.transpileModule(source, {
+    compilerOptions: {
+      target: ts.ScriptTarget.ESNext,
+      jsx: ts.JsxEmit.Preserve,
+    },
+    fileName: path,
+    reportDiagnostics: true,
+  });
+  return (
+    result.diagnostics?.some(
+      diagnostic => diagnostic.category === ts.DiagnosticCategory.Error,
+    ) ?? false
+  );
 }

@@ -229,6 +229,17 @@ data "aws_iam_policy_document" "api_artifacts" {
   }
 
   statement {
+    sid     = "ReadValidatedMigrationPatchReview"
+    actions = ["s3:GetObject"]
+    resources = [
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/plan.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/proposal.diff",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/patch-manifest.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/patch-validation.json"
+    ]
+  }
+
+  statement {
     sid       = "DecryptRunResult"
     actions   = ["kms:Decrypt"]
     resources = [aws_kms_key.artifacts.arn]

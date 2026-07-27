@@ -31,6 +31,7 @@ import type {
   CreateRepositoryScanInput,
   CreateOrganisationInput,
   InstallationLinkRecord,
+  MigrationPatchReviewRecord,
   OrganisationRecord,
   ReviewMigrationSpecificationInput,
   RevokeMigrationApprovalInput,
@@ -244,6 +245,14 @@ class FakeRepository implements ApiRepositoryPort {
     _migrationRunId: string,
   ): Promise<PublicMigrationRunDetail> {
     return Promise.resolve(this.migrationRun);
+  }
+
+  public getMigrationPatchReview(
+    _userId: string,
+    _organisationId: string,
+    _migrationRunId: string,
+  ): Promise<MigrationPatchReviewRecord | null> {
+    return Promise.resolve(null);
   }
 
   public listMigrationRuns(
@@ -815,6 +824,18 @@ describe('API handler trust boundary', () => {
         currentStage: 'revalidating',
       },
     });
+  });
+
+  it('returns no patch review before an immutable patch attempt exists', async () => {
+    const response = await handleRequest(
+      event(
+        'GET',
+        `/api/v1/organisations/${organisationId}/migration-runs/${runId}/patch-review`,
+      ),
+      dependencies(),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(parsedBody(response)).toEqual({ patchReview: null });
   });
 
   it('returns the tenant-scoped migration run history', async () => {

@@ -2151,6 +2151,38 @@ export interface PublicMigrationRunDetail extends PublicMigrationRunSummary {
   readonly events: readonly PublicMigrationRunEvent[];
 }
 
+export interface PublicMigrationPatchAttempt {
+  readonly id: string;
+  readonly attemptNumber: number;
+  readonly parentPatchAttemptId: string | null;
+  readonly status: 'accepted' | 'rejected' | 'failed';
+  readonly safeErrorCode: string | null;
+  readonly summaryCode: string;
+  readonly changedFiles: number;
+  readonly addedLines: number;
+  readonly deletedLines: number;
+  readonly patchBytes: number;
+  readonly selected: boolean;
+  readonly createdAt: string;
+}
+
+export interface PublicMigrationPatchReview {
+  readonly baseCommitSha: string;
+  readonly repositoryModifiedRemotely: false;
+  readonly plan: MigrationExecutionPlan;
+  readonly patch: string;
+  readonly manifest: MigrationPatchManifest;
+  readonly validation: MigrationPatchValidationResult;
+  readonly policy: MigrationApprovalPatchPolicy;
+  readonly evidence: readonly {
+    readonly evidenceId: string;
+    readonly sourceUrl: string;
+    readonly digest: string;
+    readonly summary: string;
+  }[];
+  readonly attempts: readonly PublicMigrationPatchAttempt[];
+}
+
 export interface PublicMigrationApprovalResult {
   readonly approval: PublicMigrationApproval;
   readonly run: PublicMigrationRun;

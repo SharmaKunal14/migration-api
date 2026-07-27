@@ -35,6 +35,10 @@ export default defineConfig({
         './packages/observability/src/index.ts',
         import.meta.url,
       ).pathname,
+      '@migration/patch-format': new URL(
+        './packages/patch-format/src/index.ts',
+        import.meta.url,
+      ).pathname,
       '@migration/patch-policy': new URL(
         './packages/patch-policy/src/index.ts',
         import.meta.url,
@@ -60,6 +64,7 @@ export default defineConfig({
         'packages/config/src/**/*.ts',
         'packages/contracts/src/**/*.ts',
         'packages/domain/src/**/*.ts',
+        'packages/patch-format/src/**/*.ts',
         'packages/patch-policy/src/**/*.ts',
         'packages/repository-inventory/src/**/*.ts',
         'packages/source-acquisition/src/**/*.ts',

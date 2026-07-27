@@ -384,7 +384,12 @@ describe('Stage 5C, 5D, and 5E bounded migration planning and patch validation',
         },
       ],
     } as MigrationExecutionPlan;
-    const inventedEvidence = build(input, inventedEvidencePlan, 'old\n', 'new\n');
+    const inventedEvidence = build(
+      input,
+      inventedEvidencePlan,
+      'export const value = 1;\n',
+      'export const value = 2;\n',
+    );
     expect(inventedEvidence.validation.safeErrorCode).toBe(
       'PATCH_PLAN_EVIDENCE_INVALID',
     );
@@ -416,7 +421,12 @@ describe('Stage 5C, 5D, and 5E bounded migration planning and patch validation',
   });
 
   it('accepts only internally consistent terminal agent results', () => {
-    const patch = build(input, plan, 'old\n', 'new\n');
+    const patch = build(
+      input,
+      plan,
+      'export const value = 1;\n',
+      'export const value = 2;\n',
+    );
     const result = {
       schemaVersion: '1.0',
       organisationId: input.organisationId,

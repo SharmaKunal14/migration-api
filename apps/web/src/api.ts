@@ -8,6 +8,7 @@ import type {
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
   PublicMigrationApprovalResult,
+  PublicMigrationPatchReview,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
   PublicOrganisation,
@@ -192,6 +193,17 @@ export async function loadMigrationRuns(
   organisationId: string,
 ): Promise<{ runs: PublicMigrationRunSummary[] }> {
   return request(token, `/v1/organisations/${organisationId}/migration-runs`);
+}
+
+export async function loadMigrationPatchReview(
+  token: string,
+  organisationId: string,
+  migrationRunId: string,
+): Promise<{ patchReview: PublicMigrationPatchReview | null }> {
+  return request(
+    token,
+    `/v1/organisations/${organisationId}/migration-runs/${migrationRunId}/patch-review`,
+  );
 }
 
 export async function cancelMigrationRun(
