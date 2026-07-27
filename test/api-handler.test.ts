@@ -11,6 +11,7 @@ import type {
   PublicGithubInstallation,
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
+  PublicMigrationApprovalResult,
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
@@ -22,6 +23,7 @@ import type {
   ApiRepositoryPort,
   CompleteGithubInstallationInput,
   CompletedGithubInstallation,
+  CreateMigrationApprovalInput,
   CreateDemoRunInput,
   CreateRepositoryScanInput,
   CreateOrganisationInput,
@@ -80,6 +82,32 @@ const draftSpecification: PublicMigrationSpecification = {
 };
 
 class FakeRepository implements ApiRepositoryPort {
+  public readonly createMigrationApprovalMock = vi.fn<
+    (
+      userId: string,
+      input: CreateMigrationApprovalInput,
+    ) => Promise<PublicMigrationApprovalResult>
+  >((_userId, input) =>
+    Promise.resolve({
+      approval: {
+        id: organisationId,
+        candidateId: input.candidateId,
+        repositoryId: runId,
+        baseCommitSha: 'a'.repeat(40),
+        approvedByRole: 'owner',
+        approvedAt: '2026-07-27T00:00:00.000Z',
+      },
+      run: {
+        id: runId,
+        candidateId: input.candidateId,
+        approvalId: organisationId,
+        status: 'queued',
+        currentStage: 'queued',
+        version: 1,
+        createdAt: '2026-07-27T00:00:00.000Z',
+      },
+    }),
+  );
   public readonly createRepositoryScanMock = vi.fn<
     (userId: string, input: CreateRepositoryScanInput) => Promise<PublicRepositoryScan>
   >((_userId, input) =>
@@ -301,6 +329,7 @@ class FakeRepository implements ApiRepositoryPort {
       repository: {
         id: runId,
         fullName: 'SharmaKunal14/orbitchat-migration-fixture',
+        snapshotId: organisationId,
         commitSha: 'a'.repeat(40),
         snapshotDigest: 'b'.repeat(64),
         snapshotCreatedAt: '2026-07-26T00:00:00.000Z',
@@ -341,7 +370,50 @@ class FakeRepository implements ApiRepositoryPort {
       },
       vendorEvidence: [],
       impactReport: null,
+      approval: {
+        eligible: false,
+        blockers: ['CURRENT_IMPACT_REPORT_REQUIRED'],
+        renderedCopy: 'Exact approval copy.',
+        renderedCopyDigest: 'd'.repeat(64),
+        authority: {
+          schemaVersion: '1.0',
+          approvalContractVersion: '1.0',
+          agentPolicyVersion: 'migration-agent-1.0',
+          toolRegistryVersion: 'migration-tools-1.0',
+          patchPolicyVersion: 'typescript-bounded-1.0',
+          patchPolicy: {
+            schemaVersion: '1.0',
+            allowedPaths: ['package.json'],
+            allowedChangeCategories: ['dependency_manifest'],
+            maxChangedFiles: 1,
+            maxPatchBytes: 262_144,
+            maxAddedLines: 1_000,
+            maxDeletedLines: 500,
+          },
+          verificationPolicyVersion: 'typescript-default-1.0',
+          verificationProfile: {
+            schemaVersion: '1.0',
+            profiles: [
+              {
+                profile: 'typescript_static',
+                availability: 'unavailable',
+                commandIds: [],
+              },
+            ],
+          },
+          publicationPolicyVersion: 'draft-pr-1.0',
+          openaiProcessingPolicyVersion: 'default-controls-1.0',
+          openaiProcessingMode: 'default_controls',
+        },
+      },
     });
+  }
+
+  public createMigrationApproval(
+    requestedBy: string,
+    input: CreateMigrationApprovalInput,
+  ): Promise<PublicMigrationApprovalResult> {
+    return this.createMigrationApprovalMock(requestedBy, input);
   }
 }
 
@@ -565,6 +637,88 @@ describe('API handler trust boundary', () => {
         repository: { commitSha: 'a'.repeat(40) },
       },
     });
+  });
+
+  it('creates one exact migration approval with an idempotency key', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/organisations/${organisationId}/migration-candidates/${runId}/approvals`,
+        {
+          expectedCandidateVersion: 1,
+          expectedRepositorySnapshotId: organisationId,
+          expectedBaseCommitSha: 'a'.repeat(40),
+          expectedSnapshotDigest: 'b'.repeat(64),
+          expectedSpecificationRevision: 1,
+          expectedSpecificationDigest: 'c'.repeat(64),
+          expectedImpactReportId: userId,
+          expectedImpactReportRevision: 1,
+          expectedImpactReportDigest: 'e'.repeat(64),
+          renderedCopyDigest: 'd'.repeat(64),
+          acknowledgements: {
+            sourceProcessing: true,
+            verificationExecution: true,
+            draftPullRequest: true,
+            humanReviewRequired: true,
+          },
+        },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'approval:01J7Y5ABCD',
+        },
+      ),
+      dependencies(repository),
+    );
+    expect(response.statusCode).toBe(202);
+    expect(repository.createMigrationApprovalMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        organisationId,
+        candidateId: runId,
+        idempotencyKey: 'approval:01J7Y5ABCD',
+        expectedCandidateVersion: 1,
+      }),
+    );
+    expect(parsedBody(response)).toMatchObject({
+      approval: { candidateId: runId },
+      run: { status: 'queued', currentStage: 'queued' },
+    });
+  });
+
+  it('rejects approval unless every effect is acknowledged', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/organisations/${organisationId}/migration-candidates/${runId}/approvals`,
+        {
+          expectedCandidateVersion: 1,
+          expectedRepositorySnapshotId: organisationId,
+          expectedBaseCommitSha: 'a'.repeat(40),
+          expectedSnapshotDigest: 'b'.repeat(64),
+          expectedSpecificationRevision: 1,
+          expectedSpecificationDigest: 'c'.repeat(64),
+          expectedImpactReportId: userId,
+          expectedImpactReportRevision: 1,
+          expectedImpactReportDigest: 'e'.repeat(64),
+          renderedCopyDigest: 'd'.repeat(64),
+          acknowledgements: {
+            sourceProcessing: false,
+            verificationExecution: true,
+            draftPullRequest: true,
+            humanReviewRequired: true,
+          },
+        },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'approval:01J7Y5ABCD',
+        },
+      ),
+      dependencies(repository),
+    );
+    expect(response.statusCode).toBe(400);
+    expect(repository.createMigrationApprovalMock).not.toHaveBeenCalled();
   });
 
   it('reviews a draft only through the operator route with idempotency', async () => {

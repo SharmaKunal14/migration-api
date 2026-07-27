@@ -1,10 +1,12 @@
 import type {
+  CreateMigrationApprovalRequest,
   PublicAgentRun,
   PublicGithubInstallation,
   PublicGithubInstallLink,
   PublicGithubSetupCompletion,
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
+  PublicMigrationApprovalResult,
   PublicOrganisation,
   PublicDependencyObservation,
   PublicRepository,
@@ -149,6 +151,24 @@ export async function loadMigrationCandidate(
   return request(
     token,
     `/v1/organisations/${organisationId}/migration-candidates/${candidateId}`,
+  );
+}
+
+export async function approveMigrationCandidate(
+  token: string,
+  organisationId: string,
+  candidateId: string,
+  idempotencyKey: string,
+  input: CreateMigrationApprovalRequest,
+): Promise<PublicMigrationApprovalResult> {
+  return request(
+    token,
+    `/v1/organisations/${organisationId}/migration-candidates/${candidateId}/approvals`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify(input),
+    },
   );
 }
 

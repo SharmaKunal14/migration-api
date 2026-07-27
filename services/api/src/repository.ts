@@ -7,15 +7,23 @@ import {
   reconcileCandidatesForSpecification,
 } from '@migration/candidate-matching';
 import type { AppDatabase, Database } from '@migration/database';
-import { impactReportSchema, migrationSpecificationSchema } from '@migration/contracts';
+import {
+  impactReportSchema,
+  migrationApprovalAuthoritySchema,
+  migrationSpecificationSchema,
+} from '@migration/contracts';
 import type {
+  CreateMigrationApprovalRequest,
   GithubInstallationVerification,
+  MigrationApprovalAuthority,
   MigrationSpecification,
   PublicDependencyObservation,
   PublicGithubInstallation,
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
   PublicMigrationCandidateImpactReport,
+  PublicMigrationApprovalPreview,
+  PublicMigrationApprovalResult,
   PublicImpactReportSummary,
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
@@ -79,6 +87,13 @@ export interface CreateRepositoryScanInput {
 export interface ReviewMigrationSpecificationInput {
   readonly specificationId: string;
   readonly expectedRevision: number;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+}
+
+export interface CreateMigrationApprovalInput extends CreateMigrationApprovalRequest {
+  readonly organisationId: string;
+  readonly candidateId: string;
   readonly idempotencyKey: string;
   readonly requestId: string;
 }
@@ -166,10 +181,113 @@ export interface ApiRepositoryPort {
     organisationId: string,
     candidateId: string,
   ): Promise<PublicMigrationCandidateDetail>;
+  createMigrationApproval(
+    userId: string,
+    input: CreateMigrationApprovalInput,
+  ): Promise<PublicMigrationApprovalResult>;
 }
 
 function digestJson(value: unknown): string {
   return createHash('sha256').update(JSON.stringify(value)).digest('hex');
+}
+
+const APPROVAL_POLICY_VERSIONS = {
+  agentPolicyVersion: 'migration-agent-1.0',
+  toolRegistryVersion: 'migration-tools-1.0',
+  patchPolicyVersion: 'typescript-bounded-1.0',
+  verificationPolicyVersion: 'typescript-default-1.0',
+  publicationPolicyVersion: 'draft-pr-1.0',
+  openaiProcessingPolicyVersion: 'default-controls-1.0',
+} as const;
+
+interface ApprovalPreviewContext {
+  readonly role: OrganisationRole;
+  readonly candidateStatus: 'open' | 'dismissed' | 'superseded' | 'resolved';
+  readonly repositoryMutable: boolean;
+  readonly manifestPath: string;
+  readonly lockfilePath: string | null;
+  readonly impactReport: PublicMigrationCandidateImpactReport | null;
+}
+
+export function createMigrationApprovalPreview(
+  context: ApprovalPreviewContext,
+): PublicMigrationApprovalPreview {
+  const reportPaths = context.impactReport?.affectedFiles.map(file => file.path) ?? [];
+  const requestedPaths = [
+    context.manifestPath,
+    ...(context.lockfilePath ? [context.lockfilePath] : []),
+    ...reportPaths,
+  ];
+  const allPaths = [...new Set(requestedPaths)].sort();
+  const allowedPaths = allPaths.slice(0, 500);
+  const categories = new Set<
+    MigrationApprovalAuthority['patchPolicy']['allowedChangeCategories'][number]
+  >(['dependency_manifest']);
+  if (context.lockfilePath) categories.add('lockfile');
+  for (const file of context.impactReport?.affectedFiles ?? []) {
+    categories.add(file.classification);
+  }
+  const reportedProfiles = new Map(
+    context.impactReport?.verification.profiles.map(profile => [
+      profile.profile,
+      profile.availability,
+    ]) ?? [],
+  );
+  const verificationProfile: MigrationApprovalAuthority['verificationProfile'] = {
+    schemaVersion: '1.0',
+    profiles: (['typescript_static', 'typescript_unit'] as const).map(profile => {
+      const availability = reportedProfiles.get(profile) ?? 'unavailable';
+      return {
+        profile,
+        availability,
+        commandIds:
+          availability === 'available'
+            ? [profile === 'typescript_static' ? 'npm.typecheck' : 'npm.test']
+            : [],
+      };
+    }),
+  };
+  const authority = migrationApprovalAuthoritySchema.parse({
+    schemaVersion: '1.0',
+    approvalContractVersion: '1.0',
+    ...APPROVAL_POLICY_VERSIONS,
+    patchPolicy: {
+      schemaVersion: '1.0',
+      allowedPaths,
+      allowedChangeCategories: [...categories].sort(),
+      maxChangedFiles: Math.max(1, allowedPaths.length),
+      maxPatchBytes: 262_144,
+      maxAddedLines: 1_000,
+      maxDeletedLines: 500,
+    },
+    verificationProfile,
+    openaiProcessingMode: 'default_controls',
+  });
+  const blockers: string[] = [];
+  if (context.role === 'viewer') blockers.push('APPROVAL_ROLE_REQUIRED');
+  if (context.candidateStatus !== 'open') blockers.push('CANDIDATE_NOT_OPEN');
+  if (!context.repositoryMutable) blockers.push('REPOSITORY_NOT_MUTABLE');
+  if (context.impactReport?.freshness !== 'current') {
+    blockers.push('CURRENT_IMPACT_REPORT_REQUIRED');
+  } else if (context.impactReport.outcome !== 'affected') {
+    blockers.push('AFFECTED_USAGE_REQUIRED');
+  }
+  if (allPaths.length > 500) blockers.push('PATCH_SCOPE_TOO_LARGE');
+
+  const renderedCopy = [
+    'You authorize Migration API to process the exact repository snapshot shown above with OpenAI.',
+    `A future migration agent may propose changes only within ${String(allowedPaths.length)} listed path${allowedPaths.length === 1 ? '' : 's'} and the displayed patch limits.`,
+    'A future isolated verifier may execute only the named verification profiles and command identifiers shown here.',
+    'A later publication stage may create a draft pull request, but Migration API cannot merge it.',
+    'Human review remains required before any proposed change is accepted.',
+  ].join('\n');
+  return {
+    eligible: blockers.length === 0,
+    blockers,
+    renderedCopy,
+    renderedCopyDigest: createHash('sha256').update(renderedCopy).digest('hex'),
+    authority,
+  };
 }
 
 interface StoredImpactReport {
@@ -1121,7 +1239,10 @@ export class ApiRepository implements ApiRepositoryPort {
     organisationId: string,
     candidateId: string,
   ): Promise<PublicMigrationCandidateDetail> {
-    requireAction(await this.membership(organisationId, userId), 'repository:read');
+    const membership = requireAction(
+      await this.membership(organisationId, userId),
+      'repository:read',
+    );
     const row = await this.database
       .selectFrom('migrationCandidates as candidate')
       .innerJoin(
@@ -1133,6 +1254,11 @@ export class ApiRepository implements ApiRepositoryPort {
         'migrationSpecifications as specification',
         'specification.id',
         'candidate.migrationSpecificationId',
+      )
+      .innerJoin(
+        'githubInstallations as installation',
+        'installation.id',
+        'repository.installationId',
       )
       .innerJoin(
         'vendorReleases as release',
@@ -1155,6 +1281,10 @@ export class ApiRepository implements ApiRepositoryPort {
         'candidate.id',
         'candidate.repositoryId',
         'repository.fullName as repositoryFullName',
+        'repository.selected as repositorySelected',
+        'repository.enabled as repositoryEnabled',
+        'repository.archived as repositoryArchived',
+        'installation.status as installationStatus',
         'candidate.migrationSpecificationId',
         'candidate.status',
         'candidate.firstDetectedAt',
@@ -1273,11 +1403,12 @@ export class ApiRepository implements ApiRepositoryPort {
       lastDetectedAt: row.lastDetectedAt.toISOString(),
       version: row.version,
     };
-    return {
+    const detail = {
       candidate,
       repository: {
         id: row.repositoryId,
         fullName: row.repositoryFullName,
+        snapshotId: row.repositorySnapshotId,
         commitSha: row.commitSha,
         snapshotDigest: row.snapshotDigest,
         snapshotCreatedAt: row.snapshotCreatedAt.toISOString(),
@@ -1312,6 +1443,260 @@ export class ApiRepository implements ApiRepositoryPort {
       })),
       impactReport,
     };
+    return {
+      ...detail,
+      approval: createMigrationApprovalPreview({
+        role: membership.role,
+        candidateStatus: candidate.status,
+        repositoryMutable:
+          row.repositorySelected &&
+          row.repositoryEnabled &&
+          !row.repositoryArchived &&
+          row.installationStatus === 'active',
+        manifestPath: row.manifestPath,
+        lockfilePath: row.lockfilePath,
+        impactReport,
+      }),
+    };
+  }
+
+  public async createMigrationApproval(
+    userId: string,
+    input: CreateMigrationApprovalInput,
+  ): Promise<PublicMigrationApprovalResult> {
+    const requestDigest = digestJson({
+      organisationId: input.organisationId,
+      candidateId: input.candidateId,
+      expectedCandidateVersion: input.expectedCandidateVersion,
+      expectedRepositorySnapshotId: input.expectedRepositorySnapshotId,
+      expectedBaseCommitSha: input.expectedBaseCommitSha,
+      expectedSnapshotDigest: input.expectedSnapshotDigest,
+      expectedSpecificationRevision: input.expectedSpecificationRevision,
+      expectedSpecificationDigest: input.expectedSpecificationDigest,
+      expectedImpactReportId: input.expectedImpactReportId,
+      expectedImpactReportRevision: input.expectedImpactReportRevision,
+      expectedImpactReportDigest: input.expectedImpactReportDigest,
+      renderedCopyDigest: input.renderedCopyDigest,
+      acknowledgements: input.acknowledgements,
+    });
+    try {
+      return await this.database.transaction().execute(async transaction => {
+        const membership = requireAction(
+          await this.membership(input.organisationId, userId, transaction),
+          'migration:approve',
+        );
+        if (membership.role === 'viewer') {
+          throw new DomainError(
+            'AUTHORIZATION_DENIED',
+            'The actor is not authorized for this action.',
+            403,
+          );
+        }
+        const previous = await loadIdempotentMigrationApproval(
+          transaction,
+          userId,
+          input,
+          requestDigest,
+        );
+        if (previous) return previous;
+
+        const candidate = await transaction
+          .selectFrom('migrationCandidates')
+          .selectAll()
+          .where('id', '=', input.candidateId)
+          .where('organisationId', '=', input.organisationId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!candidate) {
+          throw new DomainError(
+            'MIGRATION_CANDIDATE_NOT_FOUND',
+            'The migration candidate was not found.',
+            404,
+          );
+        }
+        const concurrentPrevious = await loadIdempotentMigrationApproval(
+          transaction,
+          userId,
+          input,
+          requestDigest,
+        );
+        if (concurrentPrevious) return concurrentPrevious;
+
+        const activeRun = await transaction
+          .selectFrom('migrationRuns')
+          .select('id')
+          .where('organisationId', '=', input.organisationId)
+          .where('candidateId', '=', input.candidateId)
+          .where('status', 'in', ['queued', 'running'])
+          .executeTakeFirst();
+        if (activeRun) {
+          throw new DomainError(
+            'MIGRATION_ALREADY_ACTIVE',
+            'This migration already has an active run.',
+            409,
+          );
+        }
+
+        const repository = await transaction
+          .selectFrom('repositories as repository')
+          .innerJoin(
+            'githubInstallations as installation',
+            'installation.id',
+            'repository.installationId',
+          )
+          .select([
+            'repository.id',
+            'repository.installationId',
+            'repository.githubRepositoryId',
+            'repository.defaultBranch',
+            'repository.selected',
+            'repository.enabled',
+            'repository.archived',
+            'installation.status as installationStatus',
+          ])
+          .where('repository.id', '=', candidate.repositoryId)
+          .where('repository.organisationId', '=', input.organisationId)
+          .executeTakeFirst();
+        const observation = await transaction
+          .selectFrom('dependencyObservations as observation')
+          .innerJoin(
+            'repositorySnapshots as snapshot',
+            'snapshot.id',
+            'observation.repositorySnapshotId',
+          )
+          .select([
+            'observation.manifestPath',
+            'observation.lockfilePath',
+            'snapshot.id as snapshotId',
+            'snapshot.commitSha',
+            'snapshot.digest as snapshotDigest',
+            'snapshot.status as snapshotStatus',
+            'snapshot.expiresAt',
+          ])
+          .where('observation.id', '=', candidate.dependencyObservationId)
+          .where('observation.organisationId', '=', input.organisationId)
+          .where('snapshot.repositoryId', '=', candidate.repositoryId)
+          .executeTakeFirst();
+        const specification = await transaction
+          .selectFrom('migrationSpecifications')
+          .select(['id', 'trustState', 'revision', 'evidenceDigest'])
+          .where('id', '=', candidate.migrationSpecificationId)
+          .executeTakeFirst();
+        const reportRow = await transaction
+          .selectFrom('impactReports as report')
+          .innerJoin(
+            'repositorySnapshots as snapshot',
+            'snapshot.id',
+            'report.repositorySnapshotId',
+          )
+          .select([
+            'report.id',
+            'report.candidateId',
+            'report.repositoryId',
+            'report.repositorySnapshotId',
+            'report.outcome',
+            'report.affectedSummary',
+            'report.riskCategory',
+            'report.verificationAvailability',
+            'report.uncertainty',
+            'report.artifactDigest',
+            'report.revision',
+            'report.createdAt',
+            'snapshot.commitSha',
+            'snapshot.digest as snapshotDigest',
+          ])
+          .where('report.candidateId', '=', candidate.id)
+          .orderBy('report.revision', 'desc')
+          .executeTakeFirst();
+        if (!repository || !observation || !specification || !reportRow) {
+          throw new DomainError(
+            'MIGRATION_APPROVAL_STALE',
+            'The migration evidence changed or is no longer available.',
+            409,
+          );
+        }
+        if (
+          specification.trustState === 'draft' ||
+          observation.snapshotStatus !== 'available' ||
+          observation.expiresAt.getTime() <= Date.now()
+        ) {
+          throw new DomainError(
+            'MIGRATION_APPROVAL_STALE',
+            'The migration evidence changed or is no longer available.',
+            409,
+          );
+        }
+        const impactReport = publicImpactReport(reportRow, observation.snapshotId);
+        const preview = createMigrationApprovalPreview({
+          role: membership.role,
+          candidateStatus: candidate.status,
+          repositoryMutable:
+            repository.selected &&
+            repository.enabled &&
+            !repository.archived &&
+            repository.installationStatus === 'active',
+          manifestPath: observation.manifestPath,
+          lockfilePath: observation.lockfilePath,
+          impactReport,
+        });
+        if (!preview.eligible) {
+          throw new DomainError(
+            'MIGRATION_APPROVAL_NOT_ALLOWED',
+            'This migration is not currently eligible for approval.',
+            409,
+          );
+        }
+        if (
+          candidate.version !== input.expectedCandidateVersion ||
+          observation.snapshotId !== input.expectedRepositorySnapshotId ||
+          observation.commitSha !== input.expectedBaseCommitSha ||
+          observation.snapshotDigest !== input.expectedSnapshotDigest ||
+          specification.revision !== input.expectedSpecificationRevision ||
+          specification.evidenceDigest !== input.expectedSpecificationDigest ||
+          reportRow.id !== input.expectedImpactReportId ||
+          reportRow.revision !== input.expectedImpactReportRevision ||
+          reportRow.artifactDigest !== input.expectedImpactReportDigest ||
+          preview.renderedCopyDigest !== input.renderedCopyDigest
+        ) {
+          throw new DomainError(
+            'MIGRATION_APPROVAL_STALE',
+            'The migration evidence changed before it could be approved.',
+            409,
+          );
+        }
+
+        return persistMigrationApproval(transaction, {
+          userId,
+          role: membership.role,
+          input,
+          requestDigest,
+          preview,
+          candidateId: candidate.id,
+          repositoryId: candidate.repositoryId,
+          githubRepositoryId: repository.githubRepositoryId,
+          installationId: repository.installationId,
+          baseBranch: repository.defaultBranch,
+          snapshotId: observation.snapshotId,
+          commitSha: observation.commitSha,
+          snapshotDigest: observation.snapshotDigest,
+          specificationId: specification.id,
+          specificationRevision: specification.revision,
+          specificationDigest: specification.evidenceDigest,
+          impactReportId: reportRow.id,
+          impactReportRevision: reportRow.revision,
+          impactReportDigest: reportRow.artifactDigest,
+        });
+      });
+    } catch (error) {
+      if (isUniqueViolation(error)) {
+        throw new DomainError(
+          'MIGRATION_APPROVAL_CONFLICT',
+          'This migration was approved concurrently or the idempotency key was reused.',
+          409,
+        );
+      }
+      throw error;
+    }
   }
 
   public async createDemoRun(
@@ -1474,6 +1859,222 @@ async function loadRun(
     throw new DomainError('RUN_NOT_FOUND', 'The requested run was not found.', 404);
   }
   return run;
+}
+
+interface PersistMigrationApprovalInput {
+  readonly userId: string;
+  readonly role: 'owner' | 'admin' | 'reviewer';
+  readonly input: CreateMigrationApprovalInput;
+  readonly requestDigest: string;
+  readonly preview: PublicMigrationApprovalPreview;
+  readonly candidateId: string;
+  readonly repositoryId: string;
+  readonly githubRepositoryId: string;
+  readonly installationId: string;
+  readonly baseBranch: string;
+  readonly snapshotId: string;
+  readonly commitSha: string;
+  readonly snapshotDigest: string;
+  readonly specificationId: string;
+  readonly specificationRevision: number;
+  readonly specificationDigest: string;
+  readonly impactReportId: string;
+  readonly impactReportRevision: number;
+  readonly impactReportDigest: string;
+}
+
+async function loadIdempotentMigrationApproval(
+  transaction: Transaction<Database>,
+  userId: string,
+  input: CreateMigrationApprovalInput,
+  requestDigest: string,
+): Promise<PublicMigrationApprovalResult | undefined> {
+  const previous = await transaction
+    .selectFrom('migrationApprovals')
+    .select(['id', 'organisationId', 'candidateId', 'requestDigest'])
+    .where('approvedByUserId', '=', userId)
+    .where('idempotencyKey', '=', input.idempotencyKey)
+    .executeTakeFirst();
+  if (!previous) return undefined;
+  if (
+    previous.requestDigest !== requestDigest ||
+    previous.organisationId !== input.organisationId ||
+    previous.candidateId !== input.candidateId
+  ) {
+    throw new DomainError(
+      'IDEMPOTENCY_CONFLICT',
+      'The idempotency key was already used for another request.',
+      409,
+    );
+  }
+  return loadMigrationApprovalResult(transaction, previous.id);
+}
+
+async function persistMigrationApproval(
+  transaction: Transaction<Database>,
+  context: PersistMigrationApprovalInput,
+): Promise<PublicMigrationApprovalResult> {
+  const approvalId = randomUUID();
+  const migrationRunId = randomUUID();
+  const correlationId = randomUUID();
+  const now = new Date();
+  const authority = context.preview.authority;
+  await transaction
+    .insertInto('migrationApprovals')
+    .values({
+      id: approvalId,
+      organisationId: context.input.organisationId,
+      candidateId: context.candidateId,
+      repositoryId: context.repositoryId,
+      githubRepositoryId: context.githubRepositoryId,
+      installationId: context.installationId,
+      repositorySnapshotId: context.snapshotId,
+      baseBranch: context.baseBranch,
+      baseCommitSha: context.commitSha,
+      snapshotDigest: context.snapshotDigest,
+      migrationSpecificationId: context.specificationId,
+      migrationSpecificationRevision: context.specificationRevision,
+      migrationSpecificationDigest: context.specificationDigest,
+      impactReportId: context.impactReportId,
+      impactReportRevision: context.impactReportRevision,
+      impactReportDigest: context.impactReportDigest,
+      approvalContractVersion: authority.approvalContractVersion,
+      agentPolicyVersion: authority.agentPolicyVersion,
+      toolRegistryVersion: authority.toolRegistryVersion,
+      patchPolicyVersion: authority.patchPolicyVersion,
+      patchPolicy: authority.patchPolicy,
+      patchPolicyDigest: digestJson(authority.patchPolicy),
+      verificationPolicyVersion: authority.verificationPolicyVersion,
+      verificationProfile: authority.verificationProfile,
+      verificationProfileDigest: digestJson(authority.verificationProfile),
+      publicationPolicyVersion: authority.publicationPolicyVersion,
+      openaiProcessingPolicyVersion: authority.openaiProcessingPolicyVersion,
+      openaiProcessingMode: authority.openaiProcessingMode,
+      acknowledgementSourceProcessing: context.input.acknowledgements.sourceProcessing,
+      acknowledgementVerificationExecution:
+        context.input.acknowledgements.verificationExecution,
+      acknowledgementDraftPullRequest: context.input.acknowledgements.draftPullRequest,
+      acknowledgementHumanReviewRequired:
+        context.input.acknowledgements.humanReviewRequired,
+      renderedCopyDigest: context.preview.renderedCopyDigest,
+      approvedByUserId: context.userId,
+      approvedByRole: context.role,
+      requestId: context.input.requestId,
+      correlationId,
+      idempotencyKey: context.input.idempotencyKey,
+      requestDigest: context.requestDigest,
+      approvedAt: now,
+      expiresAt: null,
+      createdAt: now,
+    })
+    .executeTakeFirstOrThrow();
+  await transaction
+    .insertInto('migrationRuns')
+    .values({
+      id: migrationRunId,
+      organisationId: context.input.organisationId,
+      candidateId: context.candidateId,
+      approvalId,
+      repositoryId: context.repositoryId,
+      baseCommitSha: context.commitSha,
+      status: 'queued',
+      currentStage: 'queued',
+      attempt: 1,
+      workflowExecutionArn: null,
+      terminalResult: null,
+      safeErrorCode: null,
+      correlationId,
+      cancellationRequestedAt: null,
+      cancellationRequestedByUserId: null,
+      cancellationReasonCode: null,
+      version: 1,
+      createdAt: now,
+      startedAt: null,
+      completedAt: null,
+      updatedAt: now,
+    })
+    .executeTakeFirstOrThrow();
+  await transaction
+    .insertInto('migrationRunOutbox')
+    .values({
+      id: randomUUID(),
+      organisationId: context.input.organisationId,
+      migrationRunId,
+      eventType: 'migration_run.requested',
+      aggregateVersion: 1,
+      idempotencyKey: `migration-run:${migrationRunId}`,
+      payload: {
+        schemaVersion: '1.0',
+        organisationId: context.input.organisationId,
+        migrationRunId,
+        candidateId: context.candidateId,
+        approvalId,
+        repositoryId: context.repositoryId,
+        correlationId,
+        expectedAttempt: 1,
+        expectedVersion: 1,
+      },
+      availableAt: now,
+      leaseOwner: null,
+      leaseExpiresAt: null,
+      attempts: 0,
+      deliveredAt: null,
+      safeErrorCode: null,
+      createdAt: now,
+    })
+    .executeTakeFirstOrThrow();
+  await writeAudit(transaction, {
+    organisationId: context.input.organisationId,
+    actorId: context.userId,
+    action: 'migration.approved',
+    resourceType: 'migration_approval',
+    resourceId: approvalId,
+    requestId: context.input.requestId,
+  });
+  return loadMigrationApprovalResult(transaction, approvalId);
+}
+
+async function loadMigrationApprovalResult(
+  database: AppDatabase | Transaction<Database>,
+  approvalId: string,
+): Promise<PublicMigrationApprovalResult> {
+  const row = await database
+    .selectFrom('migrationApprovals as approval')
+    .innerJoin('migrationRuns as run', 'run.approvalId', 'approval.id')
+    .select([
+      'approval.id as approvalId',
+      'approval.candidateId',
+      'approval.repositoryId',
+      'approval.baseCommitSha',
+      'approval.approvedByRole',
+      'approval.approvedAt',
+      'run.id as runId',
+      'run.status',
+      'run.currentStage',
+      'run.version',
+      'run.createdAt',
+    ])
+    .where('approval.id', '=', approvalId)
+    .executeTakeFirstOrThrow();
+  return {
+    approval: {
+      id: row.approvalId,
+      candidateId: row.candidateId,
+      repositoryId: row.repositoryId,
+      baseCommitSha: row.baseCommitSha,
+      approvedByRole: row.approvedByRole,
+      approvedAt: row.approvedAt.toISOString(),
+    },
+    run: {
+      id: row.runId,
+      candidateId: row.candidateId,
+      approvalId: row.approvalId,
+      status: row.status,
+      currentStage: row.currentStage,
+      version: row.version,
+      createdAt: row.createdAt.toISOString(),
+    },
+  };
 }
 
 const migrationSpecificationSummarySelection = [

@@ -55,7 +55,8 @@ export type OrganisationAction =
   | 'demo_run:read'
   | 'github_installation:manage'
   | 'repository:read'
-  | 'repository:scan';
+  | 'repository:scan'
+  | 'migration:approve';
 
 const allowedActions: Readonly<
   Record<OrganisationRole, readonly OrganisationAction[]>
@@ -68,6 +69,7 @@ const allowedActions: Readonly<
     'github_installation:manage',
     'repository:read',
     'repository:scan',
+    'migration:approve',
   ],
   admin: [
     'organisation:read',
@@ -76,6 +78,7 @@ const allowedActions: Readonly<
     'github_installation:manage',
     'repository:read',
     'repository:scan',
+    'migration:approve',
   ],
   reviewer: [
     'organisation:read',
@@ -83,6 +86,7 @@ const allowedActions: Readonly<
     'demo_run:read',
     'repository:read',
     'repository:scan',
+    'migration:approve',
   ],
   viewer: ['organisation:read', 'demo_run:read', 'repository:read'],
 };

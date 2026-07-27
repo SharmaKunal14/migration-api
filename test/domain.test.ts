@@ -72,6 +72,22 @@ describe('organisation authorization', () => {
       }),
     );
   });
+
+  it.each(['owner', 'admin', 'reviewer'] as const)(
+    'allows %s to approve a migration',
+    role => {
+      expect(requireAction(membership(role), 'migration:approve').role).toBe(role);
+    },
+  );
+
+  it('denies a viewer from approving a migration', () => {
+    expect(() => requireAction(membership('viewer'), 'migration:approve')).toThrow(
+      expect.objectContaining<Partial<DomainError>>({
+        safeCode: 'AUTHORIZATION_DENIED',
+        httpStatus: 403,
+      }),
+    );
+  });
 });
 
 describe('idempotency keys', () => {

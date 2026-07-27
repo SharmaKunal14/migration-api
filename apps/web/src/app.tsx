@@ -7,12 +7,14 @@ import type {
   PublicGithubInstallation,
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
+  PublicMigrationApprovalResult,
   PublicOrganisation,
   PublicRepository,
 } from '@migration/contracts';
 
 import {
   ApiError,
+  approveMigrationCandidate,
   completeGithubSetup,
   createDemoRun,
   createGithubInstallLink,
@@ -998,12 +1000,227 @@ function MigrationCandidatePage(): React.JSX.Element {
           )}
         </section>
       </div>
+      <MigrationApprovalPanel
+        detail={detail}
+        organisationId={orgId ?? ''}
+        token={session?.access_token ?? ''}
+      />
       <p className="fine-print stage-boundary">
-        This report explains a possible migration. It does not approve work, execute
-        repository code, modify files, or create a pull request.
+        Approval creates a durable authorization record and queues one migration run.
+        Stage 4B does not yet dispatch the workflow, execute repository code, modify
+        files, or create a pull request.
       </p>
     </div>
   );
+}
+
+function MigrationApprovalPanel({
+  detail,
+  organisationId,
+  token,
+}: {
+  readonly detail: PublicMigrationCandidateDetail;
+  readonly organisationId: string;
+  readonly token: string;
+}): React.JSX.Element {
+  const [acknowledgements, setAcknowledgements] = useState({
+    sourceProcessing: false,
+    verificationExecution: false,
+    draftPullRequest: false,
+    humanReviewRequired: false,
+  });
+  const [submitting, setSubmitting] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [result, setResult] = useState<PublicMigrationApprovalResult | null>(null);
+  const idempotencyKey = useRef(`approval:${crypto.randomUUID()}`);
+  const { approval, candidate, impactReport, repository, specification } = detail;
+  const acknowledged = Object.values(acknowledgements).every(Boolean);
+
+  function updateAcknowledgement(
+    key: keyof typeof acknowledgements,
+    checked: boolean,
+  ): void {
+    setAcknowledgements(current => ({ ...current, [key]: checked }));
+  }
+
+  async function submit(event: SyntheticEvent<HTMLFormElement>): Promise<void> {
+    event.preventDefault();
+    if (!approval.eligible || !impactReport || !acknowledged || !token) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      setResult(
+        await approveMigrationCandidate(
+          token,
+          organisationId,
+          candidate.id,
+          idempotencyKey.current,
+          {
+            expectedCandidateVersion: candidate.version,
+            expectedRepositorySnapshotId: repository.snapshotId,
+            expectedBaseCommitSha: repository.commitSha,
+            expectedSnapshotDigest: repository.snapshotDigest,
+            expectedSpecificationRevision: specification.revision,
+            expectedSpecificationDigest: specification.evidenceDigest,
+            expectedImpactReportId: impactReport.id,
+            expectedImpactReportRevision: impactReport.revision,
+            expectedImpactReportDigest: impactReport.artifactDigest,
+            renderedCopyDigest: approval.renderedCopyDigest,
+            acknowledgements: {
+              sourceProcessing: true,
+              verificationExecution: true,
+              draftPullRequest: true,
+              humanReviewRequired: true,
+            },
+          },
+        ),
+      );
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  if (result) {
+    return (
+      <section className="panel approval-panel approval-complete">
+        <p className="section-kicker">Authorization recorded</p>
+        <h2>Migration run queued</h2>
+        <p>
+          Approval <code>{result.approval.id}</code> is immutable. Run{' '}
+          <code>{result.run.id}</code> is waiting for the Stage 4 dispatcher.
+        </p>
+      </section>
+    );
+  }
+
+  return (
+    <section className="panel approval-panel">
+      <p className="section-kicker">Mutation authorization boundary</p>
+      <h2>Approve this exact snapshot</h2>
+      <p className="approval-intro">
+        Approval is bound to commit <code>{shortSha(repository.commitSha)}</code>,
+        specification revision {specification.revision}, and impact report revision{' '}
+        {impactReport?.revision ?? '—'}.
+      </p>
+      <pre className="approval-copy">{approval.renderedCopy}</pre>
+      <div className="approval-limits">
+        <span>
+          <small>Allowed paths</small>
+          <strong>{approval.authority.patchPolicy.allowedPaths.length}</strong>
+        </span>
+        <span>
+          <small>Maximum patch</small>
+          <strong>
+            {Math.round(approval.authority.patchPolicy.maxPatchBytes / 1024)} KiB
+          </strong>
+        </span>
+        <span>
+          <small>Publication</small>
+          <strong>Draft PR only</strong>
+        </span>
+      </div>
+      <details className="approval-scope">
+        <summary>Review the exact authorized paths and checks</summary>
+        <div>
+          <h3>Patch paths</h3>
+          <ul>
+            {approval.authority.patchPolicy.allowedPaths.map(path => (
+              <li key={path}>
+                <code>{path}</code>
+              </li>
+            ))}
+          </ul>
+          <h3>Verification profiles</h3>
+          <ul>
+            {approval.authority.verificationProfile.profiles.map(profile => (
+              <li key={profile.profile}>
+                <strong>{profileLabel(profile.profile)}</strong> —{' '}
+                {profile.availability}
+                {profile.commandIds.length > 0
+                  ? ` (${profile.commandIds.join(', ')})`
+                  : ''}
+              </li>
+            ))}
+          </ul>
+        </div>
+      </details>
+      {approval.blockers.length > 0 && (
+        <div className="approval-blockers" role="status">
+          <strong>Approval unavailable</strong>
+          <ul>
+            {approval.blockers.map(blocker => (
+              <li key={blocker}>{approvalBlockerText(blocker)}</li>
+            ))}
+          </ul>
+        </div>
+      )}
+      <form onSubmit={event => void submit(event)}>
+        <ApprovalCheckbox
+          checked={acknowledgements.sourceProcessing}
+          label="I authorize processing this exact source snapshot with OpenAI."
+          onChange={checked => updateAcknowledgement('sourceProcessing', checked)}
+        />
+        <ApprovalCheckbox
+          checked={acknowledgements.verificationExecution}
+          label="I authorize isolated execution of the named verification checks."
+          onChange={checked => updateAcknowledgement('verificationExecution', checked)}
+        />
+        <ApprovalCheckbox
+          checked={acknowledgements.draftPullRequest}
+          label="I authorize a later stage to create a draft pull request."
+          onChange={checked => updateAcknowledgement('draftPullRequest', checked)}
+        />
+        <ApprovalCheckbox
+          checked={acknowledgements.humanReviewRequired}
+          label="I understand that a human must review the result and the platform cannot merge it."
+          onChange={checked => updateAcknowledgement('humanReviewRequired', checked)}
+        />
+        {error && <p className="error-message">{error}</p>}
+        <button
+          className="primary-button"
+          disabled={!approval.eligible || !acknowledged || submitting}
+          type="submit"
+        >
+          {submitting ? 'Recording authorization…' : 'Approve and queue migration'}
+        </button>
+      </form>
+    </section>
+  );
+}
+
+function ApprovalCheckbox({
+  checked,
+  label,
+  onChange,
+}: {
+  readonly checked: boolean;
+  readonly label: string;
+  readonly onChange: (checked: boolean) => void;
+}): React.JSX.Element {
+  return (
+    <label className="approval-checkbox">
+      <input
+        checked={checked}
+        type="checkbox"
+        onChange={event => onChange(event.target.checked)}
+      />
+      <span>{label}</span>
+    </label>
+  );
+}
+
+function approvalBlockerText(blocker: string): string {
+  const messages: Readonly<Record<string, string>> = {
+    APPROVAL_ROLE_REQUIRED: 'Your workspace role cannot approve migrations.',
+    CANDIDATE_NOT_OPEN: 'The candidate is no longer open.',
+    REPOSITORY_NOT_MUTABLE: 'The repository or GitHub installation is unavailable.',
+    CURRENT_IMPACT_REPORT_REQUIRED: 'A current impact report is required.',
+    AFFECTED_USAGE_REQUIRED: 'The impact report did not establish affected usage.',
+    PATCH_SCOPE_TOO_LARGE: 'The affected path set exceeds the approval limit.',
+  };
+  return messages[blocker] ?? 'The current evidence cannot be approved.';
 }
 
 function DescriptionRow({

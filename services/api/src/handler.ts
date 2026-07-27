@@ -12,6 +12,7 @@ import {
 } from '@migration/authorization';
 import {
   agentResultEnvelopeSchema,
+  createMigrationApprovalRequestSchema,
   demoRunRequestSchema,
   githubInstallLinkRequestSchema,
   githubInstallationVerificationSchema,
@@ -170,6 +171,12 @@ export async function handleRequest(
               path,
             )
           : null;
+      const approveCandidateMatch =
+        method === 'POST'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-candidates\/([0-9a-f-]{36})\/approvals$/u.exec(
+              path,
+            )
+          : null;
       const reviewSpecificationMatch =
         method === 'POST'
           ? /^\/v1\/operator\/migration-specifications\/([0-9a-f-]{36})\/review$/u.exec(
@@ -281,6 +288,18 @@ export async function handleRequest(
             z.uuid().parse(candidateMatch[2]),
           ),
         });
+      } else if (approveCandidateMatch?.[1] && approveCandidateMatch[2]) {
+        const input = createMigrationApprovalRequestSchema.parse(parseBody(event));
+        response = json(
+          202,
+          await repository.createMigrationApproval(userId, {
+            ...input,
+            organisationId: z.uuid().parse(approveCandidateMatch[1]),
+            candidateId: z.uuid().parse(approveCandidateMatch[2]),
+            idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+            requestId,
+          }),
+        );
       } else if (createMatch?.[1]) {
         const input = demoRunRequestSchema.parse(parseBody(event));
         const run = await repository.createDemoRun(userId, {

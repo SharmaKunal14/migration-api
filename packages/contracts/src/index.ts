@@ -928,6 +928,31 @@ export const migrationApprovalAuthoritySchema = z
   })
   .strict();
 
+export const migrationApprovalAcknowledgementsSchema = z
+  .object({
+    sourceProcessing: z.literal(true),
+    verificationExecution: z.literal(true),
+    draftPullRequest: z.literal(true),
+    humanReviewRequired: z.literal(true),
+  })
+  .strict();
+
+export const createMigrationApprovalRequestSchema = z
+  .object({
+    expectedCandidateVersion: z.number().int().positive(),
+    expectedRepositorySnapshotId: uuidSchema,
+    expectedBaseCommitSha: commitShaSchema,
+    expectedSnapshotDigest: sha256Schema,
+    expectedSpecificationRevision: z.number().int().positive(),
+    expectedSpecificationDigest: sha256Schema,
+    expectedImpactReportId: uuidSchema,
+    expectedImpactReportRevision: z.number().int().positive(),
+    expectedImpactReportDigest: sha256Schema,
+    renderedCopyDigest: sha256Schema,
+    acknowledgements: migrationApprovalAcknowledgementsSchema,
+  })
+  .strict();
+
 export const migrationWorkflowInputSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -1168,6 +1193,12 @@ export type MigrationApprovalVerificationProfile = z.infer<
 export type MigrationApprovalAuthority = z.infer<
   typeof migrationApprovalAuthoritySchema
 >;
+export type MigrationApprovalAcknowledgements = z.infer<
+  typeof migrationApprovalAcknowledgementsSchema
+>;
+export type CreateMigrationApprovalRequest = z.infer<
+  typeof createMigrationApprovalRequestSchema
+>;
 export type MigrationWorkflowInput = z.infer<typeof migrationWorkflowInputSchema>;
 export type ImpactAnalysisWorkflowInput = z.infer<
   typeof impactAnalysisWorkflowInputSchema
@@ -1373,6 +1404,7 @@ export interface PublicMigrationCandidateDetail {
   readonly repository: {
     readonly id: string;
     readonly fullName: string;
+    readonly snapshotId: string;
     readonly commitSha: string;
     readonly snapshotDigest: string;
     readonly snapshotCreatedAt: string;
@@ -1390,4 +1422,50 @@ export interface PublicMigrationCandidateDetail {
   readonly specification: PublicMigrationSpecificationDetail;
   readonly vendorEvidence: PublicVendorEvidenceItem[];
   readonly impactReport: PublicMigrationCandidateImpactReport | null;
+  readonly approval: PublicMigrationApprovalPreview;
+}
+
+export interface PublicMigrationApprovalPreview {
+  readonly eligible: boolean;
+  readonly blockers: readonly string[];
+  readonly renderedCopy: string;
+  readonly renderedCopyDigest: string;
+  readonly authority: MigrationApprovalAuthority;
+}
+
+export interface PublicMigrationApproval {
+  readonly id: string;
+  readonly candidateId: string;
+  readonly repositoryId: string;
+  readonly baseCommitSha: string;
+  readonly approvedByRole: 'owner' | 'admin' | 'reviewer';
+  readonly approvedAt: string;
+}
+
+export interface PublicMigrationRun {
+  readonly id: string;
+  readonly candidateId: string;
+  readonly approvalId: string;
+  readonly status:
+    'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
+  readonly currentStage:
+    | 'queued'
+    | 'revalidating'
+    | 'acquiring'
+    | 'planning'
+    | 'patching'
+    | 'verifying'
+    | 'repairing'
+    | 'publishing'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'stale';
+  readonly version: number;
+  readonly createdAt: string;
+}
+
+export interface PublicMigrationApprovalResult {
+  readonly approval: PublicMigrationApproval;
+  readonly run: PublicMigrationRun;
 }
