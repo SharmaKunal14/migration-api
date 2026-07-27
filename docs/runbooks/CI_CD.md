@@ -186,6 +186,9 @@ application unchanged, although CI may already have published immutable images.
 A migration failure blocks the application apply and does not advance the
 last-successful content marker. An application-only revision whose migrator
 content digest is unchanged skips the targeted migrator update and Fargate task.
+The deployment role has account-level `ssm:DescribeParameters` because AWS does
+not support resource scoping for that metadata API; reading or writing parameter
+values remains restricted to the exact migrator-success parameter ARN.
 
 ## Rollback
 

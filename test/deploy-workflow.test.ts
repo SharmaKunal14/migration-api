@@ -194,6 +194,10 @@ describe('development deployment artifact contract', () => {
     );
     expect(deploymentStorage).toContain('type        = "SecureString"');
     expect(deploymentStorage).toContain('ignore_changes = [value]');
+    expect(bootstrapInfrastructure).toContain(
+      'sid       = "ParameterMetadataDiscovery"',
+    );
+    expect(bootstrapInfrastructure).toContain('"ssm:DescribeParameters"');
   });
 
   it('publishes CI images through a separate main-only least-privilege role', () => {

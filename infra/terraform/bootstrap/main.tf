@@ -318,6 +318,15 @@ data "aws_iam_policy_document" "github_deploy" {
     ]
   }
 
+  # SSM DescribeParameters does not support resource-level permissions. The
+  # provider uses it to read parameter metadata after PutParameter; values
+  # remain protected by the exact-resource GetParameter permission above.
+  statement {
+    sid       = "ParameterMetadataDiscovery"
+    actions   = ["ssm:DescribeParameters"]
+    resources = ["*"]
+  }
+
   statement {
     sid = "VerifyCiPromotion"
     actions = [
