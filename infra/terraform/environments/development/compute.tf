@@ -88,6 +88,12 @@ resource "aws_cloudwatch_log_group" "migration_agent" {
   kms_key_id        = aws_kms_key.logs.arn
 }
 
+resource "aws_cloudwatch_log_group" "verifier" {
+  name              = "/migration-api/development/verifier"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
 resource "aws_cloudwatch_log_group" "migrator" {
   name              = "/migration-api/development/database-migrator"
   retention_in_days = 30
@@ -903,6 +909,74 @@ resource "aws_ecs_task_definition" "migration_agent" {
           awslogs-group         = aws_cloudwatch_log_group.migration_agent.name
           awslogs-region        = var.aws_region
           awslogs-stream-prefix = "migration-agent"
+        }
+      }
+    }
+  ])
+}
+
+resource "aws_ecs_task_definition" "verifier" {
+  family                   = "migration-api-development-verifier"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 1024
+  memory                   = 2048
+  execution_role_arn       = aws_iam_role.verifier_execution.arn
+
+  ephemeral_storage {
+    size_in_gib = 21
+  }
+
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
+  volume {
+    name = "workspace"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name                   = "verifier"
+      image                  = "${data.aws_ecr_repository.verifier.repository_url}@${var.verifier_image_digest}"
+      essential              = true
+      readonlyRootFilesystem = true
+      privileged             = false
+      user                   = "10001:10001"
+      stopTimeout            = 30
+      linuxParameters = {
+        initProcessEnabled = true
+        capabilities       = { drop = ["ALL"] }
+      }
+      mountPoints = [
+        {
+          sourceVolume  = "workspace"
+          containerPath = "/workspace"
+          readOnly      = false
+        }
+      ]
+      ulimits = [
+        {
+          name      = "nproc"
+          softLimit = 256
+          hardLimit = 256
+        },
+        {
+          name      = "nofile"
+          softLimit = 1024
+          hardLimit = 1024
+        }
+      ]
+      environment = [
+        { name = "APP_ENVIRONMENT", value = "development" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.verifier.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "verifier"
         }
       }
     }

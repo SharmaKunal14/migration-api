@@ -95,6 +95,22 @@ output "migration_agent_task_definition_arn" {
   value = aws_ecs_task_definition.migration_agent.arn
 }
 
+output "verifier_ecr_repository_url" {
+  value = data.aws_ecr_repository.verifier.repository_url
+}
+
+output "verifier_task_definition_arn" {
+  value = aws_ecs_task_definition.verifier.arn
+}
+
+output "verifier_subnet_ids" {
+  value = [for subnet in aws_subnet.verifier : subnet.id]
+}
+
+output "verifier_security_group_id" {
+  value = aws_security_group.verifier.id
+}
+
 output "impact_analysis_task_definition_arn" {
   value = aws_ecs_task_definition.impact_analysis_agent.arn
 }

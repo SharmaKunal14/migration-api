@@ -29,3 +29,7 @@ output "impact_analysis_agent_ecr_repository_url" {
 output "migration_agent_ecr_repository_url" {
   value = aws_ecr_repository.migration_agent.repository_url
 }
+
+output "verifier_ecr_repository_url" {
+  value = aws_ecr_repository.verifier.repository_url
+}

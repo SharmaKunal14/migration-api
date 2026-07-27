@@ -29,6 +29,10 @@ const impactAnalysisDockerfile = readFileSync(
   ),
   'utf8',
 );
+const verifierDockerfile = readFileSync(
+  fileURLToPath(new URL('../workers/verifier/Dockerfile', import.meta.url)),
+  'utf8',
+);
 const parallelScanWaiter = readFileSync(
   fileURLToPath(new URL('../scripts/deploy/wait-for-ecr-scans.sh', import.meta.url)),
   'utf8',
@@ -99,6 +103,18 @@ describe('development deployment artifact contract', () => {
     expect(impactAnalysisDockerfile).toContain('USER 10001:10001');
     expect(impactAnalysisDockerfile).toContain(
       'COPY dist/workers/impact-analysis-agent/main.js /app/main.js',
+    );
+  });
+
+  it('builds, scans, and deploys the hardened verifier image', () => {
+    expect(deploymentWorkflow).toContain('workers/verifier/Dockerfile');
+    expect(deploymentWorkflow).toContain('migration-api-development-verifier');
+    expect(deploymentWorkflow).toContain('TF_VAR_verifier_image_digest');
+    expect(deploymentWorkflow).toContain('VERIFIER_SCAN_DIGEST');
+    expect(verifierDockerfile).toContain('USER 10001:10001');
+    expect(verifierDockerfile).toContain('VOLUME ["/workspace"]');
+    expect(verifierDockerfile).toContain(
+      'COPY dist/workers/verifier/main.js ./main.js',
     );
   });
 

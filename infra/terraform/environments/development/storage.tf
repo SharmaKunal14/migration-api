@@ -237,3 +237,7 @@ data "aws_ecr_repository" "impact_analysis_agent" {
 data "aws_ecr_repository" "migration_agent" {
   name = "migration-api-development-migration-agent"
 }
+
+data "aws_ecr_repository" "verifier" {
+  name = "migration-api-development-verifier"
+}

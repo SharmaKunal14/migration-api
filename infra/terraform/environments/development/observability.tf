@@ -94,6 +94,18 @@ resource "aws_cloudwatch_log_metric_filter" "migration_agent_failure" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "verifier_unexpected_execution" {
+  name           = "migration-api-development-verifier-unexpected-execution"
+  log_group_name = aws_cloudwatch_log_group.verifier.name
+  pattern        = "{ $.event = \"verification_runtime_not_implemented\" }"
+
+  metric_transformation {
+    name      = "VerifierUnexpectedExecution"
+    namespace = "MigrationApi/Development"
+    value     = "1"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "api_errors" {
   alarm_name          = "migration-api-development-api-errors"
   alarm_description   = "Control API returned Lambda errors."
@@ -386,6 +398,19 @@ resource "aws_cloudwatch_metric_alarm" "migration_agent_failure" {
   alarm_description   = "The bounded migration agent could not produce an acceptable proposal."
   namespace           = "MigrationApi/Development"
   metric_name         = "MigrationAgentFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "verifier_unexpected_execution" {
+  alarm_name          = "migration-api-development-verifier-unexpected-execution"
+  alarm_description   = "The Stage 6 verifier was invoked before its execution contract was enabled."
+  namespace           = "MigrationApi/Development"
+  metric_name         = "VerifierUnexpectedExecution"
   statistic           = "Sum"
   period              = 300
   evaluation_periods  = 1

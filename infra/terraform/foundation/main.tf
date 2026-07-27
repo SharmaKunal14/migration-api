@@ -174,6 +174,28 @@ resource "aws_ecr_lifecycle_policy" "migration_agent" {
   policy     = local.image_lifecycle_policy
 }
 
+resource "aws_ecr_repository" "verifier" {
+  name                 = "migration-api-development-verifier"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = false
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.container_images.arn
+  }
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = { Stage = "6" }
+}
+
+resource "aws_ecr_lifecycle_policy" "verifier" {
+  repository = aws_ecr_repository.verifier.name
+  policy     = local.image_lifecycle_policy
+}
+
 locals {
   image_lifecycle_policy = jsonencode({
     rules = [

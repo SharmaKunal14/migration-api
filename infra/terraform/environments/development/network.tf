@@ -57,6 +57,15 @@ resource "aws_subnet" "source_fetcher" {
   tags              = { Name = "${local.name_prefix}-source-fetcher-${each.value + 1}" }
 }
 
+resource "aws_subnet" "verifier" {
+  for_each = { for index, az in local.azs : az => index }
+
+  vpc_id            = aws_vpc.main.id
+  availability_zone = each.key
+  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, 80 + each.value)
+  tags              = { Name = "${local.name_prefix}-verifier-${each.value + 1}" }
+}
+
 resource "aws_eip" "nat" {
   for_each = aws_subnet.public
   domain   = "vpc"
@@ -246,6 +255,20 @@ resource "aws_route_table_association" "source_fetcher" {
   route_table_id = aws_route_table.source_fetcher[each.key].id
 }
 
+# The verifier route table deliberately has no default route. Repository code
+# can reach only explicitly attached private AWS endpoints.
+resource "aws_route_table" "verifier" {
+  for_each = aws_subnet.verifier
+  vpc_id   = aws_vpc.main.id
+  tags     = { Name = "${local.name_prefix}-verifier-${each.key}" }
+}
+
+resource "aws_route_table_association" "verifier" {
+  for_each       = aws_subnet.verifier
+  subnet_id      = each.value.id
+  route_table_id = aws_route_table.verifier[each.key].id
+}
+
 resource "aws_cloudwatch_log_group" "network_firewall" {
   name              = "/migration-api/development/network-firewall"
   retention_in_days = 30
@@ -279,7 +302,8 @@ resource "aws_security_group" "vpc_endpoints" {
     cidr_blocks = concat(
       [for subnet in aws_subnet.control : subnet.cidr_block],
       [for subnet in aws_subnet.agent : subnet.cidr_block],
-      [for subnet in aws_subnet.source_fetcher : subnet.cidr_block]
+      [for subnet in aws_subnet.source_fetcher : subnet.cidr_block],
+      [for subnet in aws_subnet.verifier : subnet.cidr_block]
     )
   }
 
@@ -380,6 +404,28 @@ resource "aws_security_group" "vendor_fetcher" {
   }
 }
 
+resource "aws_security_group" "verifier" {
+  name        = "${local.name_prefix}-verifier"
+  description = "Verifier egress to private AWS endpoints only"
+  vpc_id      = aws_vpc.main.id
+
+  egress {
+    description     = "TLS to interface endpoints used for image pulls and logs"
+    protocol        = "tcp"
+    from_port       = 443
+    to_port         = 443
+    security_groups = [aws_security_group.vpc_endpoints.id]
+  }
+
+  egress {
+    description     = "TLS to the regional S3 gateway endpoint"
+    protocol        = "tcp"
+    from_port       = 443
+    to_port         = 443
+    prefix_list_ids = [aws_vpc_endpoint.s3.prefix_list_id]
+  }
+}
+
 resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.main.id
   service_name      = "com.amazonaws.${var.aws_region}.s3"
@@ -387,7 +433,8 @@ resource "aws_vpc_endpoint" "s3" {
   route_table_ids = concat(
     [for route_table in aws_route_table.control : route_table.id],
     [for route_table in aws_route_table.agent : route_table.id],
-    [for route_table in aws_route_table.source_fetcher : route_table.id]
+    [for route_table in aws_route_table.source_fetcher : route_table.id],
+    [for route_table in aws_route_table.verifier : route_table.id]
   )
 }
 

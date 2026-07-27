@@ -216,6 +216,16 @@ variable "migration_agent_image_digest" {
   }
 }
 
+variable "verifier_image_digest" {
+  description = "Immutable verifier image digest deployed to the Stage 6 trust zone."
+  type        = string
+
+  validation {
+    condition     = can(regex("^sha256:[a-f0-9]{64}$", var.verifier_image_digest))
+    error_message = "verifier_image_digest must be an immutable sha256 digest."
+  }
+}
+
 variable "migration_agent_openai_identity_provider_id" {
   description = "Dedicated OpenAI WIF provider ID for the Stage 5 migration-agent workload."
   type        = string

@@ -123,6 +123,11 @@ resource "aws_iam_role" "migration_agent_task" {
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
 }
 
+resource "aws_iam_role" "verifier_execution" {
+  name               = "migration-api-development-verifier-execution"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
 resource "aws_iam_role" "migrator_execution" {
   name               = "migration-api-development-migrator-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
@@ -401,6 +406,37 @@ resource "aws_iam_role_policy" "migration_agent_execution" {
   name   = "migration-agent-image-and-logs"
   role   = aws_iam_role.migration_agent_execution.id
   policy = data.aws_iam_policy_document.migration_agent_execution.json
+}
+
+data "aws_iam_policy_document" "verifier_execution" {
+  statement {
+    sid = "PullVerifierImage"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer"
+    ]
+    resources = [data.aws_ecr_repository.verifier.arn]
+  }
+
+  # ECR authorization tokens do not support resource-level permissions.
+  statement {
+    sid       = "EcrAuthorization"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "WriteVerifierLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.verifier.arn}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "verifier_execution" {
+  name   = "verifier-image-and-logs"
+  role   = aws_iam_role.verifier_execution.id
+  policy = data.aws_iam_policy_document.verifier_execution.json
 }
 
 data "aws_iam_policy_document" "migration_agent_task" {
