@@ -92,7 +92,8 @@ jobs:
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 22.23.1
-          package-manager-cache: false
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Validate protected deployment inputs
         env:
@@ -199,6 +200,8 @@ jobs:
             docker buildx build \
               --file workers/agent/Dockerfile \
               --platform linux/arm64 \
+              --cache-from type=gha,scope=development-agent \
+              --cache-to type=gha,mode=max,scope=development-agent \
               --provenance=mode=max \
               --sbom=true \
               --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
@@ -213,6 +216,8 @@ jobs:
             docker buildx build \
               --file workers/source-fetcher/Dockerfile \
               --platform linux/arm64 \
+              --cache-from type=gha,scope=development-source-fetcher \
+              --cache-to type=gha,mode=max,scope=development-source-fetcher \
               --provenance=mode=max \
               --sbom=true \
               --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
@@ -227,6 +232,8 @@ jobs:
             docker buildx build \
               --file workers/vendor-fetcher/Dockerfile \
               --platform linux/arm64 \
+              --cache-from type=gha,scope=development-vendor-fetcher \
+              --cache-to type=gha,mode=max,scope=development-vendor-fetcher \
               --provenance=mode=max \
               --sbom=true \
               --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
@@ -241,6 +248,8 @@ jobs:
             docker buildx build \
               --file workers/change-intelligence-agent/Dockerfile \
               --platform linux/arm64 \
+              --cache-from type=gha,scope=development-change-intelligence-agent \
+              --cache-to type=gha,mode=max,scope=development-change-intelligence-agent \
               --provenance=mode=max \
               --sbom=true \
               --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
@@ -255,6 +264,8 @@ jobs:
             docker buildx build \
               --file workers/impact-analysis-agent/Dockerfile \
               --platform linux/arm64 \
+              --cache-from type=gha,scope=development-impact-analysis-agent \
+              --cache-to type=gha,mode=max,scope=development-impact-analysis-agent \
               --provenance=mode=max \
               --sbom=true \
               --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
@@ -269,6 +280,8 @@ jobs:
             docker buildx build \
               --file workers/database-migrator/Dockerfile \
               --platform linux/arm64 \
+              --cache-from type=gha,scope=development-database-migrator \
+              --cache-to type=gha,mode=max,scope=development-database-migrator \
               --provenance=mode=max \
               --sbom=true \
               --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
@@ -427,30 +440,48 @@ jobs:
 
       - name: Gate on ECR vulnerability scans
         run: |
+          scan_pids=()
           bash scripts/deploy/wait-for-ecr-scan.sh \
             migration-api-development-agent \
             "${AGENT_SCAN_DIGEST}" \
-            deployment-evidence/agent-image-scan.json
+            deployment-evidence/agent-image-scan.json &
+          scan_pids+=("$!")
           bash scripts/deploy/wait-for-ecr-scan.sh \
             migration-api-development-database-migrator \
             "${MIGRATOR_SCAN_DIGEST}" \
-            deployment-evidence/migrator-image-scan.json
+            deployment-evidence/migrator-image-scan.json &
+          scan_pids+=("$!")
           bash scripts/deploy/wait-for-ecr-scan.sh \
             migration-api-development-source-fetcher \
             "${SOURCE_FETCHER_SCAN_DIGEST}" \
-            deployment-evidence/source-fetcher-image-scan.json
+            deployment-evidence/source-fetcher-image-scan.json &
+          scan_pids+=("$!")
           bash scripts/deploy/wait-for-ecr-scan.sh \
             migration-api-development-vendor-fetcher \
             "${VENDOR_FETCHER_SCAN_DIGEST}" \
-            deployment-evidence/vendor-fetcher-image-scan.json
+            deployment-evidence/vendor-fetcher-image-scan.json &
+          scan_pids+=("$!")
           bash scripts/deploy/wait-for-ecr-scan.sh \
             migration-api-development-change-intelligence-agent \
             "${CHANGE_INTELLIGENCE_AGENT_SCAN_DIGEST}" \
-            deployment-evidence/change-intelligence-agent-image-scan.json
+            deployment-evidence/change-intelligence-agent-image-scan.json &
+          scan_pids+=("$!")
           bash scripts/deploy/wait-for-ecr-scan.sh \
             migration-api-development-impact-analysis-agent \
             "${IMPACT_ANALYSIS_AGENT_SCAN_DIGEST}" \
-            deployment-evidence/impact-analysis-agent-image-scan.json
+            deployment-evidence/impact-analysis-agent-image-scan.json &
+          scan_pids+=("$!")
+
+          scan_failed=0
+          for scan_pid in "${scan_pids[@]}"; do
+            if ! wait "${scan_pid}"; then
+              scan_failed=1
+            fi
+          done
+          if (( scan_failed != 0 )); then
+            echo "One or more ECR vulnerability scans failed." >&2
+            exit 1
+          fi
 
       - name: Refresh AWS credentials for migration and planning
         uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
@@ -596,14 +627,6 @@ jobs:
         env:
           DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
         run: node scripts/deploy/validate-environment.mjs
-
-      - name: Rebuild local deployment inputs
-        env:
-          VITE_API_BASE_URL: /api
-          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-        run: |
-          npm ci --ignore-scripts
-          npm run build
 
       - name: Configure fresh short-lived AWS credentials
         uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
