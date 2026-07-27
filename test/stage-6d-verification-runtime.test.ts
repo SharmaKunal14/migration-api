@@ -57,8 +57,11 @@ describe('Stage 6D verification runtime', () => {
     expect(invocations[0]?.env).toMatchObject({
       npm_config_ignore_scripts: 'true',
       npm_config_userconfig: '/dev/null',
-      npm_config_globalconfig: '/dev/null',
+      npm_config_globalconfig: '/workspace/home/.npmrc-global',
     });
+    expect(invocations[0]?.env.npm_config_userconfig).not.toBe(
+      invocations[0]?.env.npm_config_globalconfig,
+    );
     expect(invocations[0]?.env).not.toHaveProperty('AWS_ACCESS_KEY_ID');
     expect(invocations[0]?.env).not.toHaveProperty('GITHUB_TOKEN');
     expect(invocations[0]?.env).not.toHaveProperty('DATABASE_URL');

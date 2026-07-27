@@ -2447,7 +2447,7 @@ async function readMigrationAgentArtifacts(
     prepared.organisationId !== workflow.organisationId ||
     prepared.repositoryId !== workflow.repositoryId ||
     prepared.migrationRunId !== workflow.migrationRunId ||
-    prepared.attemptNumber !== workflow.expectedAttempt
+    !isMigrationAgentAttemptAuthorized(workflow.expectedAttempt, prepared.attemptNumber)
   ) {
     throw new Error('The prepared migration-agent input has invalid ownership.');
   }
@@ -2480,6 +2480,19 @@ async function readMigrationAgentArtifacts(
     throw new Error('The migration-agent result has invalid ownership.');
   }
   return { input, inputBytes, result };
+}
+
+export function isMigrationAgentAttemptAuthorized(
+  expectedAttempt: number,
+  preparedAttempt: number,
+): boolean {
+  return (
+    Number.isSafeInteger(expectedAttempt) &&
+    Number.isSafeInteger(preparedAttempt) &&
+    expectedAttempt >= 1 &&
+    preparedAttempt >= expectedAttempt &&
+    preparedAttempt <= expectedAttempt + 2
+  );
 }
 
 async function lockedMigrationRun(

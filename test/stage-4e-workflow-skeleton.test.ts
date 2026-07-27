@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
+  isMigrationAgentAttemptAuthorized,
   migrationExecutionStageSchema,
   migrationStageCapabilityStatusSchema,
   stageUnavailableSafeErrorCode,
@@ -22,6 +23,15 @@ const migrationStateMachine = compute.slice(
 );
 
 describe('Stage 4E full migration workflow skeleton', () => {
+  it('binds agent ingestion to the base attempt and two bounded repairs', () => {
+    expect(isMigrationAgentAttemptAuthorized(1, 1)).toBe(true);
+    expect(isMigrationAgentAttemptAuthorized(1, 2)).toBe(true);
+    expect(isMigrationAgentAttemptAuthorized(1, 3)).toBe(true);
+    expect(isMigrationAgentAttemptAuthorized(1, 0)).toBe(false);
+    expect(isMigrationAgentAttemptAuthorized(1, 4)).toBe(false);
+    expect(isMigrationAgentAttemptAuthorized(1, 2.5)).toBe(false);
+  });
+
   it('models every future execution boundary explicitly', () => {
     for (const state of [
       'ValidateApproval',

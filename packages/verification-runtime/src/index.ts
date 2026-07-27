@@ -419,7 +419,7 @@ function verificationEnvironment(
     PATH: '/usr/local/bin:/usr/bin:/bin',
     npm_config_audit: 'false',
     npm_config_fund: 'false',
-    npm_config_globalconfig: '/dev/null',
+    npm_config_globalconfig: '/workspace/home/.npmrc-global',
     npm_config_ignore_scripts: 'true',
     npm_config_registry: registryUrl,
     npm_config_update_notifier: 'false',
