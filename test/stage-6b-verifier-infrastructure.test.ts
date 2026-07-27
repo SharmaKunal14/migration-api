@@ -97,7 +97,9 @@ describe('Stage 6B verifier trust zone', () => {
   });
 
   it('is fail-closed when its signed work item is absent', () => {
-    expect(verifier).toContain("requiredEnvironment('VERIFICATION_WORK_ITEM')");
+    expect(verifier).toContain(
+      "requiredEnvironment('VERIFICATION_WORK_ITEM_REFERENCE')",
+    );
     expect(verifier).toContain('VERIFICATION_INFRASTRUCTURE_FAILED');
   });
 });

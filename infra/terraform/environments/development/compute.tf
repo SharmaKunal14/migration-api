@@ -2149,8 +2149,8 @@ resource "aws_sfn_state_machine" "migration" {
             ContainerOverrides = [{
               Name = "verifier"
               Environment = [{
-                Name      = "VERIFICATION_WORK_ITEM"
-                "Value.$" = "States.JsonToString($.boundary.Payload)"
+                Name      = "VERIFICATION_WORK_ITEM_REFERENCE"
+                "Value.$" = "States.JsonToString($.boundary.Payload.dispatch)"
               }]
             }]
           }

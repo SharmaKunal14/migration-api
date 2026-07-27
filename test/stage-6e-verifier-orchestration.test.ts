@@ -2,7 +2,10 @@ import { readFileSync } from 'node:fs';
 
 import { describe, expect, it } from 'vitest';
 
-import { migrationVerificationWorkItemSchema } from '@migration/contracts';
+import {
+  migrationVerificationDispatchSchema,
+  migrationVerificationWorkItemReferenceSchema,
+} from '@migration/contracts';
 
 const compute = read('infra/terraform/environments/development/compute.tf');
 const iam = read('infra/terraform/environments/development/iam.tf');
@@ -17,7 +20,9 @@ describe('Stage 6E verifier orchestration', () => {
     expect(compute).toContain(
       'Subnets        = [for subnet in aws_subnet.verifier : subnet.id]',
     );
-    expect(compute).toContain('"Value.$" = "States.JsonToString($.boundary.Payload)"');
+    expect(compute).toContain(
+      '"Value.$" = "States.JsonToString($.boundary.Payload.dispatch)"',
+    );
     expect(compute).toContain('operation    = "ingest_migration_verification"');
   });
 
@@ -35,7 +40,7 @@ describe('Stage 6E verifier orchestration', () => {
   });
 
   it('binds transfers to the exact attempt and validates all result evidence', () => {
-    const parsed = migrationVerificationWorkItemSchema.parse({
+    const parsed = migrationVerificationDispatchSchema.parse({
       status: 'ready',
       schemaVersion: '1.0',
       organisationId: '07a17d5a-820d-4199-93d9-4e71b1c2d4f5',
@@ -91,6 +96,13 @@ describe('Stage 6E verifier orchestration', () => {
         awsRegion: 'ap-southeast-2',
         approvedRegistryUrl: 'https://registry.npmjs.org/',
       },
+      dispatch: {
+        downloadUrl: 'https://bucket.s3.ap-southeast-2.amazonaws.com/work-item?sig=1',
+        digest: 'f'.repeat(64),
+        bytes: 1,
+        artifactBucket: 'bucket',
+        awsRegion: 'ap-southeast-2',
+      },
     });
     expect(parsed.snapshot.bytes).toBe(1);
     expect(control).toContain(
@@ -99,6 +111,22 @@ describe('Stage 6E verifier orchestration', () => {
     expect(control).toContain(
       "throw new Error('The verification log artifact digest is invalid.')",
     );
+  });
+
+  it('keeps ECS overrides bounded by passing a digest-bound work-item reference', () => {
+    const reference = migrationVerificationWorkItemReferenceSchema.parse({
+      downloadUrl: 'https://bucket.s3.ap-southeast-2.amazonaws.com/work-item?sig=1',
+      digest: 'a'.repeat(64),
+      bytes: 8_192,
+      artifactBucket: 'bucket',
+      awsRegion: 'ap-southeast-2',
+    });
+    expect(JSON.stringify(reference).length).toBeLessThan(8_192);
+    expect(control).toContain('/work-items/${workItemDigest}.json');
+    expect(control).toContain("'application/json'");
+    expect(worker).toContain("requiredEnvironment('VERIFICATION_WORK_ITEM_REFERENCE')");
+    expect(worker).toContain('maximumBytes: 64 * 1024');
+    expect(worker).not.toContain("requiredEnvironment('VERIFICATION_WORK_ITEM')");
   });
 });
 

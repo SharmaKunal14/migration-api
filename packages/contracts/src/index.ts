@@ -1652,6 +1652,25 @@ export const migrationVerificationWorkItemSchema =
       .strict(),
   });
 
+export const migrationVerificationWorkItemReferenceSchema = z
+  .object({
+    downloadUrl: z.url().max(4_096),
+    digest: sha256Schema,
+    bytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(64 * 1024),
+    artifactBucket: z.string().min(3).max(63),
+    awsRegion: z.string().regex(/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u),
+  })
+  .strict();
+
+export const migrationVerificationDispatchSchema =
+  migrationVerificationWorkItemSchema.extend({
+    dispatch: migrationVerificationWorkItemReferenceSchema,
+  });
+
 const verificationCommandResultSchema = z
   .object({
     commandId: z
@@ -2065,6 +2084,12 @@ export type MigrationVerificationPreparedInput = z.infer<
 >;
 export type MigrationVerificationWorkItem = z.infer<
   typeof migrationVerificationWorkItemSchema
+>;
+export type MigrationVerificationWorkItemReference = z.infer<
+  typeof migrationVerificationWorkItemReferenceSchema
+>;
+export type MigrationVerificationDispatch = z.infer<
+  typeof migrationVerificationDispatchSchema
 >;
 export type MigrationVerificationResult = z.infer<
   typeof migrationVerificationResultSchema

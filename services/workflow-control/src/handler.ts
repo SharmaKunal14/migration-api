@@ -21,6 +21,7 @@ import {
   migrationAcquisitionResultSchema,
   migrationSpecificationSchema,
   migrationVerificationPreparedInputSchema,
+  migrationVerificationDispatchSchema,
   migrationVerificationResultSchema,
   migrationVerificationWorkItemSchema,
   migrationWorkflowInputSchema,
@@ -30,7 +31,7 @@ import {
   type MigrationAgentPreparedInput,
   type MigrationAgentResult,
   type MigrationVerificationPreparedInput,
-  type MigrationVerificationWorkItem,
+  type MigrationVerificationDispatch,
   type MigrationWorkflowInput,
 } from '@migration/contracts';
 import {
@@ -159,7 +160,7 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
     .object({
       operation: z.literal('ingest_migration_verification'),
       workflow: migrationWorkflowInputSchema,
-      prepared: migrationVerificationWorkItemSchema,
+      prepared: migrationVerificationDispatchSchema,
     })
     .strict(),
   z
@@ -1688,7 +1689,7 @@ async function ingestMigrationPatch(
 async function prepareMigrationVerification(
   dependency: WorkflowDependencies,
   workflow: MigrationWorkflowInput,
-): Promise<MigrationVerificationWorkItem | { readonly status: 'cancelled' | 'stale' }> {
+): Promise<MigrationVerificationDispatch | { readonly status: 'cancelled' | 'stale' }> {
   const prepared = await prepareMigrationVerificationRecord(
     dependency.database,
     workflow,
@@ -1879,7 +1880,7 @@ async function prepareMigrationVerificationRecord(
 async function createVerificationWorkItem(
   dependency: WorkflowDependencies,
   prepared: MigrationVerificationPreparedInput,
-): Promise<MigrationVerificationWorkItem> {
+): Promise<MigrationVerificationDispatch> {
   const prefix = `env/${dependency.config.APP_ENVIRONMENT}/org/${prepared.organisationId}/run/${prepared.migrationRunId}/verification/attempt-${String(prepared.attemptNumber)}`;
   const resultObjectKey = `${prefix}/result.json`;
   const stdoutObjectKey = `${prefix}/stdout.log`;
@@ -1922,7 +1923,7 @@ async function createVerificationWorkItem(
       ),
     ),
   ]);
-  return migrationVerificationWorkItemSchema.parse({
+  const workItem = migrationVerificationWorkItemSchema.parse({
     ...prepared,
     transfers: {
       snapshotDownloadUrl,
@@ -1939,12 +1940,41 @@ async function createVerificationWorkItem(
       approvedRegistryUrl: dependency.config.VERIFIER_REGISTRY_URL,
     },
   });
+  const workItemBytes = Buffer.from(JSON.stringify(workItem), 'utf8');
+  const workItemDigest = sha256(workItemBytes);
+  const workItemObjectKey = `${prefix}/work-items/${workItemDigest}.json`;
+  await putImmutableObject(
+    dependency,
+    workItemObjectKey,
+    workItemBytes,
+    'application/json',
+    workItemDigest,
+    prepared.migrationRunId,
+  );
+  const workItemDownloadUrl = await getSignedUrl(
+    dependency.s3,
+    new GetObjectCommand({
+      Bucket: dependency.config.ARTIFACT_BUCKET,
+      Key: workItemObjectKey,
+    }),
+    { expiresIn },
+  );
+  return migrationVerificationDispatchSchema.parse({
+    ...workItem,
+    dispatch: {
+      downloadUrl: workItemDownloadUrl,
+      digest: workItemDigest,
+      bytes: workItemBytes.byteLength,
+      artifactBucket: dependency.config.ARTIFACT_BUCKET,
+      awsRegion: dependency.config.AWS_REGION,
+    },
+  });
 }
 
 async function ingestMigrationVerification(
   dependency: WorkflowDependencies,
   workflow: MigrationWorkflowInput,
-  prepared: MigrationVerificationWorkItem,
+  prepared: MigrationVerificationDispatch,
 ): Promise<'completed' | 'failed' | 'cancelled'> {
   if (
     prepared.organisationId !== workflow.organisationId ||

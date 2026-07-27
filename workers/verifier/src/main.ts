@@ -3,6 +3,7 @@ import { mkdir, rm } from 'node:fs/promises';
 
 import {
   migrationVerificationResultSchema,
+  migrationVerificationWorkItemReferenceSchema,
   migrationVerificationWorkItemSchema,
   type MigrationVerificationResult,
 } from '@migration/contracts';
@@ -26,9 +27,26 @@ export {
 };
 
 async function main(): Promise<void> {
-  const workItem = migrationVerificationWorkItemSchema.parse(
-    JSON.parse(requiredEnvironment('VERIFICATION_WORK_ITEM')),
+  const workItemReference = migrationVerificationWorkItemReferenceSchema.parse(
+    JSON.parse(requiredEnvironment('VERIFICATION_WORK_ITEM_REFERENCE')),
   );
+  const workItemBytes = await downloadBoundedArtifact({
+    url: workItemReference.downloadUrl,
+    expectedDigest: workItemReference.digest,
+    expectedBytes: workItemReference.bytes,
+    maximumBytes: 64 * 1024,
+    artifactBucket: workItemReference.artifactBucket,
+    awsRegion: workItemReference.awsRegion,
+  });
+  const workItem = migrationVerificationWorkItemSchema.parse(
+    JSON.parse(workItemBytes.toString('utf8')),
+  );
+  if (
+    workItem.transfers.artifactBucket !== workItemReference.artifactBucket ||
+    workItem.transfers.awsRegion !== workItemReference.awsRegion
+  ) {
+    throw new Error('The verification work item reference is invalid.');
+  }
   const startedAt = new Date();
   const [snapshot, patch] = await Promise.all([
     downloadBoundedArtifact({
