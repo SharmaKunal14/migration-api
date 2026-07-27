@@ -2302,7 +2302,7 @@ async function ingestMigrationVerification(
         verificationAttemptId: prepared.verificationAttemptId,
         outcome: result.outcome,
         safeErrorCode: result.safeErrorCode,
-        commands: sql<unknown>`${JSON.stringify(result.commands)}::jsonb`,
+        commands: sql`${JSON.stringify(result.commands)}::jsonb`,
         resultArtifactId,
         resultDigest,
         stdoutArtifactId,
