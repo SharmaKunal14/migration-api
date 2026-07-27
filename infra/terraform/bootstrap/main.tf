@@ -98,6 +98,13 @@ locals {
     var.github_repository_id,
     var.github_deployment_environment
   )
+  github_ci_oidc_subject = format(
+    "repo:%s@%s/%s@%s:ref:refs/heads/main",
+    local.github_repository_parts[0],
+    var.github_repository_owner_id,
+    local.github_repository_parts[1],
+    var.github_repository_id
+  )
 }
 
 data "aws_iam_policy_document" "github_deploy_trust" {
@@ -127,6 +134,35 @@ data "aws_iam_policy_document" "github_deploy_trust" {
 resource "aws_iam_role" "github_deploy" {
   name               = "migration-api-development-github-deploy"
   assume_role_policy = data.aws_iam_policy_document.github_deploy_trust.json
+}
+
+data "aws_iam_policy_document" "github_ci_artifacts_trust" {
+  statement {
+    effect  = "Allow"
+    actions = ["sts:AssumeRoleWithWebIdentity"]
+
+    principals {
+      type        = "Federated"
+      identifiers = [data.aws_iam_openid_connect_provider.github.arn]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:aud"
+      values   = ["sts.amazonaws.com"]
+    }
+
+    condition {
+      test     = "StringEquals"
+      variable = "token.actions.githubusercontent.com:sub"
+      values   = [local.github_ci_oidc_subject]
+    }
+  }
+}
+
+resource "aws_iam_role" "github_ci_artifacts" {
+  name               = "migration-api-development-github-ci-artifacts"
+  assume_role_policy = data.aws_iam_policy_document.github_ci_artifacts_trust.json
 }
 
 resource "aws_iam_service_linked_role" "network_firewall" {
@@ -252,6 +288,21 @@ data "aws_iam_policy_document" "github_deploy" {
   }
 
   statement {
+    sid = "MigratorSuccessMarker"
+    actions = [
+      "ssm:AddTagsToResource",
+      "ssm:DeleteParameter",
+      "ssm:GetParameter",
+      "ssm:ListTagsForResource",
+      "ssm:PutParameter",
+      "ssm:RemoveTagsFromResource"
+    ]
+    resources = [
+      "arn:aws:ssm:${var.aws_region}:${data.aws_caller_identity.current.account_id}:parameter/migration-api/development/deployment/last-successful-migrator-content-digest"
+    ]
+  }
+
+  statement {
     sid = "StageOneInfrastructure"
     actions = [
       "acm:DescribeCertificate",
@@ -298,6 +349,50 @@ resource "aws_iam_role_policy" "github_deploy" {
   policy = data.aws_iam_policy_document.github_deploy.json
 }
 
+data "aws_iam_policy_document" "github_ci_artifacts" {
+  # ECR authorization tokens are registry-scoped and do not support resource ARNs.
+  statement {
+    sid       = "EcrAuthorization"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid = "PublishAndInspectDevelopmentImages"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:CompleteLayerUpload",
+      "ecr:DescribeImageScanFindings",
+      "ecr:DescribeImages",
+      "ecr:DescribeRepositories",
+      "ecr:GetDownloadUrlForLayer",
+      "ecr:InitiateLayerUpload",
+      "ecr:ListImages",
+      "ecr:PutImage",
+      "ecr:UploadLayerPart"
+    ]
+    resources = [
+      for repository_name in [
+        "agent",
+        "database-migrator",
+        "source-fetcher",
+        "vendor-fetcher",
+        "change-intelligence-agent",
+        "impact-analysis-agent",
+        "migration-agent"
+      ] :
+      "arn:aws:ecr:${var.aws_region}:${data.aws_caller_identity.current.account_id}:repository/migration-api-development-${repository_name}"
+    ]
+  }
+}
+
+resource "aws_iam_role_policy" "github_ci_artifacts" {
+  name   = "migration-api-development-ci-artifacts"
+  role   = aws_iam_role.github_ci_artifacts.id
+  policy = data.aws_iam_policy_document.github_ci_artifacts.json
+}
+
 output "state_bucket" {
   value = aws_s3_bucket.terraform_state.bucket
 }
@@ -313,4 +408,13 @@ output "github_deploy_role_arn" {
 output "github_oidc_subject" {
   description = "Exact immutable GitHub Actions OIDC subject trusted by the deployment role."
   value       = local.github_oidc_subject
+}
+
+output "github_ci_artifacts_role_arn" {
+  value = aws_iam_role.github_ci_artifacts.arn
+}
+
+output "github_ci_oidc_subject" {
+  description = "Exact immutable main-branch OIDC subject trusted by the CI artifact role."
+  value       = local.github_ci_oidc_subject
 }
