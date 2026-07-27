@@ -238,6 +238,15 @@ describe('Stage 6A verification control plane', () => {
     expect(migration).toContain(
       "'Stage 6A expected exactly one migration artifact media constraint, found %'",
     );
+    expect(migration).toContain(
+      'add constraint migration_artifacts_stage_6a_media_check check',
+    );
+    expect(migration).not.toContain(
+      'add constraint migration_artifacts_media_type_check check',
+    );
+    expect(rollback).toContain(
+      'drop constraint migration_artifacts_stage_6a_media_check',
+    );
     const mediaConstraintLookup = migration.slice(
       migration.indexOf("position(\n      'media_type'"),
       migration.indexOf(

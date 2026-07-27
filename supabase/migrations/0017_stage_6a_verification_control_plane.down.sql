@@ -38,7 +38,7 @@ alter table migration_artifacts
   );
 
 alter table migration_artifacts
-  drop constraint migration_artifacts_media_type_check;
+  drop constraint migration_artifacts_stage_6a_media_check;
 
 alter table migration_artifacts
   add constraint migration_artifacts_stage_5b_media_check check (

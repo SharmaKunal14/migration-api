@@ -143,7 +143,7 @@ end
 $$;
 
 alter table migration_artifacts
-  add constraint migration_artifacts_media_type_check check (
+  add constraint migration_artifacts_stage_6a_media_check check (
     (artifact_type = 'source_snapshot' and media_type = 'application/gzip')
     or (artifact_type = 'patch_proposal' and media_type = 'text/x-diff')
     or (
