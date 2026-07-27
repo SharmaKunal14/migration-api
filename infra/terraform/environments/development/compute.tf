@@ -2014,6 +2014,51 @@ resource "aws_sfn_state_machine" "migration" {
         Parameters = {
           FunctionName = aws_lambda_function.workflow_control.arn
           Payload = {
+            operation    = "prepare_migration_verification"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.boundary"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateVerificationPreparation"
+      }
+      EvaluateVerificationPreparation = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "ready"
+            Next         = "CheckVerifierCapability"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      CheckVerifierCapability = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
             operation    = "evaluate_migration_stage_capability"
             stage        = "verifying"
             "workflow.$" = "$.workflow"

@@ -16,14 +16,17 @@ import {
   migrationAgentPreparedInputSchema,
   migrationAgentResultSchema,
   migrationApprovalPatchPolicySchema,
+  migrationApprovalVerificationProfileSchema,
   migrationAcquisitionResultSchema,
   migrationSpecificationSchema,
+  migrationVerificationPreparedInputSchema,
   migrationWorkflowInputSchema,
   workflowInputSchema,
   type AgentResultEnvelope,
   type MigrationAgentInputArtifact,
   type MigrationAgentPreparedInput,
   type MigrationAgentResult,
+  type MigrationVerificationPreparedInput,
   type MigrationWorkflowInput,
 } from '@migration/contracts';
 import {
@@ -144,6 +147,12 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('prepare_migration_verification'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('mark_migration_infrastructure_failed'),
       workflow: migrationWorkflowInputSchema,
     })
@@ -191,6 +200,7 @@ export async function handleWorkflowCommand(
       readonly stage?: MigrationExecutionStage;
     }
   | MigrationAgentPreparedInput
+  | MigrationVerificationPreparedInput
 > {
   const command = workflowCommandSchema.parse(event);
   if (command.operation === 'validate_migration_approval') {
@@ -281,6 +291,24 @@ export async function handleWorkflowCommand(
       outcome: status,
     });
     return { status, stage: 'patching' };
+  }
+  if (command.operation === 'prepare_migration_verification') {
+    const prepared = await prepareMigrationVerification(
+      dependency.database,
+      command.workflow,
+    );
+    writeLog('info', {
+      event: 'migration_verification_prepared',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      outcome: prepared.status,
+      ...(prepared.status === 'ready'
+        ? { verificationAttemptId: prepared.verificationAttemptId }
+        : {}),
+    });
+    return prepared;
   }
   if (command.operation === 'evaluate_migration_stage_capability') {
     const status = await evaluateMigrationStageCapability(
@@ -1633,6 +1661,181 @@ async function ingestMigrationPatch(
   });
 }
 
+async function prepareMigrationVerification(
+  database: AppDatabase,
+  workflow: MigrationWorkflowInput,
+): Promise<
+  MigrationVerificationPreparedInput | { readonly status: 'cancelled' | 'stale' }
+> {
+  return database.transaction().execute(async transaction => {
+    const source = await transaction
+      .selectFrom('migrationRuns as run')
+      .innerJoin('migrationApprovals as approval', join =>
+        join
+          .onRef('approval.id', '=', 'run.approvalId')
+          .onRef('approval.organisationId', '=', 'run.organisationId'),
+      )
+      .innerJoin('migrationArtifacts as snapshot', join =>
+        join
+          .onRef('snapshot.migrationRunId', '=', 'run.id')
+          .onRef('snapshot.organisationId', '=', 'run.organisationId')
+          .on('snapshot.artifactType', '=', 'source_snapshot'),
+      )
+      .innerJoin('patchAttempts as patch', join =>
+        join
+          .onRef('patch.migrationRunId', '=', 'run.id')
+          .onRef('patch.organisationId', '=', 'run.organisationId')
+          .on('patch.status', '=', 'accepted'),
+      )
+      .innerJoin('migrationArtifacts as patchArtifact', join =>
+        join
+          .onRef('patchArtifact.id', '=', 'patch.patchArtifactId')
+          .onRef('patchArtifact.organisationId', '=', 'patch.organisationId')
+          .onRef('patchArtifact.migrationRunId', '=', 'patch.migrationRunId')
+          .onRef('patchArtifact.digest', '=', 'patch.patchDigest'),
+      )
+      .innerJoin('migrationArtifacts as patchValidation', join =>
+        join
+          .onRef('patchValidation.id', '=', 'patch.validationArtifactId')
+          .onRef('patchValidation.organisationId', '=', 'patch.organisationId')
+          .onRef('patchValidation.migrationRunId', '=', 'patch.migrationRunId')
+          .onRef('patchValidation.digest', '=', 'patch.validationDigest'),
+      )
+      .select([
+        'run.status',
+        'run.currentStage',
+        'run.attempt',
+        'run.version',
+        'run.baseCommitSha',
+        'run.cancellationRequestedAt',
+        'approval.verificationPolicyVersion',
+        'approval.verificationProfile',
+        'approval.verificationProfileDigest',
+        'snapshot.id as snapshotArtifactId',
+        'snapshot.objectKey as snapshotObjectKey',
+        'snapshot.digest as snapshotDigest',
+        'patch.id as patchAttemptId',
+        'patch.attemptNumber as patchAttemptNumber',
+        'patch.patchArtifactId',
+        'patchArtifact.objectKey as patchObjectKey',
+        'patch.patchDigest',
+        'patch.validationArtifactId as patchValidationArtifactId',
+        'patchValidation.objectKey as patchValidationObjectKey',
+        'patch.validationDigest as patchValidationDigest',
+      ])
+      .where('run.id', '=', workflow.migrationRunId)
+      .where('run.organisationId', '=', workflow.organisationId)
+      .where('run.candidateId', '=', workflow.candidateId)
+      .where('run.approvalId', '=', workflow.approvalId)
+      .where('run.repositoryId', '=', workflow.repositoryId)
+      .orderBy('patch.attemptNumber', 'desc')
+      .forUpdate('run')
+      .executeTakeFirstOrThrow();
+    if (source.attempt !== workflow.expectedAttempt) {
+      throw new Error('The verification workflow attempt does not match its run.');
+    }
+    if (source.status === 'cancelled') return { status: 'cancelled' };
+    if (source.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, source.version);
+      return { status: 'cancelled' };
+    }
+    if (source.status !== 'running' || source.currentStage !== 'verifying') {
+      throw new Error('The migration run cannot prepare verification.');
+    }
+    const approval = await loadMigrationApprovalState(transaction, workflow);
+    if (isMigrationApprovalStale(approval, new Date())) {
+      await markMigrationStale(transaction, workflow, source.version);
+      return { status: 'stale' };
+    }
+    if (
+      source.patchArtifactId === null ||
+      source.patchDigest === null ||
+      source.patchValidationArtifactId === null ||
+      source.patchValidationDigest === null
+    ) {
+      throw new Error('The accepted patch has incomplete verification evidence.');
+    }
+    const verificationProfile = migrationApprovalVerificationProfileSchema.parse(
+      source.verificationProfile,
+    );
+    const existing = await transaction
+      .selectFrom('verificationAttempts')
+      .select(['id', 'attemptNumber'])
+      .where('organisationId', '=', workflow.organisationId)
+      .where('migrationRunId', '=', workflow.migrationRunId)
+      .where('patchAttemptId', '=', source.patchAttemptId)
+      .executeTakeFirst();
+    const verificationAttemptId = existing?.id ?? randomUUID();
+    const attemptNumber = existing?.attemptNumber ?? source.patchAttemptNumber;
+    if (!existing) {
+      const now = new Date();
+      await transaction
+        .insertInto('verificationAttempts')
+        .values({
+          id: verificationAttemptId,
+          organisationId: workflow.organisationId,
+          migrationRunId: workflow.migrationRunId,
+          approvalId: workflow.approvalId,
+          attemptNumber,
+          patchAttemptId: source.patchAttemptId,
+          baseCommitSha: source.baseCommitSha,
+          snapshotArtifactId: source.snapshotArtifactId,
+          snapshotDigest: source.snapshotDigest,
+          patchArtifactId: source.patchArtifactId,
+          patchDigest: source.patchDigest,
+          patchValidationArtifactId: source.patchValidationArtifactId,
+          patchValidationDigest: source.patchValidationDigest,
+          verificationPolicyVersion: source.verificationPolicyVersion,
+          verificationProfile,
+          verificationProfileDigest: source.verificationProfileDigest,
+          createdAt: now,
+        })
+        .executeTakeFirstOrThrow();
+      await appendMigrationRunEvent(transaction, {
+        workflow,
+        eventKey: `run:${workflow.migrationRunId}:verification-prepared:${String(
+          attemptNumber,
+        )}`,
+        eventType: 'verification_prepared',
+        status: 'running',
+        stage: 'verifying',
+        safeErrorCode: null,
+        createdAt: now,
+      });
+    }
+    return migrationVerificationPreparedInputSchema.parse({
+      status: 'ready',
+      schemaVersion: '1.0',
+      organisationId: workflow.organisationId,
+      repositoryId: workflow.repositoryId,
+      migrationRunId: workflow.migrationRunId,
+      approvalId: workflow.approvalId,
+      verificationAttemptId,
+      attemptNumber,
+      patchAttemptId: source.patchAttemptId,
+      baseCommitSha: source.baseCommitSha,
+      snapshot: {
+        artifactId: source.snapshotArtifactId,
+        objectKey: source.snapshotObjectKey,
+        digest: source.snapshotDigest,
+      },
+      patch: {
+        artifactId: source.patchArtifactId,
+        objectKey: source.patchObjectKey,
+        digest: source.patchDigest,
+        validationArtifactId: source.patchValidationArtifactId,
+        validationObjectKey: source.patchValidationObjectKey,
+        validationDigest: source.patchValidationDigest,
+      },
+      authority: {
+        verificationPolicyVersion: source.verificationPolicyVersion,
+        verificationProfile,
+        verificationProfileDigest: source.verificationProfileDigest,
+      },
+    });
+  });
+}
+
 async function readMigrationAgentArtifacts(
   dependency: WorkflowDependencies,
   workflow: MigrationWorkflowInput,
@@ -2081,6 +2284,7 @@ interface SystemMigrationRunEvent {
     | 'plan_created'
     | 'patch_proposed'
     | 'patch_validated'
+    | 'verification_prepared'
     | 'run_cancelled'
     | 'run_failed'
     | 'run_stale';

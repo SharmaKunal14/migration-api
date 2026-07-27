@@ -519,6 +519,10 @@ export interface MigrationRunEventTable {
     | 'plan_created'
     | 'patch_proposed'
     | 'patch_validated'
+    | 'verification_prepared'
+    | 'verification_started'
+    | 'verification_completed'
+    | 'repair_requested'
     | 'cancellation_requested'
     | 'run_cancelled'
     | 'run_failed'
@@ -556,7 +560,11 @@ export interface MigrationArtifactTable {
     | 'migration_plan'
     | 'patch_proposal'
     | 'patch_manifest'
-    | 'patch_validation';
+    | 'patch_validation'
+    | 'verification_input'
+    | 'verification_result'
+    | 'verification_stdout'
+    | 'verification_stderr';
   objectKey: string;
   digest: string;
   bytes: ColumnType<string, number, never>;
@@ -619,6 +627,51 @@ export interface MigrationAgentCheckpointTable {
   phase: 'context' | 'planning' | 'patching';
   artifactId: string;
   artifactDigest: string;
+  createdAt: Timestamp;
+}
+
+export interface VerificationAttemptTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  approvalId: string;
+  attemptNumber: number;
+  patchAttemptId: string;
+  baseCommitSha: string;
+  snapshotArtifactId: string;
+  snapshotDigest: string;
+  patchArtifactId: string;
+  patchDigest: string;
+  patchValidationArtifactId: string;
+  patchValidationDigest: string;
+  verificationPolicyVersion: string;
+  verificationProfile: unknown;
+  verificationProfileDigest: string;
+  createdAt: Timestamp;
+}
+
+export interface VerificationAttemptResultTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  verificationAttemptId: string;
+  outcome:
+    | 'passed'
+    | 'failed'
+    | 'partial'
+    | 'unavailable'
+    | 'timed_out'
+    | 'policy_rejected'
+    | 'infrastructure_failed';
+  safeErrorCode: string | null;
+  resultArtifactId: string | null;
+  resultDigest: string | null;
+  stdoutArtifactId: string | null;
+  stdoutDigest: string | null;
+  stderrArtifactId: string | null;
+  stderrDigest: string | null;
+  startedAt: Timestamp;
+  completedAt: Timestamp;
   createdAt: Timestamp;
 }
 
@@ -708,6 +761,8 @@ export interface Database {
   migrationPlans: MigrationPlanTable;
   patchAttempts: PatchAttemptTable;
   migrationAgentCheckpoints: MigrationAgentCheckpointTable;
+  verificationAttempts: VerificationAttemptTable;
+  verificationAttemptResults: VerificationAttemptResultTable;
   vendorIngestionRuns: VendorIngestionRunTable;
   vendorEvidenceItems: VendorEvidenceItemTable;
   changeIntelligenceRuns: ChangeIntelligenceRunTable;

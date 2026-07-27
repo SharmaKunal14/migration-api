@@ -1906,6 +1906,10 @@ function migrationRunEventLabel(
     plan_created: 'Migration plan created',
     patch_proposed: 'Patch proposed',
     patch_validated: 'Patch validated',
+    verification_prepared: 'Verification evidence bound',
+    verification_started: 'Verification started',
+    verification_completed: 'Verification completed',
+    repair_requested: 'Bounded repair requested',
   };
   return labels[eventType];
 }

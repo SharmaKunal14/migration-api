@@ -903,6 +903,11 @@ export const migrationApprovalPatchPolicySchema = z
     }
   });
 
+export const verificationProfileNameSchema = z.enum([
+  'typescript_static',
+  'typescript_unit',
+]);
+
 export const migrationApprovalVerificationProfileSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -910,7 +915,7 @@ export const migrationApprovalVerificationProfileSchema = z
       .array(
         z
           .object({
-            profile: z.enum(['typescript_static', 'typescript_unit']),
+            profile: verificationProfileNameSchema,
             availability: z.enum(['available', 'unavailable']),
             commandIds: z
               .array(
@@ -1554,6 +1559,208 @@ export const migrationWorkflowInputSchema = z
   })
   .strict();
 
+export const verificationTerminalOutcomeSchema = z.enum([
+  'passed',
+  'failed',
+  'partial',
+  'unavailable',
+  'timed_out',
+  'policy_rejected',
+  'infrastructure_failed',
+]);
+
+const verificationArtifactReferenceSchema = z
+  .object({
+    objectKey: z.string().min(1).max(1_024),
+    digest: sha256Schema,
+    bytes: z
+      .number()
+      .int()
+      .min(1)
+      .max(10 * 1024 * 1024),
+  })
+  .strict();
+
+export const migrationVerificationPreparedInputSchema = z
+  .object({
+    status: z.literal('ready'),
+    schemaVersion: z.literal('1.0'),
+    organisationId: uuidSchema,
+    repositoryId: uuidSchema,
+    migrationRunId: uuidSchema,
+    approvalId: uuidSchema,
+    verificationAttemptId: uuidSchema,
+    attemptNumber: z.number().int().min(1).max(10),
+    patchAttemptId: uuidSchema,
+    baseCommitSha: commitShaSchema,
+    snapshot: z
+      .object({
+        artifactId: uuidSchema,
+        objectKey: z.string().min(1).max(1_024),
+        digest: sha256Schema,
+      })
+      .strict(),
+    patch: z
+      .object({
+        artifactId: uuidSchema,
+        objectKey: z.string().min(1).max(1_024),
+        digest: sha256Schema,
+        validationArtifactId: uuidSchema,
+        validationObjectKey: z.string().min(1).max(1_024),
+        validationDigest: sha256Schema,
+      })
+      .strict(),
+    authority: z
+      .object({
+        verificationPolicyVersion: policyVersionSchema,
+        verificationProfile: migrationApprovalVerificationProfileSchema,
+        verificationProfileDigest: sha256Schema,
+      })
+      .strict(),
+  })
+  .strict();
+
+const verificationCommandResultSchema = z
+  .object({
+    commandId: z
+      .string()
+      .min(1)
+      .max(100)
+      .regex(/^[a-z][a-z0-9._-]{0,99}$/u),
+    status: z.enum(['passed', 'failed', 'skipped', 'timed_out', 'policy_rejected']),
+    exitCode: z.number().int().min(0).max(255).nullable(),
+    signal: z.string().min(1).max(32).nullable(),
+    durationMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(60 * 60 * 1_000),
+    stdoutTruncated: z.boolean(),
+    stderrTruncated: z.boolean(),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    if (
+      result.status === 'passed' &&
+      (result.exitCode !== 0 || result.signal !== null)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Passed verification commands require exit code zero and no signal.',
+        path: ['exitCode'],
+      });
+    }
+    if (
+      result.status === 'failed' &&
+      (result.exitCode === null || result.exitCode === 0) &&
+      result.signal === null
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Failed verification commands require a non-zero exit code or signal.',
+        path: ['exitCode'],
+      });
+    }
+    if (
+      ['timed_out', 'policy_rejected', 'skipped'].includes(result.status) &&
+      result.exitCode !== null
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Commands that did not complete normally cannot report an exit code.',
+        path: ['exitCode'],
+      });
+    }
+    if (result.exitCode !== null && result.signal !== null) {
+      context.addIssue({
+        code: 'custom',
+        message: 'A process result cannot report both an exit code and a signal.',
+        path: ['signal'],
+      });
+    }
+  });
+
+export const migrationVerificationResultSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    organisationId: uuidSchema,
+    repositoryId: uuidSchema,
+    migrationRunId: uuidSchema,
+    approvalId: uuidSchema,
+    verificationAttemptId: uuidSchema,
+    attemptNumber: z.number().int().min(1).max(10),
+    patchAttemptId: uuidSchema,
+    baseCommitSha: commitShaSchema,
+    snapshotDigest: sha256Schema,
+    patchDigest: sha256Schema,
+    patchValidationDigest: sha256Schema,
+    verificationPolicyVersion: policyVersionSchema,
+    verificationProfileDigest: sha256Schema,
+    outcome: verificationTerminalOutcomeSchema,
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+    commands: z.array(verificationCommandResultSchema).max(20),
+    artifacts: z
+      .object({
+        stdout: verificationArtifactReferenceSchema.nullable(),
+        stderr: verificationArtifactReferenceSchema.nullable(),
+      })
+      .strict(),
+    startedAt: z.iso.datetime(),
+    completedAt: z.iso.datetime(),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    if ((result.outcome === 'passed') !== (result.safeErrorCode === null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only passed verification may omit a safe error code.',
+        path: ['safeErrorCode'],
+      });
+    }
+    if (
+      result.outcome === 'passed' &&
+      (result.commands.length === 0 ||
+        result.commands.some(command => command.status !== 'passed'))
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Passed verification requires every selected command to pass.',
+        path: ['commands'],
+      });
+    }
+    const requiredCommandStatus: Partial<
+      Record<
+        z.infer<typeof verificationTerminalOutcomeSchema>,
+        z.infer<typeof verificationCommandResultSchema>['status']
+      >
+    > = {
+      failed: 'failed',
+      timed_out: 'timed_out',
+      policy_rejected: 'policy_rejected',
+    };
+    const requiredStatus = requiredCommandStatus[result.outcome];
+    if (
+      requiredStatus !== undefined &&
+      !result.commands.some(command => command.status === requiredStatus)
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: `Verification outcome ${result.outcome} requires a matching command result.`,
+        path: ['commands'],
+      });
+    }
+    if (Date.parse(result.completedAt) < Date.parse(result.startedAt)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Verification cannot complete before it starts.',
+        path: ['completedAt'],
+      });
+    }
+  });
+
 export const cancelMigrationRunRequestSchema = z
   .object({
     expectedVersion: z.number().int().positive(),
@@ -1817,6 +2024,16 @@ export type CreateMigrationApprovalRequest = z.infer<
   typeof createMigrationApprovalRequestSchema
 >;
 export type MigrationWorkflowInput = z.infer<typeof migrationWorkflowInputSchema>;
+export type VerificationProfileName = z.infer<typeof verificationProfileNameSchema>;
+export type VerificationTerminalOutcome = z.infer<
+  typeof verificationTerminalOutcomeSchema
+>;
+export type MigrationVerificationPreparedInput = z.infer<
+  typeof migrationVerificationPreparedInputSchema
+>;
+export type MigrationVerificationResult = z.infer<
+  typeof migrationVerificationResultSchema
+>;
 export type CancelMigrationRunRequest = z.infer<typeof cancelMigrationRunRequestSchema>;
 export type RevokeMigrationApprovalRequest = z.infer<
   typeof revokeMigrationApprovalRequestSchema
@@ -2103,7 +2320,11 @@ export interface PublicMigrationRunEvent {
     | 'run_completed'
     | 'plan_created'
     | 'patch_proposed'
-    | 'patch_validated';
+    | 'patch_validated'
+    | 'verification_prepared'
+    | 'verification_started'
+    | 'verification_completed'
+    | 'repair_requested';
   readonly status:
     'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
   readonly stage:
