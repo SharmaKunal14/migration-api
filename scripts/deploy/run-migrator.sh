@@ -3,12 +3,6 @@ set -euo pipefail
 
 terraform_directory="${1:?Terraform directory is required}"
 evidence_directory="${2:?evidence directory is required}"
-content_digest="${3:?migrator content digest is required}"
-
-if [[ ! "${content_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
-  echo "The migrator content digest is invalid." >&2
-  exit 1
-fi
 
 mkdir -p "${evidence_directory}"
 
@@ -65,28 +59,3 @@ if [[ "${exit_code}" != '0' ]]; then
 fi
 
 echo "Database migration completed successfully."
-
-success_parameter_name="$(
-  terraform -chdir="${terraform_directory}" output -raw migrator_success_parameter_name
-)"
-success_parameter_kms_key_arn="$(
-  terraform -chdir="${terraform_directory}" output -raw migrator_success_parameter_kms_key_arn
-)"
-aws ssm put-parameter \
-  --name "${success_parameter_name}" \
-  --description "Content digest of the last successfully completed database migrator workload" \
-  --type SecureString \
-  --key-id "${success_parameter_kms_key_arn}" \
-  --value "${content_digest}" \
-  --overwrite \
-  --output json >"${evidence_directory}/migrator-marker-update.json"
-persisted_digest="$(aws ssm get-parameter \
-  --name "${success_parameter_name}" \
-  --with-decryption \
-  --query 'Parameter.Value' \
-  --output text)"
-if [[ "${persisted_digest}" != "${content_digest}" ]]; then
-  echo "The migrator success marker did not persist the completed content digest." >&2
-  exit 1
-fi
-echo "Recorded successful migrator content digest ${content_digest}."

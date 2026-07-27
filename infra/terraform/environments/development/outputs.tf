@@ -111,14 +111,6 @@ output "migrator_task_definition_arn" {
   value = aws_ecs_task_definition.migrator.arn
 }
 
-output "migrator_success_parameter_name" {
-  value = aws_ssm_parameter.migrator_success_digest.name
-}
-
-output "migrator_success_parameter_kms_key_arn" {
-  value = aws_kms_key.artifacts.arn
-}
-
 output "ecs_cluster_name" {
   value = aws_ecs_cluster.agent.name
 }

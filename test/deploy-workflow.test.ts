@@ -9,34 +9,6 @@ const deploymentWorkflow = readFileSync(
   ),
   'utf8',
 );
-const ciWorkflow = readFileSync(
-  fileURLToPath(new URL('../.github/workflows/ci.yml', import.meta.url)),
-  'utf8',
-);
-const promotionImageBuilder = readFileSync(
-  fileURLToPath(
-    new URL('../scripts/deploy/build-promotion-images.sh', import.meta.url),
-  ),
-  'utf8',
-);
-const migratorDecision = readFileSync(
-  fileURLToPath(
-    new URL('../scripts/deploy/check-migrator-required.sh', import.meta.url),
-  ),
-  'utf8',
-);
-const promotionSigner = readFileSync(
-  fileURLToPath(
-    new URL('../scripts/deploy/sign-promotion-manifest.sh', import.meta.url),
-  ),
-  'utf8',
-);
-const promotionVerifier = readFileSync(
-  fileURLToPath(
-    new URL('../scripts/deploy/verify-promotion-signature.sh', import.meta.url),
-  ),
-  'utf8',
-);
 const sourceFetcherDockerfile = readFileSync(
   fileURLToPath(new URL('../workers/source-fetcher/Dockerfile', import.meta.url)),
   'utf8',
@@ -65,16 +37,6 @@ const migratorRunner = readFileSync(
   fileURLToPath(new URL('../scripts/deploy/run-migrator.sh', import.meta.url)),
   'utf8',
 );
-const bootstrapInfrastructure = readFileSync(
-  fileURLToPath(new URL('../infra/terraform/bootstrap/main.tf', import.meta.url)),
-  'utf8',
-);
-const deploymentStorage = readFileSync(
-  fileURLToPath(
-    new URL('../infra/terraform/environments/development/storage.tf', import.meta.url),
-  ),
-  'utf8',
-);
 
 describe('development deployment artifact contract', () => {
   it('packages and verifies every Stage 2 Lambda archive', () => {
@@ -89,8 +51,7 @@ describe('development deployment artifact contract', () => {
   });
 
   it('builds, scans, and passes an immutable source-fetcher image digest', () => {
-    expect(promotionImageBuilder).toContain('workers/source-fetcher/Dockerfile');
-    expect(ciWorkflow).toContain('Publish KMS-signed deployment artifacts');
+    expect(deploymentWorkflow).toContain('workers/source-fetcher/Dockerfile');
     expect(deploymentWorkflow).toContain('migration-api-development-source-fetcher');
     expect(deploymentWorkflow).toContain('TF_VAR_source_fetcher_image_digest');
     expect(deploymentWorkflow).toContain('SOURCE_FETCHER_SCAN_DIGEST');
@@ -104,7 +65,7 @@ describe('development deployment artifact contract', () => {
   });
 
   it('builds, scans, and deploys an immutable vendor-fetcher image', () => {
-    expect(promotionImageBuilder).toContain('workers/vendor-fetcher/Dockerfile');
+    expect(deploymentWorkflow).toContain('workers/vendor-fetcher/Dockerfile');
     expect(deploymentWorkflow).toContain('migration-api-development-vendor-fetcher');
     expect(deploymentWorkflow).toContain('TF_VAR_vendor_fetcher_image_digest');
     expect(deploymentWorkflow).toContain('VENDOR_FETCHER_SCAN_DIGEST');
@@ -112,7 +73,7 @@ describe('development deployment artifact contract', () => {
   });
 
   it('builds, scans, and deploys the isolated change-intelligence image', () => {
-    expect(promotionImageBuilder).toContain(
+    expect(deploymentWorkflow).toContain(
       'workers/change-intelligence-agent/Dockerfile',
     );
     expect(deploymentWorkflow).toContain(
@@ -129,7 +90,7 @@ describe('development deployment artifact contract', () => {
   });
 
   it('builds, scans, and deploys the isolated impact-analysis image', () => {
-    expect(promotionImageBuilder).toContain('workers/impact-analysis-agent/Dockerfile');
+    expect(deploymentWorkflow).toContain('workers/impact-analysis-agent/Dockerfile');
     expect(deploymentWorkflow).toContain(
       'migration-api-development-impact-analysis-agent',
     );
@@ -142,17 +103,6 @@ describe('development deployment artifact contract', () => {
   });
 
   it('uses the verified build once and restores the exact reviewed payload', () => {
-    expect(ciWorkflow).toContain('scripts/deploy/sign-promotion-manifest.sh');
-    expect(deploymentWorkflow).toContain(
-      'scripts/deploy/verify-promotion-signature.sh',
-    );
-    expect(deploymentWorkflow).not.toContain('gh attestation verify');
-    expect(promotionSigner).toContain('aws kms sign');
-    expect(promotionSigner).toContain('--message-type DIGEST');
-    expect(promotionVerifier).toContain('aws kms verify');
-    expect(promotionVerifier).toContain('ECDSA_SHA_256');
-    expect(deploymentWorkflow).not.toContain('npm run check');
-    expect(deploymentWorkflow).not.toContain('docker buildx build');
     expect(deploymentWorkflow).not.toContain('- name: Build deployable browser assets');
     expect(deploymentWorkflow).not.toContain('- name: Rebuild local deployment inputs');
     expect(deploymentWorkflow).toContain(
@@ -176,49 +126,5 @@ describe('development deployment artifact contract', () => {
     );
     expect(migratorRunner).toContain('aws logs get-log-events');
     expect(migratorRunner).toContain('exit 1');
-  });
-
-  it('runs the migrator only when its last successful content digest differs', () => {
-    expect(deploymentWorkflow).toContain(
-      "if: steps.migration.outputs.required == 'true'",
-    );
-    expect(deploymentWorkflow).toContain('MIGRATOR_CONTENT_DIGEST');
-    expect(migratorDecision).toContain('aws ssm get-parameter');
-    expect(migratorRunner).toContain('aws ssm put-parameter');
-    expect(migratorRunner).toContain('Database migration completed successfully.');
-    expect(
-      migratorRunner.indexOf('Database migration completed successfully.'),
-    ).toBeLessThan(migratorRunner.indexOf('aws ssm put-parameter'));
-    expect(deploymentStorage).toContain(
-      'resource "aws_ssm_parameter" "migrator_success_digest"',
-    );
-    expect(deploymentStorage).toContain('type        = "SecureString"');
-    expect(deploymentStorage).toContain('ignore_changes = [value]');
-    expect(bootstrapInfrastructure).toContain(
-      'sid       = "ParameterMetadataDiscovery"',
-    );
-    expect(bootstrapInfrastructure).toContain('"ssm:DescribeParameters"');
-  });
-
-  it('publishes CI images through a separate main-only least-privilege role', () => {
-    expect(bootstrapInfrastructure).toContain('github_ci_oidc_subject');
-    expect(bootstrapInfrastructure).toContain(':ref:refs/heads/main');
-    expect(bootstrapInfrastructure).toContain(
-      'resource "aws_iam_role" "github_ci_artifacts"',
-    );
-    expect(bootstrapInfrastructure).toContain('sid       = "EcrAuthorization"');
-    expect(bootstrapInfrastructure).toContain('sid = "SignCiPromotion"');
-    expect(bootstrapInfrastructure).toContain('"kms:Sign"');
-    expect(bootstrapInfrastructure).toContain('sid = "VerifyCiPromotion"');
-    expect(bootstrapInfrastructure).toContain('"kms:Verify"');
-    expect(bootstrapInfrastructure).toContain('sid    = "ProtectCiPromotionKey"');
-    expect(bootstrapInfrastructure).toContain('effect = "Deny"');
-    expect(bootstrapInfrastructure).toContain('not_actions = [');
-    expect(bootstrapInfrastructure).toContain(
-      'resources = [aws_kms_key.promotion_signing.arn]',
-    );
-    expect(bootstrapInfrastructure).not.toMatch(
-      /data "aws_iam_policy_document" "github_ci_artifacts"[\s\S]*?"(lambda|iam|s3|ssm):\*"/u,
-    );
   });
 });

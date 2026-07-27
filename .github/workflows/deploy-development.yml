@@ -9,7 +9,6 @@ on:
         type: string
 
 permissions:
-  actions: read
   contents: read
   id-token: write
 
@@ -25,36 +24,32 @@ env:
 
 jobs:
   prepare:
-    name: Promote, migrate, and plan
+    name: Build, migrate, and plan
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     environment:
       name: development
     outputs:
-      agent_image_digest: ${{ steps.promotion.outputs.agent_image_digest }}
-      migrator_image_digest: ${{ steps.promotion.outputs.migrator_image_digest }}
+      agent_image_digest: ${{ steps.images.outputs.agent_image_digest }}
+      migrator_image_digest: ${{ steps.images.outputs.migrator_image_digest }}
       source_fetcher_image_digest:
-        ${{ steps.promotion.outputs.source_fetcher_image_digest }}
+        ${{ steps.images.outputs.source_fetcher_image_digest }}
       vendor_fetcher_image_digest:
-        ${{ steps.promotion.outputs.vendor_fetcher_image_digest }}
+        ${{ steps.images.outputs.vendor_fetcher_image_digest }}
       change_intelligence_agent_image_digest:
-        ${{ steps.promotion.outputs.change_intelligence_agent_image_digest }}
+        ${{ steps.images.outputs.change_intelligence_agent_image_digest }}
       impact_analysis_agent_image_digest:
-        ${{ steps.promotion.outputs.impact_analysis_agent_image_digest }}
+        ${{ steps.images.outputs.impact_analysis_agent_image_digest }}
       migration_agent_image_digest:
-        ${{ steps.promotion.outputs.migration_agent_image_digest }}
-      migration_required: ${{ steps.migration.outputs.required }}
+        ${{ steps.images.outputs.migration_agent_image_digest }}
     env:
       AWS_ACCOUNT_ID: ${{ vars.AWS_ACCOUNT_ID }}
       AWS_REGION: ${{ vars.AWS_REGION }}
       ECR_REGISTRY:
         ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com
       DEPLOY_ROLE_ARN: ${{ vars.AWS_DEPLOY_ROLE_ARN }}
-      PROMOTION_SIGNING_KEY_ARN: ${{ vars.PROMOTION_SIGNING_KEY_ARN }}
       TF_STATE_BUCKET: ${{ vars.TF_STATE_BUCKET }}
       TF_STATE_KMS_KEY_ARN: ${{ vars.TF_STATE_KMS_KEY_ARN }}
-      VITE_API_BASE_URL: /api
-      VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
       VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.SUPABASE_PUBLISHABLE_KEY }}
       TF_VAR_aws_region: ${{ vars.AWS_REGION }}
       TF_VAR_owner: ${{ vars.OWNER }}
@@ -99,6 +94,13 @@ jobs:
         with:
           persist-credentials: false
 
+      - name: Install Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22.23.1
+          cache: npm
+          cache-dependency-path: package-lock.json
+
       - name: Validate protected deployment inputs
         env:
           DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
@@ -115,6 +117,23 @@ jobs:
             echo "actor=${GITHUB_ACTOR}"
           } > deployment-evidence/deployment.txt
 
+      - name: Install locked dependencies
+        run: npm ci --ignore-scripts
+
+      - name: Verify application and infrastructure inputs
+        env:
+          VITE_API_BASE_URL: /api
+          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
+        run: npm run check
+
+      - name: Audit dependencies
+        run: npm audit --audit-level=high
+
+      - name: Generate application SBOM
+        run:
+          npm sbom --omit=dev --sbom-format=cyclonedx >
+          deployment-evidence/application.cdx.json
+
       - name: Configure short-lived AWS credentials
         uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
         with:
@@ -123,105 +142,6 @@ jobs:
           role-session-name: migration-api-${{ github.run_id }}
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
           mask-aws-account-id: true
-
-      - name: Download and verify exact-revision CI promotion
-        id: promotion
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          ci_run_id="$(
-            gh run list \
-              --workflow ci.yml \
-              --commit "${GITHUB_SHA}" \
-              --event push \
-              --status success \
-              --limit 10 \
-              --json conclusion,databaseId,headSha \
-              --jq '
-                [
-                  .[]
-                  | select(
-                      .headSha == env.GITHUB_SHA
-                      and .conclusion == "success"
-                    )
-                ]
-                | sort_by(.databaseId)
-                | last
-                | .databaseId
-              '
-          )"
-          if [[ ! "${ci_run_id}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "No successful CI promotion exists for ${GITHUB_SHA}." >&2
-            exit 1
-          fi
-          ci_run_attempt="$(
-            gh api "repos/${GITHUB_REPOSITORY}/actions/runs/${ci_run_id}" \
-              --jq '.run_attempt'
-          )"
-          if [[ ! "${ci_run_attempt}" =~ ^[1-9][0-9]*$ ]]; then
-            echo "The CI promotion run attempt is invalid." >&2
-            exit 1
-          fi
-          gh run download "${ci_run_id}" \
-            --name "development-promotion-${GITHUB_SHA}" \
-            --dir ci-promotion
-          test -s ci-promotion/promotion-payload.tar.gz
-          test -s ci-promotion/promotion-manifest.json
-          test -s ci-promotion/promotion-checksums.txt
-          test -s ci-promotion/promotion-signature.json
-          (
-            cd ci-promotion
-            sha256sum --check promotion-checksums.txt
-          )
-          bash scripts/deploy/verify-promotion-signature.sh \
-            ci-promotion/promotion-manifest.json \
-            ci-promotion/promotion-signature.json
-          node scripts/deploy/verify-promotion.mjs \
-            ci-promotion/promotion-manifest.json \
-            ci-promotion/promotion-payload.tar.gz \
-            "${ci_run_id}" \
-            "${ci_run_attempt}"
-          payload_bytes="$(stat -c '%s' ci-promotion/promotion-payload.tar.gz)"
-          if (( payload_bytes <= 0 || payload_bytes > 157286400 )); then
-            echo "The promotion payload exceeds the 150 MiB extraction limit." >&2
-            exit 1
-          fi
-          tar -tzf ci-promotion/promotion-payload.tar.gz |
-            while IFS= read -r entry; do
-              if [[ "${entry}" == /* || "${entry}" == *'../'* || "${entry}" == *'/..' ]]; then
-                echo "The promotion payload contains an unsafe path." >&2
-                exit 1
-              fi
-              case "${entry}" in
-                application.cdx.json|dist|dist/*|promotion-evidence|promotion-evidence/*) ;;
-                *)
-                  echo "The promotion payload contains an unexpected path." >&2
-                  exit 1
-                  ;;
-              esac
-            done
-          if tar -tvzf ci-promotion/promotion-payload.tar.gz |
-            awk '$1 ~ /^[lh]/ { found=1 } END { exit !found }'; then
-            echo "The promotion payload must not contain links." >&2
-            exit 1
-          fi
-          tar \
-            --extract \
-            --gzip \
-            --file ci-promotion/promotion-payload.tar.gz \
-            --no-same-owner \
-            --no-same-permissions
-          test -s application.cdx.json
-          test -s dist/services/api.js
-          test -s dist/workers/database-migrator/main.js
-          test -s dist/web/index.html
-          cp application.cdx.json deployment-evidence/application.cdx.json
-          cp ci-promotion/promotion-manifest.json deployment-evidence/promotion-manifest.json
-          cp ci-promotion/promotion-signature.json \
-            deployment-evidence/promotion-signature.json
-          echo "ci_promotion_run_id=${ci_run_id}" >> deployment-evidence/deployment.txt
-          echo "ci_promotion_run_attempt=${ci_run_attempt}" \
-            >> deployment-evidence/deployment.txt
 
       - name: Verify AWS identity and deployment foundation
         run: |
@@ -254,6 +174,14 @@ jobs:
             -backend-config="use_lockfile=true"
           terraform validate
 
+      - name: Set up ARM64 emulation
+        uses: docker/setup-qemu-action@29109295f81e9208d7d86ff1c6c12d2833863392 # v3.6.0
+        with:
+          platforms: arm64
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@e468171a9de216ec08956ac3ada2f0791b6bd435 # v3.11.1
+
       - name: Authenticate Docker to ECR
         run: |
           aws ecr get-login-password |
@@ -262,17 +190,280 @@ jobs:
               --password-stdin \
               "${AWS_ACCOUNT_ID}.dkr.ecr.${AWS_REGION}.amazonaws.com"
 
-      - name: Verify signed image digests exist in the expected repositories
+      - name: Build and push immutable images
         run: |
-          jq -c '.images[]' ci-promotion/promotion-manifest.json |
-            while IFS= read -r image; do
-              repository="$(jq -r '.repository' <<<"${image}")"
-              digest="$(jq -r '.digest' <<<"${image}")"
-              aws ecr describe-images \
-                --repository-name "${repository}" \
-                --image-ids "imageDigest=${digest}" \
-                --output json >/dev/null
-            done
+          agent_image="${ECR_REGISTRY}/migration-api-development-agent:${GITHUB_SHA}"
+          migrator_image="${ECR_REGISTRY}/migration-api-development-database-migrator:${GITHUB_SHA}"
+          source_fetcher_image="${ECR_REGISTRY}/migration-api-development-source-fetcher:${GITHUB_SHA}"
+          vendor_fetcher_image="${ECR_REGISTRY}/migration-api-development-vendor-fetcher:${GITHUB_SHA}"
+          change_intelligence_agent_image="${ECR_REGISTRY}/migration-api-development-change-intelligence-agent:${GITHUB_SHA}"
+          impact_analysis_agent_image="${ECR_REGISTRY}/migration-api-development-impact-analysis-agent:${GITHUB_SHA}"
+          migration_agent_image="${ECR_REGISTRY}/migration-api-development-migration-agent:${GITHUB_SHA}"
+          if ! aws ecr describe-images \
+            --repository-name migration-api-development-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker buildx build \
+              --file workers/agent/Dockerfile \
+              --platform linux/arm64 \
+              --provenance=mode=max \
+              --sbom=true \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "${agent_image}" \
+              --push \
+              .
+          fi
+          if ! aws ecr describe-images \
+            --repository-name migration-api-development-source-fetcher \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker buildx build \
+              --file workers/source-fetcher/Dockerfile \
+              --platform linux/arm64 \
+              --provenance=mode=max \
+              --sbom=true \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "${source_fetcher_image}" \
+              --push \
+              .
+          fi
+          if ! aws ecr describe-images \
+            --repository-name migration-api-development-vendor-fetcher \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker buildx build \
+              --file workers/vendor-fetcher/Dockerfile \
+              --platform linux/arm64 \
+              --provenance=mode=max \
+              --sbom=true \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "${vendor_fetcher_image}" \
+              --push \
+              .
+          fi
+          if ! aws ecr describe-images \
+            --repository-name migration-api-development-change-intelligence-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker buildx build \
+              --file workers/change-intelligence-agent/Dockerfile \
+              --platform linux/arm64 \
+              --provenance=mode=max \
+              --sbom=true \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "${change_intelligence_agent_image}" \
+              --push \
+              .
+          fi
+          if ! aws ecr describe-images \
+            --repository-name migration-api-development-impact-analysis-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker buildx build \
+              --file workers/impact-analysis-agent/Dockerfile \
+              --platform linux/arm64 \
+              --provenance=mode=max \
+              --sbom=true \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "${impact_analysis_agent_image}" \
+              --push \
+              .
+          fi
+          if ! aws ecr describe-images \
+            --repository-name migration-api-development-migration-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker buildx build \
+              --file workers/migration-agent/Dockerfile \
+              --platform linux/arm64 \
+              --provenance=mode=max \
+              --sbom=true \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "${migration_agent_image}" \
+              --push \
+              .
+          fi
+          if ! aws ecr describe-images \
+            --repository-name migration-api-development-database-migrator \
+            --image-ids "imageTag=${GITHUB_SHA}" >/dev/null 2>&1; then
+            docker buildx build \
+              --file workers/database-migrator/Dockerfile \
+              --platform linux/arm64 \
+              --provenance=mode=max \
+              --sbom=true \
+              --label "org.opencontainers.image.revision=${GITHUB_SHA}" \
+              --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}" \
+              --tag "${migrator_image}" \
+              --push \
+              .
+          fi
+
+      - name: Resolve and validate immutable image digests
+        id: images
+        run: |
+          agent_digest="$(aws ecr describe-images \
+            --repository-name migration-api-development-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          migrator_digest="$(aws ecr describe-images \
+            --repository-name migration-api-development-database-migrator \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          source_fetcher_digest="$(aws ecr describe-images \
+            --repository-name migration-api-development-source-fetcher \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          vendor_fetcher_digest="$(aws ecr describe-images \
+            --repository-name migration-api-development-vendor-fetcher \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          change_intelligence_agent_digest="$(aws ecr describe-images \
+            --repository-name migration-api-development-change-intelligence-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          impact_analysis_agent_digest="$(aws ecr describe-images \
+            --repository-name migration-api-development-impact-analysis-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          migration_agent_digest="$(aws ecr describe-images \
+            --repository-name migration-api-development-migration-agent \
+            --image-ids "imageTag=${GITHUB_SHA}" \
+            --query 'imageDetails[0].imageDigest' \
+            --output text)"
+          if [[ ! "${agent_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Agent digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${migrator_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Migrator digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${source_fetcher_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Source-fetcher digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${vendor_fetcher_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Vendor-fetcher digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${change_intelligence_agent_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Change-intelligence agent digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${impact_analysis_agent_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Impact-analysis agent digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${migration_agent_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Migration-agent digest is invalid." >&2
+            exit 1
+          fi
+          resolve_arm64_digest() {
+            local image_reference="${1:?image reference is required}"
+            docker buildx imagetools inspect --raw "${image_reference}" |
+              jq -er '
+                [
+                  .manifests[]
+                  | select(
+                      .platform.os == "linux"
+                      and .platform.architecture == "arm64"
+                    )
+                  | .digest
+                ]
+                | if length == 1 then .[0]
+                  else error("expected exactly one linux/arm64 image manifest")
+                  end
+              '
+          }
+          agent_scan_digest="$(resolve_arm64_digest \
+            "${ECR_REGISTRY}/migration-api-development-agent@${agent_digest}")"
+          migrator_scan_digest="$(resolve_arm64_digest \
+            "${ECR_REGISTRY}/migration-api-development-database-migrator@${migrator_digest}")"
+          source_fetcher_scan_digest="$(resolve_arm64_digest \
+            "${ECR_REGISTRY}/migration-api-development-source-fetcher@${source_fetcher_digest}")"
+          vendor_fetcher_scan_digest="$(resolve_arm64_digest \
+            "${ECR_REGISTRY}/migration-api-development-vendor-fetcher@${vendor_fetcher_digest}")"
+          change_intelligence_agent_scan_digest="$(resolve_arm64_digest \
+            "${ECR_REGISTRY}/migration-api-development-change-intelligence-agent@${change_intelligence_agent_digest}")"
+          impact_analysis_agent_scan_digest="$(resolve_arm64_digest \
+            "${ECR_REGISTRY}/migration-api-development-impact-analysis-agent@${impact_analysis_agent_digest}")"
+          migration_agent_scan_digest="$(resolve_arm64_digest \
+            "${ECR_REGISTRY}/migration-api-development-migration-agent@${migration_agent_digest}")"
+          if [[ ! "${agent_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Agent scan digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${migrator_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Migrator scan digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${source_fetcher_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Source-fetcher scan digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${vendor_fetcher_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Vendor-fetcher scan digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${change_intelligence_agent_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Change-intelligence agent scan digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${impact_analysis_agent_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Impact-analysis agent scan digest is invalid." >&2
+            exit 1
+          fi
+          if [[ ! "${migration_agent_scan_digest}" =~ ^sha256:[a-f0-9]{64}$ ]]; then
+            echo "Migration-agent scan digest is invalid." >&2
+            exit 1
+          fi
+          {
+            echo "TF_VAR_agent_image_digest=${agent_digest}"
+            echo "TF_VAR_migrator_image_digest=${migrator_digest}"
+            echo "TF_VAR_source_fetcher_image_digest=${source_fetcher_digest}"
+            echo "TF_VAR_vendor_fetcher_image_digest=${vendor_fetcher_digest}"
+            echo "TF_VAR_change_intelligence_agent_image_digest=${change_intelligence_agent_digest}"
+            echo "TF_VAR_impact_analysis_agent_image_digest=${impact_analysis_agent_digest}"
+            echo "TF_VAR_migration_agent_image_digest=${migration_agent_digest}"
+            echo "AGENT_SCAN_DIGEST=${agent_scan_digest}"
+            echo "MIGRATOR_SCAN_DIGEST=${migrator_scan_digest}"
+            echo "SOURCE_FETCHER_SCAN_DIGEST=${source_fetcher_scan_digest}"
+            echo "VENDOR_FETCHER_SCAN_DIGEST=${vendor_fetcher_scan_digest}"
+            echo "CHANGE_INTELLIGENCE_AGENT_SCAN_DIGEST=${change_intelligence_agent_scan_digest}"
+            echo "IMPACT_ANALYSIS_AGENT_SCAN_DIGEST=${impact_analysis_agent_scan_digest}"
+            echo "MIGRATION_AGENT_SCAN_DIGEST=${migration_agent_scan_digest}"
+          } >> "${GITHUB_ENV}"
+          {
+            echo "agent_image_digest=${agent_digest}"
+            echo "migrator_image_digest=${migrator_digest}"
+            echo "source_fetcher_image_digest=${source_fetcher_digest}"
+            echo "vendor_fetcher_image_digest=${vendor_fetcher_digest}"
+            echo "change_intelligence_agent_image_digest=${change_intelligence_agent_digest}"
+            echo "impact_analysis_agent_image_digest=${impact_analysis_agent_digest}"
+            echo "migration_agent_image_digest=${migration_agent_digest}"
+          } >> "${GITHUB_OUTPUT}"
+          {
+            echo "agent_image_digest=${agent_digest}"
+            echo "migrator_image_digest=${migrator_digest}"
+            echo "source_fetcher_image_digest=${source_fetcher_digest}"
+            echo "vendor_fetcher_image_digest=${vendor_fetcher_digest}"
+            echo "change_intelligence_agent_image_digest=${change_intelligence_agent_digest}"
+            echo "impact_analysis_agent_image_digest=${impact_analysis_agent_digest}"
+            echo "migration_agent_image_digest=${migration_agent_digest}"
+            echo "agent_scan_digest=${agent_scan_digest}"
+            echo "migrator_scan_digest=${migrator_scan_digest}"
+            echo "source_fetcher_scan_digest=${source_fetcher_scan_digest}"
+            echo "vendor_fetcher_scan_digest=${vendor_fetcher_scan_digest}"
+            echo "change_intelligence_agent_scan_digest=${change_intelligence_agent_scan_digest}"
+            echo "impact_analysis_agent_scan_digest=${impact_analysis_agent_scan_digest}"
+            echo "migration_agent_scan_digest=${migration_agent_scan_digest}"
+          } >> deployment-evidence/deployment.txt
 
       - name: Gate on ECR vulnerability scans
         run: |
@@ -308,15 +499,7 @@ jobs:
           allowed-account-ids: ${{ vars.AWS_ACCOUNT_ID }}
           mask-aws-account-id: true
 
-      - name: Determine whether database migration is required
-        id: migration
-        run: |
-          bash scripts/deploy/check-migrator-required.sh \
-            "${MIGRATOR_CONTENT_DIGEST}" \
-            deployment-evidence
-
       - name: Update the migrator task definition and policies
-        if: steps.migration.outputs.required == 'true'
         working-directory: infra/terraform/environments/development
         run: |
           terraform plan \
@@ -324,18 +507,15 @@ jobs:
             -out=migrator.tfplan \
             -target=aws_ecs_task_definition.migrator \
             -target=aws_iam_role_policy.migrator_execution \
-            -target=aws_iam_role_policy.migrator_task \
-            -target=aws_ssm_parameter.migrator_success_digest
+            -target=aws_iam_role_policy.migrator_task
           terraform show -no-color migrator.tfplan > ../../../../deployment-evidence/migrator-plan.txt
           terraform apply -input=false migrator.tfplan
 
       - name: Run database migrations from Fargate
-        if: steps.migration.outputs.required == 'true'
         run: |
           bash scripts/deploy/run-migrator.sh \
             infra/terraform/environments/development \
-            deployment-evidence \
-            "${MIGRATOR_CONTENT_DIGEST}"
+            deployment-evidence
 
       - name: Create and inspect the complete deployment plan
         working-directory: infra/terraform/environments/development
@@ -446,13 +626,18 @@ jobs:
         ${{ needs.prepare.outputs.impact_analysis_agent_image_digest }}
       TF_VAR_migration_agent_image_digest:
         ${{ needs.prepare.outputs.migration_agent_image_digest }}
-      MIGRATION_REQUIRED: ${{ needs.prepare.outputs.migration_required }}
 
     steps:
       - name: Check out the exact planned revision
         uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
           persist-credentials: false
+
+      - name: Install Node.js
+        uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
+        with:
+          node-version: 22.23.1
+          package-manager-cache: false
 
       - name: Revalidate protected deployment inputs
         env:
@@ -542,11 +727,7 @@ jobs:
             echo "- Change intelligence: \`${TF_VAR_change_intelligence_agent_image_digest}\`"
             echo "- Impact analysis: \`${TF_VAR_impact_analysis_agent_image_digest}\`"
             echo "- Migration agent: \`${TF_VAR_migration_agent_image_digest}\`"
-            if [[ "${MIGRATION_REQUIRED}" == "true" ]]; then
-              echo "- Migration: executed and passed"
-            else
-              echo "- Migration: skipped; signed content already completed successfully"
-            fi
+            echo "- Migration: passed"
             echo "- Saved-plan approval: passed"
             echo "- Public smoke checks: passed"
           } >> "${GITHUB_STEP_SUMMARY}"

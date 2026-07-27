@@ -2,7 +2,6 @@ const requiredVariables = [
   'AWS_ACCOUNT_ID',
   'AWS_REGION',
   'DEPLOY_ROLE_ARN',
-  'PROMOTION_SIGNING_KEY_ARN',
   'TF_STATE_BUCKET',
   'TF_STATE_KMS_KEY_ARN',
   'TF_VAR_acm_certificate_arn',
@@ -58,16 +57,6 @@ if (
   )
 ) {
   throw new Error('DEPLOY_ROLE_ARN must identify the exact development deploy role.');
-}
-if (
-  !new RegExp(
-    `^arn:aws:kms:${process.env.AWS_REGION}:${process.env.AWS_ACCOUNT_ID}:key/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$`,
-    'u',
-  ).test(process.env.PROMOTION_SIGNING_KEY_ARN)
-) {
-  throw new Error(
-    'PROMOTION_SIGNING_KEY_ARN must identify an exact key in the development account and region.',
-  );
 }
 if (process.env.TF_VAR_aws_region !== process.env.AWS_REGION) {
   throw new Error('TF_VAR_aws_region must match AWS_REGION.');

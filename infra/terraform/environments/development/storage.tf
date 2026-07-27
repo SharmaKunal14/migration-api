@@ -111,22 +111,6 @@ resource "aws_s3_bucket_lifecycle_configuration" "artifacts" {
   }
 }
 
-resource "aws_ssm_parameter" "migrator_success_digest" {
-  name        = "/migration-api/development/deployment/last-successful-migrator-content-digest"
-  description = "Content digest of the last successfully completed database migrator workload"
-  type        = "SecureString"
-  key_id      = aws_kms_key.artifacts.arn
-  value       = "sha256:0000000000000000000000000000000000000000000000000000000000000000"
-
-  lifecycle {
-    ignore_changes = [value]
-  }
-
-  tags = {
-    Stage = "5"
-  }
-}
-
 data "aws_iam_policy_document" "artifacts_bucket" {
   statement {
     sid       = "DenyInsecureTransport"

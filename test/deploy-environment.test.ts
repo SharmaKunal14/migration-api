@@ -14,8 +14,6 @@ const validEnvironment: NodeJS.ProcessEnv = {
   DEPLOY_CONFIRMATION: 'deploy-development',
   DEPLOY_ROLE_ARN:
     'arn:aws:iam::393209814365:role/migration-api-development-github-deploy',
-  PROMOTION_SIGNING_KEY_ARN:
-    'arn:aws:kms:ap-southeast-2:393209814365:key/00000000-0000-0000-0000-000000000005',
   GITHUB_REF: 'refs/heads/main',
   TF_STATE_BUCKET: 'migration-api-tfstate-393209814365-ap-southeast-2',
   TF_STATE_KMS_KEY_ARN:
@@ -76,7 +74,7 @@ describe('deployment environment validation', () => {
     const result = validate(validEnvironment);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Validated 34 deployment variables.');
+    expect(result.stdout).toContain('Validated 33 deployment variables.');
   });
 
   it('rejects a product URL instead of a hostname', () => {
@@ -88,19 +86,6 @@ describe('deployment environment validation', () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(
       'TF_VAR_product_domain must be a hostname without a scheme or path.',
-    );
-  });
-
-  it('rejects a promotion signing key outside the development account', () => {
-    const result = validate({
-      ...validEnvironment,
-      PROMOTION_SIGNING_KEY_ARN:
-        'arn:aws:kms:ap-southeast-2:111111111111:key/00000000-0000-0000-0000-000000000005',
-    });
-
-    expect(result.status).not.toBe(0);
-    expect(result.stderr).toContain(
-      'PROMOTION_SIGNING_KEY_ARN must identify an exact key in the development account and region.',
     );
   });
 });
