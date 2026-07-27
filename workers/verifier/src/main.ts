@@ -1,3 +1,8 @@
+export {
+  downloadBoundedArtifact,
+  materializeVerificationWorkspace,
+} from '@migration/verifier-workspace';
+
 const event = {
   timestamp: new Date().toISOString(),
   level: 'warn',
