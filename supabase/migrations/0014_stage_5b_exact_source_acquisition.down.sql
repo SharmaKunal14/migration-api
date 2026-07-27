@@ -35,7 +35,7 @@ alter table migration_run_events
 alter table migration_artifacts
   drop constraint migration_artifacts_artifact_type_check,
   drop constraint migration_artifacts_bytes_check,
-  drop constraint migration_artifacts_media_type_check;
+  drop constraint migration_artifacts_stage_5b_media_check;
 
 alter table migration_artifacts
   add constraint migration_artifacts_artifact_type_check check (
@@ -55,7 +55,7 @@ alter table migration_artifacts
       and bytes between 1 and 10485760
     )
   ),
-  add constraint migration_artifacts_media_type_check check (
+  add constraint migration_artifacts_stage_5a_media_check check (
     (artifact_type = 'patch_proposal' and media_type = 'text/x-diff')
     or (
       artifact_type <> 'patch_proposal'

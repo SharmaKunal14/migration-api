@@ -92,7 +92,8 @@ jobs:
         uses: actions/setup-node@2028fbc5c25fe9cf00d9f06a71cc4710d4507903 # v6.0.0
         with:
           node-version: 22.23.1
-          package-manager-cache: false
+          cache: npm
+          cache-dependency-path: package-lock.json
 
       - name: Validate protected deployment inputs
         env:
@@ -114,6 +115,9 @@ jobs:
         run: npm ci --ignore-scripts
 
       - name: Verify application and infrastructure inputs
+        env:
+          VITE_API_BASE_URL: /api
+          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
         run: npm run check
 
       - name: Audit dependencies
@@ -123,12 +127,6 @@ jobs:
         run:
           npm sbom --omit=dev --sbom-format=cyclonedx >
           deployment-evidence/application.cdx.json
-
-      - name: Build deployable browser assets
-        env:
-          VITE_API_BASE_URL: /api
-          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-        run: npm run build:web
 
       - name: Configure short-lived AWS credentials
         uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
@@ -427,27 +425,22 @@ jobs:
 
       - name: Gate on ECR vulnerability scans
         run: |
-          bash scripts/deploy/wait-for-ecr-scan.sh \
+          bash scripts/deploy/wait-for-ecr-scans.sh \
             migration-api-development-agent \
             "${AGENT_SCAN_DIGEST}" \
-            deployment-evidence/agent-image-scan.json
-          bash scripts/deploy/wait-for-ecr-scan.sh \
+            deployment-evidence/agent-image-scan.json \
             migration-api-development-database-migrator \
             "${MIGRATOR_SCAN_DIGEST}" \
-            deployment-evidence/migrator-image-scan.json
-          bash scripts/deploy/wait-for-ecr-scan.sh \
+            deployment-evidence/migrator-image-scan.json \
             migration-api-development-source-fetcher \
             "${SOURCE_FETCHER_SCAN_DIGEST}" \
-            deployment-evidence/source-fetcher-image-scan.json
-          bash scripts/deploy/wait-for-ecr-scan.sh \
+            deployment-evidence/source-fetcher-image-scan.json \
             migration-api-development-vendor-fetcher \
             "${VENDOR_FETCHER_SCAN_DIGEST}" \
-            deployment-evidence/vendor-fetcher-image-scan.json
-          bash scripts/deploy/wait-for-ecr-scan.sh \
+            deployment-evidence/vendor-fetcher-image-scan.json \
             migration-api-development-change-intelligence-agent \
             "${CHANGE_INTELLIGENCE_AGENT_SCAN_DIGEST}" \
-            deployment-evidence/change-intelligence-agent-image-scan.json
-          bash scripts/deploy/wait-for-ecr-scan.sh \
+            deployment-evidence/change-intelligence-agent-image-scan.json \
             migration-api-development-impact-analysis-agent \
             "${IMPACT_ANALYSIS_AGENT_SCAN_DIGEST}" \
             deployment-evidence/impact-analysis-agent-image-scan.json
@@ -502,14 +495,17 @@ jobs:
             infra/terraform/environments/development/.terraform/vendor-intelligence-control.zip \
             infra/terraform/environments/development/.terraform/impact-analysis-control.zip \
             infra/terraform/environments/development/.terraform/workflow-control.zip \
-            dist/services \
             dist/web
+          sha256sum deployment-plan-payload.tar.gz \
+            > deployment-plan-payload.tar.gz.sha256
 
       - name: Upload the saved-plan payload
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: development-plan-${{ github.run_id }}-${{ github.run_attempt }}
-          path: deployment-plan-payload.tar.gz
+          path: |
+            deployment-plan-payload.tar.gz
+            deployment-plan-payload.tar.gz.sha256
           if-no-files-found: error
           retention-days: 7
 
@@ -597,14 +593,6 @@ jobs:
           DEPLOY_CONFIRMATION: ${{ inputs.confirmation }}
         run: node scripts/deploy/validate-environment.mjs
 
-      - name: Rebuild local deployment inputs
-        env:
-          VITE_API_BASE_URL: /api
-          VITE_SUPABASE_URL: ${{ vars.SUPABASE_URL }}
-        run: |
-          npm ci --ignore-scripts
-          npm run build
-
       - name: Configure fresh short-lived AWS credentials
         uses: aws-actions/configure-aws-credentials@acca2b1b2070338fb9fd1ca27ecee81d687e58e5 # v6.1.2
         with:
@@ -638,6 +626,7 @@ jobs:
 
       - name: Restore the saved-plan inputs
         run: |
+          sha256sum --check deployment-plan-payload.tar.gz.sha256
           tar -xzf deployment-plan-payload.tar.gz
           test -s infra/terraform/environments/development/stage-1.tfplan
           test -s infra/terraform/environments/development/.terraform/api.zip

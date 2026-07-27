@@ -62,6 +62,11 @@ describe('Stage 5B exact source acquisition', () => {
   it('discovers pre-existing generated constraint names from the catalog', () => {
     expect(migration).toContain('from pg_constraint as constraint_definition');
     expect(migration).toContain('pg_get_constraintdef');
+    expect(migration).toContain("'application/json'");
+    expect(migration).toContain('migration_artifacts_stage_5b_media_check');
+    expect(migration).not.toContain(
+      'add constraint migration_artifacts_media_type_check',
+    );
     expect(migration).not.toContain('drop constraint migration_artifacts_bytes_check');
   });
 });

@@ -29,6 +29,14 @@ const impactAnalysisDockerfile = readFileSync(
   ),
   'utf8',
 );
+const parallelScanWaiter = readFileSync(
+  fileURLToPath(new URL('../scripts/deploy/wait-for-ecr-scans.sh', import.meta.url)),
+  'utf8',
+);
+const migratorRunner = readFileSync(
+  fileURLToPath(new URL('../scripts/deploy/run-migrator.sh', import.meta.url)),
+  'utf8',
+);
 
 describe('development deployment artifact contract', () => {
   it('packages and verifies every Stage 2 Lambda archive', () => {
@@ -92,5 +100,31 @@ describe('development deployment artifact contract', () => {
     expect(impactAnalysisDockerfile).toContain(
       'COPY dist/workers/impact-analysis-agent/main.js /app/main.js',
     );
+  });
+
+  it('uses the verified build once and restores the exact reviewed payload', () => {
+    expect(deploymentWorkflow).not.toContain('- name: Build deployable browser assets');
+    expect(deploymentWorkflow).not.toContain('- name: Rebuild local deployment inputs');
+    expect(deploymentWorkflow).toContain(
+      'sha256sum --check deployment-plan-payload.tar.gz.sha256',
+    );
+    expect(deploymentWorkflow).not.toMatch(
+      /deployment-plan-payload\.tar\.gz[\s\S]*dist\/services\s*\n/u,
+    );
+  });
+
+  it('waits for all mandatory ECR scan gates concurrently', () => {
+    expect(deploymentWorkflow).toContain('scripts/deploy/wait-for-ecr-scans.sh');
+    expect(parallelScanWaiter).toContain('bash scripts/deploy/wait-for-ecr-scan.sh');
+    expect(parallelScanWaiter).toContain('wait "${scan_pids[${index}]}"');
+    expect(parallelScanWaiter).toContain('exit "${failed}"');
+  });
+
+  it('prints the failed migrator task log stream without masking the failure', () => {
+    expect(migratorRunner).toContain(
+      'log_stream_name="migration/database-migrator/${task_id}"',
+    );
+    expect(migratorRunner).toContain('aws logs get-log-events');
+    expect(migratorRunner).toContain('exit 1');
   });
 });

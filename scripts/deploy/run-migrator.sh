@@ -44,6 +44,17 @@ if [[ "${exit_code}" != '0' ]]; then
   stopped_reason="$(jq -r '.tasks[0].stoppedReason // "unknown"' \
     "${evidence_directory}/migration-task-result.json")"
   echo "Database migration failed with exit code ${exit_code:-missing}: ${stopped_reason}" >&2
+  task_id="${task_arn##*/}"
+  log_stream_name="migration/database-migrator/${task_id}"
+  echo "Database migrator logs (${log_stream_name}):" >&2
+  if ! aws logs get-log-events \
+    --log-group-name /migration-api/development/database-migrator \
+    --log-stream-name "${log_stream_name}" \
+    --limit 100 \
+    --output json |
+    jq -r '.events[].message' >&2; then
+    echo "Unable to retrieve the task-specific database migrator logs." >&2
+  fi
   exit 1
 fi
 

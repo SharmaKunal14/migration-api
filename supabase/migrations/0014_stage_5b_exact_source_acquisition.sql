@@ -3,9 +3,10 @@ begin;
 do $$
 declare
   constraint_name text;
+  constraint_count integer;
 begin
-  select constraint_definition.conname
-  into constraint_name
+  select min(constraint_definition.conname), count(*)
+  into constraint_name, constraint_count
   from pg_constraint as constraint_definition
   where constraint_definition.conrelid = 'migration_artifacts'::regclass
     and constraint_definition.contype = 'c'
@@ -22,9 +23,10 @@ begin
       in pg_get_constraintdef(constraint_definition.oid)
     ) = 0;
 
-  if constraint_name is null then
+  if constraint_count <> 1 then
     raise exception
-      'Stage 5B could not identify the migration artifact type constraint';
+      'Stage 5B expected exactly one migration artifact type constraint, found %',
+      constraint_count;
   end if;
 
   execute format(
@@ -32,8 +34,8 @@ begin
     constraint_name
   );
 
-  select constraint_definition.conname
-  into constraint_name
+  select min(constraint_definition.conname), count(*)
+  into constraint_name, constraint_count
   from pg_constraint as constraint_definition
   where constraint_definition.conrelid = 'migration_artifacts'::regclass
     and constraint_definition.contype = 'c'
@@ -42,9 +44,10 @@ begin
       in pg_get_constraintdef(constraint_definition.oid)
     ) > 0;
 
-  if constraint_name is null then
+  if constraint_count <> 1 then
     raise exception
-      'Stage 5B could not identify the migration artifact size constraint';
+      'Stage 5B expected exactly one migration artifact size constraint, found %',
+      constraint_count;
   end if;
 
   execute format(
@@ -52,19 +55,28 @@ begin
     constraint_name
   );
 
-  select constraint_definition.conname
-  into constraint_name
+  select min(constraint_definition.conname), count(*)
+  into constraint_name, constraint_count
   from pg_constraint as constraint_definition
   where constraint_definition.conrelid = 'migration_artifacts'::regclass
     and constraint_definition.contype = 'c'
     and position(
       'media_type'
       in pg_get_constraintdef(constraint_definition.oid)
+    ) > 0
+    and position(
+      'patch_proposal'
+      in pg_get_constraintdef(constraint_definition.oid)
+    ) > 0
+    and position(
+      'application/json'
+      in pg_get_constraintdef(constraint_definition.oid)
     ) > 0;
 
-  if constraint_name is null then
+  if constraint_count <> 1 then
     raise exception
-      'Stage 5B could not identify the migration artifact media type constraint';
+      'Stage 5B expected exactly one migration artifact media type constraint, found %',
+      constraint_count;
   end if;
 
   execute format(
@@ -94,7 +106,7 @@ alter table migration_artifacts
       and bytes between 1 and 10485760
     )
   ),
-  add constraint migration_artifacts_media_type_check check (
+  add constraint migration_artifacts_stage_5b_media_check check (
     (artifact_type = 'source_snapshot' and media_type = 'application/gzip')
     or (artifact_type = 'patch_proposal' and media_type = 'text/x-diff')
     or (
