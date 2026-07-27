@@ -3,7 +3,12 @@ import { createHash, randomUUID } from 'node:crypto';
 import { GetWebIdentityTokenCommand, STSClient } from '@aws-sdk/client-sts';
 import OpenAI from 'openai';
 import type { SubjectTokenProvider } from 'openai/auth/index';
-import type { Response, ResponseInputItem } from 'openai/resources/responses/responses';
+import type {
+  Response,
+  ResponseInputItem,
+  ToolChoiceFunction,
+  ToolChoiceOptions,
+} from 'openai/resources/responses/responses';
 import { z } from 'zod';
 
 import {
@@ -97,7 +102,7 @@ export class MigrationAgentGateway {
   public async runTurn(
     input: ResponseInputItem[],
     maximumOutputTokens: number,
-    allowToolCalls: boolean,
+    toolChoice: ToolChoiceOptions | ToolChoiceFunction,
     signal: AbortSignal,
   ): Promise<MigrationModelTurn> {
     const response = await this.client.responses.create(
@@ -119,7 +124,7 @@ export class MigrationAgentGateway {
         ].join(' '),
         input,
         tools: [...repositoryTools],
-        tool_choice: allowToolCalls ? 'auto' : 'none',
+        tool_choice: toolChoice,
         parallel_tool_calls: true,
         reasoning: { effort: 'medium' },
         text: {

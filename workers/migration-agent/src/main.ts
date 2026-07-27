@@ -19,7 +19,11 @@ import { buildAndValidatePatch } from '@migration/patch-policy';
 
 import { classifyAgentFailure } from '../../agent/src/failure.js';
 import { MigrationAgentGateway } from './gateway.js';
-import { MigrationAgentKernel, MigrationAgentRuntimeError } from './kernel.js';
+import {
+  migrationAgentBudgets,
+  MigrationAgentKernel,
+  MigrationAgentRuntimeError,
+} from './kernel.js';
 import { RepositoryTools } from '../../impact-analysis-agent/src/tools.js';
 
 const MAX_INPUT_BYTES = 4 * 1024 * 1024;
@@ -103,9 +107,18 @@ async function main(): Promise<void> {
     });
     const planDigest = digestJson(proposal.plan);
     const remainingBudget = {
-      modelCalls: Math.max(0, 5 - proposal.usage.modelCalls),
-      toolCalls: Math.max(0, 40 - proposal.usage.toolCalls),
-      iterations: Math.max(0, 6 - proposal.usage.iterations),
+      modelCalls: Math.max(
+        0,
+        migrationAgentBudgets.maximumModelCalls - proposal.usage.modelCalls,
+      ),
+      toolCalls: Math.max(
+        0,
+        migrationAgentBudgets.maximumToolCalls - proposal.usage.toolCalls,
+      ),
+      iterations: Math.max(
+        0,
+        migrationAgentBudgets.maximumIterations - proposal.usage.iterations,
+      ),
     };
     const lastActionSequence = proposal.actions.at(-1)?.sequence ?? 0;
     const checkpoints: MigrationAgentResult['checkpoints'] = [
@@ -116,7 +129,11 @@ async function main(): Promise<void> {
         sequence: 1,
         phase: 'context',
         lastActionSequence: 0,
-        remainingBudget: { modelCalls: 5, toolCalls: 40, iterations: 6 },
+        remainingBudget: {
+          modelCalls: migrationAgentBudgets.maximumModelCalls,
+          toolCalls: migrationAgentBudgets.maximumToolCalls,
+          iterations: migrationAgentBudgets.maximumIterations,
+        },
         planDigest: null,
         patchDigest: null,
       },

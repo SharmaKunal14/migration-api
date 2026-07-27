@@ -447,6 +447,7 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     const iam = read('infra/terraform/environments/development/iam.tf');
     const worker = read('workers/migration-agent/src/main.ts');
     const gateway = read('workers/migration-agent/src/gateway.ts');
+    const kernel = read('workers/migration-agent/src/kernel.ts');
     const migration = read('supabase/migrations/0016_stage_5c_5d_migration_agent.sql');
 
     expect(foundation).toContain('migration-api-development-migration-agent');
@@ -465,7 +466,10 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     expect(worker).toContain('error.$metadata.httpStatusCode === 403');
     expect(worker).toContain("IfNoneMatch: '*'");
     expect(gateway).toContain('store: false');
+    expect(gateway).toContain('tool_choice: toolChoice');
     expect(gateway).toContain('Use only the supplied read-only repository tools');
+    expect(kernel).toContain("{ type: 'function', name: requiredTool }");
+    expect(kernel).toContain('migrationAgentBudgets.maximumModelCalls');
     expect(migration).toContain("'plan_created'");
     expect(migration).toContain("'patch_validated'");
   });

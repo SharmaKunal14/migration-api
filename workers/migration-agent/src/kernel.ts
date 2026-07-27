@@ -15,14 +15,22 @@ import {
   type RepositoryTools,
 } from '../../impact-analysis-agent/src/tools.js';
 
-const budgets = {
-  maximumModelCalls: 5,
+export const migrationAgentBudgets = {
+  maximumModelCalls: 6,
   maximumToolCalls: 40,
   maximumIterations: 6,
   maximumInputTokens: 120_000,
   maximumOutputTokens: 24_000,
   maximumWallClockMilliseconds: 5 * 60 * 1_000,
 } as const;
+
+const requiredInspectionTools = [
+  'list_repository_files',
+  'inspect_manifest',
+  'search_repository',
+  'inspect_typescript',
+  'read_repository_file',
+] as const;
 
 export interface MigrationKernelResult {
   readonly plan: MigrationExecutionPlan;
@@ -40,7 +48,7 @@ export class MigrationAgentKernel {
 
   public async run(): Promise<MigrationKernelResult> {
     const startedAt = Date.now();
-    const deadline = startedAt + budgets.maximumWallClockMilliseconds;
+    const deadline = startedAt + migrationAgentBudgets.maximumWallClockMilliseconds;
     const modelInput = this.gateway.initialInput();
     const actions: MigrationAgentResult['actions'] = [];
     const calledTools = new Set<string>();
@@ -53,45 +61,47 @@ export class MigrationAgentKernel {
     let returnedModel: string;
     let requestId: string | null;
 
-    while (iterations < budgets.maximumIterations) {
+    while (iterations < migrationAgentBudgets.maximumIterations) {
       iterations += 1;
       if (Date.now() >= deadline) {
         throw new MigrationAgentRuntimeError('AGENT_TIME_BUDGET_EXHAUSTED');
       }
-      if (modelCalls >= budgets.maximumModelCalls) {
+      if (modelCalls >= migrationAgentBudgets.maximumModelCalls) {
         throw new MigrationAgentRuntimeError('MODEL_CALL_BUDGET_EXHAUSTED');
       }
-      const remaining = budgets.maximumOutputTokens - outputTokens;
+      const remaining = migrationAgentBudgets.maximumOutputTokens - outputTokens;
       if (remaining <= 0) {
         throw new MigrationAgentRuntimeError('OUTPUT_TOKEN_BUDGET_EXHAUSTED');
       }
       modelCalls += 1;
+      const requiredTool = requiredInspectionTools.find(
+        toolName => !calledTools.has(toolName),
+      );
       const turn = await this.gateway.runTurn(
         modelInput,
         remaining,
-        modelCalls < budgets.maximumModelCalls,
+        requiredTool
+          ? { type: 'function', name: requiredTool }
+          : modelCalls < migrationAgentBudgets.maximumModelCalls
+            ? 'auto'
+            : 'none',
         AbortSignal.timeout(Math.max(1, deadline - Date.now())),
       );
       returnedModel = turn.response.model;
       requestId = turn.requestId;
       inputTokens += turn.inputTokens;
       outputTokens += turn.outputTokens;
-      if (inputTokens > budgets.maximumInputTokens) {
+      if (inputTokens > migrationAgentBudgets.maximumInputTokens) {
         throw new MigrationAgentRuntimeError('INPUT_TOKEN_BUDGET_EXHAUSTED');
       }
-      if (outputTokens > budgets.maximumOutputTokens) {
+      if (outputTokens > migrationAgentBudgets.maximumOutputTokens) {
         throw new MigrationAgentRuntimeError('OUTPUT_TOKEN_BUDGET_EXHAUSTED');
       }
       const calls = turn.response.output.filter(
         (item): item is ResponseFunctionToolCall => item.type === 'function_call',
       );
       if (calls.length === 0) {
-        for (const required of [
-          'list_repository_files',
-          'inspect_manifest',
-          'search_repository',
-          'inspect_typescript',
-        ]) {
+        for (const required of requiredInspectionTools) {
           if (!calledTools.has(required)) {
             throw new MigrationAgentRuntimeError('MIGRATION_TOOL_REQUIREMENTS_NOT_MET');
           }
@@ -133,7 +143,7 @@ export class MigrationAgentKernel {
       }
       modelInput.push(...calls);
       for (const call of calls) {
-        if (toolCalls >= budgets.maximumToolCalls) {
+        if (toolCalls >= migrationAgentBudgets.maximumToolCalls) {
           throw new MigrationAgentRuntimeError('TOOL_CALL_BUDGET_EXHAUSTED');
         }
         toolCalls += 1;
