@@ -234,6 +234,19 @@ describe('Stage 6A verification control plane', () => {
     expect(migration).toContain(
       "artifact_type = 'source_snapshot' and media_type = 'application/gzip'",
     );
+    expect(migration).not.toContain('into strict constraint_name');
+    expect(migration).toContain(
+      "'Stage 6A expected exactly one migration artifact media constraint, found %'",
+    );
+    const mediaConstraintLookup = migration.slice(
+      migration.indexOf("position(\n      'media_type'"),
+      migration.indexOf(
+        "'Stage 6A expected exactly one migration artifact media constraint",
+      ),
+    );
+    expect(mediaConstraintLookup).toContain("'source_snapshot'");
+    expect(mediaConstraintLookup).toContain("'patch_proposal'");
+    expect(mediaConstraintLookup).toContain("'application/json'");
     expect(migration).not.toMatch(/grant select, insert, update on\s+verification_/u);
     expect(rollback).toContain('drop table if exists verification_attempt_results');
     expect(rollback).toContain('drop table if exists verification_attempts');

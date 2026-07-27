@@ -28,9 +28,10 @@ alter table migration_run_events
 do $$
 declare
   constraint_name text;
+  constraint_count integer;
 begin
-  select constraint_definition.conname
-  into strict constraint_name
+  select min(constraint_definition.conname), count(*)
+  into constraint_name, constraint_count
   from pg_constraint as constraint_definition
   where constraint_definition.conrelid = 'migration_artifacts'::regclass
     and constraint_definition.contype = 'c'
@@ -50,6 +51,12 @@ begin
       'bytes'
       in pg_get_constraintdef(constraint_definition.oid)
     ) = 0;
+
+  if constraint_count <> 1 then
+    raise exception
+      'Stage 6A expected exactly one migration artifact type constraint, found %',
+      constraint_count;
+  end if;
 
   execute format(
     'alter table migration_artifacts drop constraint %I',
@@ -98,16 +105,35 @@ alter table migration_artifacts
 do $$
 declare
   constraint_name text;
+  constraint_count integer;
 begin
-  select constraint_definition.conname
-  into strict constraint_name
+  select min(constraint_definition.conname), count(*)
+  into constraint_name, constraint_count
   from pg_constraint as constraint_definition
   where constraint_definition.conrelid = 'migration_artifacts'::regclass
     and constraint_definition.contype = 'c'
     and position(
       'media_type'
       in pg_get_constraintdef(constraint_definition.oid)
+    ) > 0
+    and position(
+      'source_snapshot'
+      in pg_get_constraintdef(constraint_definition.oid)
+    ) > 0
+    and position(
+      'patch_proposal'
+      in pg_get_constraintdef(constraint_definition.oid)
+    ) > 0
+    and position(
+      'application/json'
+      in pg_get_constraintdef(constraint_definition.oid)
     ) > 0;
+
+  if constraint_count <> 1 then
+    raise exception
+      'Stage 6A expected exactly one migration artifact media constraint, found %',
+      constraint_count;
+  end if;
 
   execute format(
     'alter table migration_artifacts drop constraint %I',
@@ -138,16 +164,31 @@ alter table migration_artifacts
 do $$
 declare
   constraint_name text;
+  constraint_count integer;
 begin
-  select constraint_definition.conname
-  into strict constraint_name
+  select min(constraint_definition.conname), count(*)
+  into constraint_name, constraint_count
   from pg_constraint as constraint_definition
   where constraint_definition.conrelid = 'migration_artifacts'::regclass
     and constraint_definition.contype = 'c'
     and position(
       'bytes'
       in pg_get_constraintdef(constraint_definition.oid)
+    ) > 0
+    and position(
+      'source_snapshot'
+      in pg_get_constraintdef(constraint_definition.oid)
+    ) > 0
+    and position(
+      'patch_proposal'
+      in pg_get_constraintdef(constraint_definition.oid)
     ) > 0;
+
+  if constraint_count <> 1 then
+    raise exception
+      'Stage 6A expected exactly one migration artifact size constraint, found %',
+      constraint_count;
+  end if;
 
   execute format(
     'alter table migration_artifacts drop constraint %I',
