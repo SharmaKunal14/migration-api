@@ -425,6 +425,12 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
       ],
     } as const;
     expect(migrationAgentResultSchema.parse(result).status).toBe('succeeded');
+    expect(
+      migrationAgentResultSchema.parse({
+        ...result,
+        usage: { ...result.usage, modelCalls: 6 },
+      }).usage.modelCalls,
+    ).toBe(6);
     expect(() =>
       migrationAgentResultSchema.parse({
         ...result,

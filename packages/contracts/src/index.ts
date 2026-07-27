@@ -1444,7 +1444,7 @@ export const migrationAgentResultSchema = z
       .strict(),
     usage: z
       .object({
-        modelCalls: z.number().int().nonnegative().max(5),
+        modelCalls: z.number().int().nonnegative().max(6),
         toolCalls: z.number().int().nonnegative().max(40),
         iterations: z.number().int().nonnegative().max(6),
         inputTokens: z.number().int().nonnegative().max(120_000),

@@ -119,7 +119,9 @@ export class MigrationAgentGateway {
           'Do not claim verification or execution. Stage 6 performs verification separately.',
           'Preserve unresolved notification-default behavior instead of inventing equivalence.',
           'Every edit must correspond exactly to one plan file with the same operation and change category.',
+          'Use exact migration changeId values such as C-01 for evidenceChangeIds and transformationIds; never invent transformation identifiers.',
           'For modify and create operations, return the complete final UTF-8 file content. For delete, return null.',
+          'Never return null content for a modify or create operation.',
           'Keep changes minimal, idiomatic, and directly supported by reviewed evidence.',
         ].join(' '),
         input,
@@ -243,12 +245,22 @@ const modelPlanFileSchema = {
       type: 'array',
       minItems: 1,
       maxItems: 50,
-      items: { type: 'string', minLength: 1, maxLength: 64 },
+      items: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 64,
+        pattern: '^[A-Z][A-Z0-9._-]{0,63}$',
+      },
     },
     transformationIds: {
       type: 'array',
       maxItems: 50,
-      items: { type: 'string', minLength: 1, maxLength: 64 },
+      items: {
+        type: 'string',
+        minLength: 1,
+        maxLength: 64,
+        pattern: '^[A-Z][A-Z0-9._-]{0,63}$',
+      },
     },
   },
 } as const;
@@ -298,19 +310,34 @@ export const migrationProposalJsonSchema = {
       minItems: 1,
       maxItems: 100,
       items: {
-        type: 'object',
-        additionalProperties: false,
-        required: ['path', 'operation', 'changeCategory', 'content'],
-        properties: {
-          path: { type: 'string', minLength: 1, maxLength: 1024 },
-          operation: { type: 'string', enum: ['create', 'modify', 'delete'] },
-          changeCategory: modelPlanFileSchema.properties.changeCategory,
-          content: { type: ['string', 'null'], maxLength: 1048576 },
-        },
+        anyOf: [
+          modelEditJsonSchema(['create', 'modify'], {
+            type: 'string',
+            maxLength: 1048576,
+          }),
+          modelEditJsonSchema(['delete'], { type: 'null' }),
+        ],
       },
     },
   },
 } as const;
+
+function modelEditJsonSchema(
+  operations: readonly ('create' | 'modify' | 'delete')[],
+  content: Record<string, unknown>,
+): Record<string, unknown> {
+  return {
+    type: 'object',
+    additionalProperties: false,
+    required: ['path', 'operation', 'changeCategory', 'content'],
+    properties: {
+      path: { type: 'string', minLength: 1, maxLength: 1024 },
+      operation: { type: 'string', enum: operations },
+      changeCategory: modelPlanFileSchema.properties.changeCategory,
+      content,
+    },
+  };
+}
 
 const migrationModelOutputSchema = z
   .object({
