@@ -34,8 +34,7 @@ async function main(): Promise<void> {
   const config = parseConfig(migrationAgentConfigSchema);
   const prefix = `env/${config.APP_ENVIRONMENT}/org/${config.ORGANISATION_ID}/run/${config.MIGRATION_RUN_ID}/agent`;
   if (
-    config.INPUT_OBJECT_KEY !== `${prefix}/context.json` ||
-    config.RESULT_OBJECT_KEY !== `${prefix}/result.json`
+    !validAgentObjectKeyPair(prefix, config.INPUT_OBJECT_KEY, config.RESULT_OBJECT_KEY)
   ) {
     throw new Error('The configured migration-agent object key is invalid.');
   }
@@ -79,6 +78,16 @@ async function main(): Promise<void> {
     input.binding.migrationRunId !== config.MIGRATION_RUN_ID
   ) {
     throw new Error('The migration-agent input has invalid ownership.');
+  }
+  const expectedAttemptPrefix =
+    input.attemptNumber === 1
+      ? prefix
+      : `${prefix}/repair-attempt-${String(input.attemptNumber)}`;
+  if (
+    config.INPUT_OBJECT_KEY !== `${expectedAttemptPrefix}/context.json` ||
+    config.RESULT_OBJECT_KEY !== `${expectedAttemptPrefix}/result.json`
+  ) {
+    throw new Error('The migration-agent attempt object key is invalid.');
   }
 
   let result: MigrationAgentResult;
@@ -256,6 +265,31 @@ async function main(): Promise<void> {
     safeErrorCode: validated.safeErrorCode ?? undefined,
     durationMs: validated.usage.durationMs,
   });
+}
+
+function validAgentObjectKeyPair(
+  prefix: string,
+  inputObjectKey: string,
+  resultObjectKey: string,
+): boolean {
+  if (
+    inputObjectKey === `${prefix}/context.json` &&
+    resultObjectKey === `${prefix}/result.json`
+  ) {
+    return true;
+  }
+  const match = new RegExp(
+    `^${escapeRegularExpression(prefix)}/repair-attempt-([2-3])/context\\.json$`,
+    'u',
+  ).exec(inputObjectKey);
+  return (
+    match !== null &&
+    resultObjectKey === `${prefix}/repair-attempt-${match[1] ?? ''}/result.json`
+  );
+}
+
+function escapeRegularExpression(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 async function readExistingResult(

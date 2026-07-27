@@ -26,7 +26,11 @@ export async function loadPublicMigrationPatchReview(
   environment: string,
   record: MigrationPatchReviewRecord,
 ): Promise<PublicMigrationPatchReview> {
-  const prefix = `env/${environment}/org/${record.organisationId}/run/${record.migrationRunId}/agent`;
+  const basePrefix = `env/${environment}/org/${record.organisationId}/run/${record.migrationRunId}/agent`;
+  const prefix =
+    record.attemptNumber === 1
+      ? basePrefix
+      : `${basePrefix}/repair-attempt-${String(record.attemptNumber)}`;
   requireArtifactKey(record.plan, `${prefix}/plan.json`);
   requireArtifactKey(record.patch, `${prefix}/proposal.diff`);
   requireArtifactKey(record.manifest, `${prefix}/patch-manifest.json`);

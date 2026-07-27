@@ -2235,17 +2235,105 @@ resource "aws_sfn_state_machine" "migration" {
           "repairAttempts.$" = "States.MathAdd($.repairAttempts, 1)"
           "workflow.$"       = "$.workflow"
         }
-        Next = "RunRepairAgent"
+        Next = "PrepareMigrationRepair"
       }
-      RunRepairAgent = {
+      PrepareMigrationRepair = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
           FunctionName = aws_lambda_function.workflow_control.arn
           Payload = {
-            operation    = "evaluate_migration_stage_capability"
-            stage        = "repairing"
+            operation    = "prepare_migration_repair"
             "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.repair"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateRepairPreparation"
+      }
+      EvaluateRepairPreparation = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.repair.Payload.status"
+            StringEquals = "ready"
+            Next         = "RunMigrationRepairAgent"
+          },
+          {
+            Variable     = "$.repair.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.repair.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      RunMigrationRepairAgent = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::ecs:runTask.sync"
+        TimeoutSeconds = 900
+        Parameters = {
+          Cluster        = aws_ecs_cluster.agent.arn
+          TaskDefinition = aws_ecs_task_definition.migration_agent.arn
+          LaunchType     = "FARGATE"
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              AssignPublicIp = "DISABLED"
+              SecurityGroups = [aws_security_group.agent.id]
+              Subnets        = [for subnet in aws_subnet.agent : subnet.id]
+            }
+          }
+          Overrides = {
+            ContainerOverrides = [{
+              Name = "migration-agent"
+              Environment = [
+                { Name = "ORGANISATION_ID", "Value.$" = "$.repair.Payload.organisationId" },
+                { Name = "REPOSITORY_ID", "Value.$" = "$.repair.Payload.repositoryId" },
+                { Name = "MIGRATION_RUN_ID", "Value.$" = "$.repair.Payload.migrationRunId" },
+                { Name = "INPUT_OBJECT_KEY", "Value.$" = "$.repair.Payload.inputObjectKey" },
+                { Name = "INPUT_DIGEST", "Value.$" = "$.repair.Payload.inputDigest" },
+                { Name = "RESULT_OBJECT_KEY", "Value.$" = "$.repair.Payload.resultObjectKey" }
+              ]
+            }]
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["ECS.AmazonECSException", "ECS.ThrottlingException"]
+          IntervalSeconds = 5
+          BackoffRate     = 2
+          MaxAttempts     = 2
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "IngestMigrationRepairPlan"
+      }
+      IngestMigrationRepairPlan = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "ingest_migration_plan"
+            "workflow.$" = "$.workflow"
+            "prepared.$" = "$.repair.Payload"
           }
         }
         ResultPath = "$.boundary"
@@ -2260,15 +2348,15 @@ resource "aws_sfn_state_machine" "migration" {
           Next        = "MarkInfrastructureFailure"
           ResultPath  = null
         }]
-        Next = "EvaluateRepair"
+        Next = "EvaluateRepairPlanning"
       }
-      EvaluateRepair = {
+      EvaluateRepairPlanning = {
         Type = "Choice"
         Choices = [
           {
             Variable     = "$.boundary.Payload.status"
-            StringEquals = "unavailable"
-            Next         = "StopAtUnavailableBoundary"
+            StringEquals = "completed"
+            Next         = "IngestMigrationRepairPatch"
           },
           {
             Variable     = "$.boundary.Payload.status"
@@ -2277,8 +2365,64 @@ resource "aws_sfn_state_machine" "migration" {
           },
           {
             Variable     = "$.boundary.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "failed"
+            Next         = "SafeBoundaryReached"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      IngestMigrationRepairPatch = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "ingest_migration_patch"
+            "workflow.$" = "$.workflow"
+            "prepared.$" = "$.repair.Payload"
+          }
+        }
+        ResultPath = "$.boundary"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateRepairPatch"
+      }
+      EvaluateRepairPatch = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.boundary.Payload.status"
             StringEquals = "completed"
             Next         = "RunVerifier"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "failed"
+            Next         = "SafeBoundaryReached"
           }
         ]
         Default = "MarkInfrastructureFailure"

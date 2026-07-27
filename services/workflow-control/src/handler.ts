@@ -158,6 +158,12 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('prepare_migration_repair'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('ingest_migration_verification'),
       workflow: migrationWorkflowInputSchema,
       prepared: migrationVerificationDispatchSchema,
@@ -316,6 +322,19 @@ export async function handleWorkflowCommand(
       ...(prepared.status === 'ready'
         ? { verificationAttemptId: prepared.verificationAttemptId }
         : {}),
+    });
+    return prepared;
+  }
+  if (command.operation === 'prepare_migration_repair') {
+    const prepared = await prepareMigrationRepair(dependency, command.workflow);
+    writeLog('info', {
+      event: 'migration_repair_prepared',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      outcome: prepared.status,
+      ...(prepared.status === 'ready' ? { repairAttempt: prepared.attemptNumber } : {}),
     });
     return prepared;
   }
@@ -1140,10 +1159,11 @@ async function prepareMigrationAgent(
   const affected = storedImpactSummarySchema.parse(source.affectedSummary);
   const uncertainties = storedUncertaintiesSchema.parse(source.uncertainty);
   const patchPolicy = migrationApprovalPatchPolicySchema.parse(source.patchPolicy);
-  const prefix = migrationAgentPrefix(
+  const prefix = migrationAgentAttemptPrefix(
     dependency.config.APP_ENVIRONMENT,
     workflow.organisationId,
     workflow.migrationRunId,
+    source.attempt,
   );
   const inputObjectKey = `${prefix}/context.json`;
   const resultObjectKey = `${prefix}/result.json`;
@@ -1217,11 +1237,177 @@ async function prepareMigrationAgent(
   });
 }
 
+async function prepareMigrationRepair(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+): Promise<MigrationAgentPreparedInput | { readonly status: 'cancelled' | 'stale' }> {
+  const source = await dependency.database.transaction().execute(async transaction => {
+    const run = await lockedMigrationRun(transaction, workflow);
+    if (run.status === 'cancelled') return { status: 'cancelled' as const };
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return { status: 'cancelled' as const };
+    }
+    if (run.status !== 'running' || run.currentStage !== 'repairing') {
+      throw new Error('The migration run cannot prepare a repair.');
+    }
+    const approval = await loadMigrationApprovalState(transaction, workflow);
+    if (isMigrationApprovalStale(approval, new Date())) {
+      await markMigrationStale(transaction, workflow, run.version);
+      return { status: 'stale' as const };
+    }
+    const previous = await transaction
+      .selectFrom('patchAttempts as patch')
+      .innerJoin('migrationArtifacts as patchArtifact', join =>
+        join
+          .onRef('patchArtifact.id', '=', 'patch.patchArtifactId')
+          .onRef('patchArtifact.organisationId', '=', 'patch.organisationId')
+          .onRef('patchArtifact.migrationRunId', '=', 'patch.migrationRunId'),
+      )
+      .innerJoin(
+        'verificationAttempts as verification',
+        'verification.patchAttemptId',
+        'patch.id',
+      )
+      .innerJoin(
+        'verificationAttemptResults as verificationResult',
+        'verificationResult.verificationAttemptId',
+        'verification.id',
+      )
+      .innerJoin('migrationArtifacts as resultArtifact', join =>
+        join
+          .onRef('resultArtifact.id', '=', 'verificationResult.resultArtifactId')
+          .onRef('resultArtifact.organisationId', '=', 'patch.organisationId')
+          .onRef('resultArtifact.migrationRunId', '=', 'patch.migrationRunId'),
+      )
+      .select([
+        'patch.id as patchAttemptId',
+        'patch.attemptNumber',
+        'patch.patchDigest',
+        'patchArtifact.objectKey as patchObjectKey',
+        'patchArtifact.digest as patchArtifactDigest',
+        'patchArtifact.bytes as patchBytes',
+        'verificationResult.outcome',
+        'resultArtifact.objectKey as resultObjectKey',
+        'resultArtifact.digest as resultDigest',
+        'resultArtifact.bytes as resultBytes',
+      ])
+      .where('patch.organisationId', '=', workflow.organisationId)
+      .where('patch.migrationRunId', '=', workflow.migrationRunId)
+      .where('patch.status', '=', 'accepted')
+      .where('verificationResult.outcome', '=', 'failed')
+      .orderBy('patch.attemptNumber', 'desc')
+      .executeTakeFirstOrThrow();
+    const basePrefix = migrationAgentPrefix(
+      dependency.config.APP_ENVIRONMENT,
+      workflow.organisationId,
+      workflow.migrationRunId,
+    );
+    const context = await transaction
+      .selectFrom('migrationArtifacts')
+      .select(['objectKey', 'digest', 'bytes'])
+      .where('organisationId', '=', workflow.organisationId)
+      .where('migrationRunId', '=', workflow.migrationRunId)
+      .where('artifactType', '=', 'context_manifest')
+      .where('objectKey', '=', `${basePrefix}/context.json`)
+      .executeTakeFirstOrThrow();
+    const attemptNumber = previous.attemptNumber + 1;
+    if (attemptNumber > 3) {
+      throw new Error('The migration repair budget has been exhausted.');
+    }
+    return {
+      status: 'ready' as const,
+      previous,
+      context,
+      attemptNumber,
+    };
+  });
+  if (source.status !== 'ready') return source;
+  const [contextBytes, patchBytes, resultBytes] = await Promise.all([
+    readBoundedArtifact(dependency, source.context.objectKey, 4 * 1024 * 1024),
+    readBoundedArtifact(dependency, source.previous.patchObjectKey, 1024 * 1024),
+    readBoundedArtifact(dependency, source.previous.resultObjectKey, MAX_RESULT_BYTES),
+  ]);
+  if (
+    contextBytes.byteLength !== Number(source.context.bytes) ||
+    sha256(contextBytes) !== source.context.digest ||
+    patchBytes.byteLength !== Number(source.previous.patchBytes) ||
+    sha256(patchBytes) !== source.previous.patchArtifactDigest ||
+    source.previous.patchDigest !== source.previous.patchArtifactDigest ||
+    resultBytes.byteLength !== Number(source.previous.resultBytes) ||
+    sha256(resultBytes) !== source.previous.resultDigest
+  ) {
+    throw new Error('The migration repair evidence digest is invalid.');
+  }
+  const original = migrationAgentInputArtifactSchema.parse(
+    JSON.parse(contextBytes.toString('utf8')),
+  );
+  const verification = migrationVerificationResultSchema.parse(
+    JSON.parse(resultBytes.toString('utf8')),
+  );
+  if (
+    original.organisationId !== workflow.organisationId ||
+    original.repositoryId !== workflow.repositoryId ||
+    original.binding.migrationRunId !== workflow.migrationRunId ||
+    verification.migrationRunId !== workflow.migrationRunId ||
+    verification.patchAttemptId !== source.previous.patchAttemptId ||
+    verification.patchDigest !== source.previous.patchDigest ||
+    verification.outcome !== 'failed' ||
+    verification.safeErrorCode === null
+  ) {
+    throw new Error('The migration repair evidence binding is invalid.');
+  }
+  const input = migrationAgentInputArtifactSchema.parse({
+    ...original,
+    attemptNumber: source.attemptNumber,
+    repair: {
+      previousPatchAttemptId: source.previous.patchAttemptId,
+      previousPatchDigest: source.previous.patchDigest,
+      previousPatch: new TextDecoder('utf-8', { fatal: true }).decode(patchBytes),
+      verification: {
+        outcome: 'failed',
+        safeErrorCode: verification.safeErrorCode,
+        commands: verification.commands,
+      },
+    },
+  });
+  const prefix = migrationAgentAttemptPrefix(
+    dependency.config.APP_ENVIRONMENT,
+    workflow.organisationId,
+    workflow.migrationRunId,
+    source.attemptNumber,
+  );
+  const inputObjectKey = `${prefix}/context.json`;
+  const resultObjectKey = `${prefix}/result.json`;
+  const body = Buffer.from(JSON.stringify(input), 'utf8');
+  const inputDigest = sha256(body);
+  await putImmutableObject(
+    dependency,
+    inputObjectKey,
+    body,
+    'application/json',
+    inputDigest,
+    workflow.migrationRunId,
+  );
+  return migrationAgentPreparedInputSchema.parse({
+    status: 'ready',
+    organisationId: workflow.organisationId,
+    repositoryId: workflow.repositoryId,
+    migrationRunId: workflow.migrationRunId,
+    attemptNumber: source.attemptNumber,
+    inputObjectKey,
+    inputDigest,
+    resultObjectKey,
+  });
+}
+
 async function ingestMigrationPlan(
   dependency: WorkflowDependencies,
   workflow: MigrationWorkflowInput,
   prepared: MigrationAgentPreparedInput,
 ): Promise<'completed' | 'failed' | 'cancelled' | 'stale'> {
+  const repair = prepared.attemptNumber > workflow.expectedAttempt;
+  const planStage: MigrationExecutionStage = repair ? 'repairing' : 'planning';
   const { input, inputBytes, result } = await readMigrationAgentArtifacts(
     dependency,
     workflow,
@@ -1231,7 +1417,7 @@ async function ingestMigrationPlan(
     return markMigrationAgentFailed(
       dependency.database,
       workflow,
-      'planning',
+      planStage,
       'MIGRATION_AGENT_FAILED',
     );
   }
@@ -1243,10 +1429,11 @@ async function ingestMigrationPlan(
   ) {
     throw new Error('The migration plan binding or digest is invalid.');
   }
-  const prefix = migrationAgentPrefix(
+  const prefix = migrationAgentAttemptPrefix(
     dependency.config.APP_ENVIRONMENT,
     workflow.organisationId,
     workflow.migrationRunId,
+    prepared.attemptNumber,
   );
   const planKey = `${prefix}/plan.json`;
   await putImmutableObject(
@@ -1301,7 +1488,7 @@ async function ingestMigrationPlan(
       }
       return 'completed';
     }
-    if (run.status !== 'running' || run.currentStage !== 'planning') {
+    if (run.status !== 'running' || run.currentStage !== planStage) {
       throw new Error('The migration run cannot ingest a plan.');
     }
     const now = new Date();
@@ -1394,7 +1581,7 @@ async function ingestMigrationPlan(
       )}`,
       eventType: 'plan_created',
       status: 'running',
-      stage: 'planning',
+      stage: planStage,
       safeErrorCode: null,
       createdAt: now,
     });
@@ -1456,10 +1643,11 @@ async function ingestMigrationPatch(
   if (manifest.patchDigest !== patchDigest || validation.patchDigest !== patchDigest) {
     throw new Error('The migration patch digest is invalid.');
   }
-  const prefix = migrationAgentPrefix(
+  const prefix = migrationAgentAttemptPrefix(
     dependency.config.APP_ENVIRONMENT,
     workflow.organisationId,
     workflow.migrationRunId,
+    prepared.attemptNumber,
   );
   const patchKey = `${prefix}/proposal.diff`;
   const manifestKey = `${prefix}/patch-manifest.json`;
@@ -1610,7 +1798,18 @@ async function ingestMigrationPatch(
         organisationId: workflow.organisationId,
         migrationRunId: workflow.migrationRunId,
         attemptNumber: prepared.attemptNumber,
-        parentPatchAttemptId: null,
+        parentPatchAttemptId:
+          prepared.attemptNumber === 1
+            ? null
+            : (
+                await transaction
+                  .selectFrom('patchAttempts')
+                  .select('id')
+                  .where('organisationId', '=', workflow.organisationId)
+                  .where('migrationRunId', '=', workflow.migrationRunId)
+                  .where('attemptNumber', '=', prepared.attemptNumber - 1)
+                  .executeTakeFirstOrThrow()
+              ).id,
         migrationPlanId: plan.id,
         patchArtifactId,
         patchDigest,
@@ -1975,12 +2174,13 @@ async function ingestMigrationVerification(
   dependency: WorkflowDependencies,
   workflow: MigrationWorkflowInput,
   prepared: MigrationVerificationDispatch,
-): Promise<'completed' | 'failed' | 'cancelled'> {
+): Promise<'completed' | 'failed' | 'repair_required' | 'cancelled'> {
   if (
     prepared.organisationId !== workflow.organisationId ||
     prepared.repositoryId !== workflow.repositoryId ||
     prepared.migrationRunId !== workflow.migrationRunId ||
-    prepared.attemptNumber !== workflow.expectedAttempt
+    prepared.attemptNumber < workflow.expectedAttempt ||
+    prepared.attemptNumber > workflow.expectedAttempt + 2
   ) {
     throw new Error('The verification result has invalid ownership.');
   }
@@ -2040,9 +2240,6 @@ async function ingestMigrationVerification(
       await markMigrationCancelled(transaction, workflow, run.version);
       return 'cancelled';
     }
-    if (run.status !== 'running' || run.currentStage !== 'verifying') {
-      throw new Error('The migration run cannot ingest verification.');
-    }
     const existing = await transaction
       .selectFrom('verificationAttemptResults')
       .select(['outcome'])
@@ -2051,7 +2248,11 @@ async function ingestMigrationVerification(
       .where('migrationRunId', '=', workflow.migrationRunId)
       .executeTakeFirst();
     if (existing !== undefined) {
-      return existing.outcome === 'passed' ? 'completed' : 'failed';
+      if (existing.outcome === 'passed') return 'completed';
+      return existing.outcome === 'failed' ? 'repair_required' : 'failed';
+    }
+    if (run.status !== 'running' || run.currentStage !== 'verifying') {
+      throw new Error('The migration run cannot ingest verification.');
     }
     const now = new Date();
     const resultArtifactId = randomUUID();
@@ -2101,6 +2302,7 @@ async function ingestMigrationVerification(
         verificationAttemptId: prepared.verificationAttemptId,
         outcome: result.outcome,
         safeErrorCode: result.safeErrorCode,
+        commands: result.commands,
         resultArtifactId,
         resultDigest,
         stdoutArtifactId,
@@ -2143,6 +2345,38 @@ async function ingestMigrationVerification(
         createdAt: now,
       });
       return 'completed';
+    }
+    if (result.outcome === 'failed') {
+      await transaction
+        .updateTable('migrationRuns')
+        .set({
+          currentStage: 'repairing',
+          version: run.version + 1,
+          updatedAt: now,
+        })
+        .where('id', '=', workflow.migrationRunId)
+        .where('organisationId', '=', workflow.organisationId)
+        .where('version', '=', run.version)
+        .executeTakeFirstOrThrow();
+      await appendMigrationRunEvent(transaction, {
+        workflow,
+        eventKey: `run:${workflow.migrationRunId}:verification-completed:${String(prepared.attemptNumber)}`,
+        eventType: 'verification_completed',
+        status: 'running',
+        stage: 'verifying',
+        safeErrorCode: result.safeErrorCode,
+        createdAt: now,
+      });
+      await appendMigrationRunEvent(transaction, {
+        workflow,
+        eventKey: `run:${workflow.migrationRunId}:repair-requested:${String(prepared.attemptNumber)}`,
+        eventType: 'repair_requested',
+        status: 'running',
+        stage: 'repairing',
+        safeErrorCode: result.safeErrorCode,
+        createdAt: now,
+      });
+      return 'repair_required';
     }
     await transaction
       .updateTable('migrationRuns')
@@ -2211,7 +2445,8 @@ async function readMigrationAgentArtifacts(
     result.organisationId !== workflow.organisationId ||
     result.repositoryId !== workflow.repositoryId ||
     result.migrationRunId !== workflow.migrationRunId ||
-    result.attemptNumber !== workflow.expectedAttempt ||
+    input.attemptNumber !== prepared.attemptNumber ||
+    result.attemptNumber !== prepared.attemptNumber ||
     result.inputDigest !== prepared.inputDigest
   ) {
     throw new Error('The migration-agent result has invalid ownership.');
@@ -2247,7 +2482,7 @@ async function lockedMigrationRun(
 async function markMigrationAgentFailed(
   database: AppDatabase,
   workflow: MigrationWorkflowInput,
-  stage: Extract<MigrationExecutionStage, 'planning' | 'patching'>,
+  stage: Extract<MigrationExecutionStage, 'planning' | 'patching' | 'repairing'>,
   safeErrorCode: 'MIGRATION_AGENT_FAILED',
 ): Promise<'failed' | 'cancelled'> {
   return markMigrationFailed(database, workflow, safeErrorCode, stage);
@@ -2389,6 +2624,18 @@ function migrationAgentPrefix(
   migrationRunId: string,
 ): string {
   return `env/${environment}/org/${organisationId}/run/${migrationRunId}/agent`;
+}
+
+function migrationAgentAttemptPrefix(
+  environment: string,
+  organisationId: string,
+  migrationRunId: string,
+  attemptNumber: number,
+): string {
+  const prefix = migrationAgentPrefix(environment, organisationId, migrationRunId);
+  return attemptNumber === 1
+    ? prefix
+    : `${prefix}/repair-attempt-${String(attemptNumber)}`;
 }
 
 function sha256(value: Uint8Array): string {
@@ -2625,6 +2872,7 @@ interface SystemMigrationRunEvent {
     | 'patch_validated'
     | 'verification_prepared'
     | 'verification_completed'
+    | 'repair_requested'
     | 'run_cancelled'
     | 'run_failed'
     | 'run_stale';
@@ -2635,6 +2883,7 @@ interface SystemMigrationRunEvent {
     | 'planning'
     | 'patching'
     | 'verifying'
+    | 'repairing'
     | 'publishing'
     | 'failed'
     | 'cancelled'

@@ -1313,6 +1313,26 @@ const migrationAgentImpactFileSchema = z
   })
   .strict();
 
+const migrationRepairCommandEvidenceSchema = z
+  .object({
+    commandId: z
+      .string()
+      .min(1)
+      .max(100)
+      .regex(/^[a-z][a-z0-9._-]{0,99}$/u),
+    status: z.enum(['passed', 'failed', 'skipped', 'timed_out', 'policy_rejected']),
+    exitCode: z.number().int().min(0).max(255).nullable(),
+    signal: z.string().min(1).max(32).nullable(),
+    durationMs: z
+      .number()
+      .int()
+      .nonnegative()
+      .max(60 * 60 * 1_000),
+    stdoutTruncated: z.boolean(),
+    stderrTruncated: z.boolean(),
+  })
+  .strict();
+
 export const migrationAgentInputArtifactSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -1353,6 +1373,24 @@ export const migrationAgentInputArtifactSchema = z
         patchPolicyDigest: sha256Schema,
       })
       .strict(),
+    repair: z
+      .object({
+        previousPatchAttemptId: uuidSchema,
+        previousPatchDigest: sha256Schema,
+        previousPatch: z
+          .string()
+          .min(1)
+          .max(1024 * 1024),
+        verification: z
+          .object({
+            outcome: z.literal('failed'),
+            safeErrorCode: z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/u),
+            commands: z.array(migrationRepairCommandEvidenceSchema).min(1).max(20),
+          })
+          .strict(),
+      })
+      .strict()
+      .optional(),
   })
   .strict()
   .superRefine((input, context) => {
@@ -2430,6 +2468,27 @@ export interface PublicMigrationRunDetail extends PublicMigrationRunSummary {
   readonly workflowExecutionArn: string | null;
   readonly cancellationRequestedAt: string | null;
   readonly events: readonly PublicMigrationRunEvent[];
+  readonly verificationAttempts: readonly PublicMigrationVerificationAttempt[];
+}
+
+export interface PublicMigrationVerificationAttempt {
+  readonly id: string;
+  readonly attemptNumber: number;
+  readonly patchAttemptId: string;
+  readonly policyVersion: string;
+  readonly profiles: readonly {
+    readonly profile: VerificationProfileName;
+    readonly availability: 'available' | 'unavailable';
+    readonly commandIds: readonly string[];
+  }[];
+  readonly outcome: VerificationTerminalOutcome | null;
+  readonly safeErrorCode: string | null;
+  readonly commands: MigrationVerificationResult['commands'];
+  readonly resultDigest: string | null;
+  readonly stdoutDigest: string | null;
+  readonly stderrDigest: string | null;
+  readonly startedAt: string | null;
+  readonly completedAt: string | null;
 }
 
 export interface PublicMigrationPatchAttempt {

@@ -113,6 +113,7 @@ class FakeRepository implements ApiRepositoryPort {
       revocationReasonCode: null,
     },
     events: [],
+    verificationAttempts: [],
   };
   public readonly createMigrationApprovalMock = vi.fn<
     (

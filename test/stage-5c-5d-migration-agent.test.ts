@@ -138,6 +138,46 @@ const plan = migrationExecutionPlanSchema.parse({
 });
 
 describe('Stage 5C, 5D, and 5E bounded migration planning and patch validation', () => {
+  it('accepts only failed verification evidence for a bounded repair input', () => {
+    const repair = {
+      ...input,
+      attemptNumber: 2,
+      repair: {
+        previousPatchAttemptId: '32b9664f-12c0-4276-aea5-46938b6f5a97',
+        previousPatchDigest: '1'.repeat(64),
+        previousPatch: 'diff --git a/source.ts b/source.ts\n',
+        verification: {
+          outcome: 'failed',
+          safeErrorCode: 'VERIFICATION_COMMAND_FAILED',
+          commands: [
+            {
+              commandId: 'npm.typecheck',
+              status: 'failed',
+              exitCode: 2,
+              signal: null,
+              durationMs: 1_000,
+              stdoutTruncated: false,
+              stderrTruncated: false,
+            },
+          ],
+        },
+      },
+    } as const;
+    expect(migrationAgentInputArtifactSchema.parse(repair).attemptNumber).toBe(2);
+    expect(() =>
+      migrationAgentInputArtifactSchema.parse({
+        ...repair,
+        repair: {
+          ...repair.repair,
+          verification: {
+            ...repair.repair.verification,
+            outcome: 'unavailable',
+          },
+        },
+      }),
+    ).toThrow();
+  });
+
   it('builds a deterministic accepted patch tied to exact approved evidence', () => {
     const before =
       "import { client } from './client.js';\n\nexport const send = client.messages.send;\n";

@@ -10,7 +10,9 @@ import type { AppDatabase, Database } from '@migration/database';
 import {
   impactReportSchema,
   migrationApprovalAuthoritySchema,
+  migrationApprovalVerificationProfileSchema,
   migrationSpecificationSchema,
+  migrationVerificationResultSchema,
 } from '@migration/contracts';
 import type {
   CreateMigrationApprovalRequest,
@@ -2581,7 +2583,7 @@ async function loadMigrationRun(
       404,
     );
   }
-  const [workflow, events] = await Promise.all([
+  const [workflow, events, verificationAttempts] = await Promise.all([
     database
       .selectFrom('migrationRuns')
       .select(['workflowExecutionArn', 'cancellationRequestedAt'])
@@ -2605,6 +2607,32 @@ async function loadMigrationRun(
       .where('event.migrationRunId', '=', migrationRunId)
       .orderBy('event.sequence')
       .execute(),
+    database
+      .selectFrom('verificationAttempts as attempt')
+      .leftJoin(
+        'verificationAttemptResults as result',
+        'result.verificationAttemptId',
+        'attempt.id',
+      )
+      .select([
+        'attempt.id',
+        'attempt.attemptNumber',
+        'attempt.patchAttemptId',
+        'attempt.verificationPolicyVersion',
+        'attempt.verificationProfile',
+        'result.outcome',
+        'result.safeErrorCode',
+        'result.commands',
+        'result.resultDigest',
+        'result.stdoutDigest',
+        'result.stderrDigest',
+        'result.startedAt',
+        'result.completedAt',
+      ])
+      .where('attempt.organisationId', '=', organisationId)
+      .where('attempt.migrationRunId', '=', migrationRunId)
+      .orderBy('attempt.attemptNumber')
+      .execute(),
   ]);
   return {
     ...migrationRunSummary(run),
@@ -2613,6 +2641,26 @@ async function loadMigrationRun(
     events: events.map(event => ({
       ...event,
       createdAt: event.createdAt.toISOString(),
+    })),
+    verificationAttempts: verificationAttempts.map(attempt => ({
+      id: attempt.id,
+      attemptNumber: attempt.attemptNumber,
+      patchAttemptId: attempt.patchAttemptId,
+      policyVersion: attempt.verificationPolicyVersion,
+      profiles: migrationApprovalVerificationProfileSchema.parse(
+        attempt.verificationProfile,
+      ).profiles,
+      outcome: attempt.outcome,
+      safeErrorCode: attempt.safeErrorCode,
+      commands:
+        attempt.commands === null
+          ? []
+          : migrationVerificationResultSchema.shape.commands.parse(attempt.commands),
+      resultDigest: attempt.resultDigest,
+      stdoutDigest: attempt.stdoutDigest,
+      stderrDigest: attempt.stderrDigest,
+      startedAt: attempt.startedAt?.toISOString() ?? null,
+      completedAt: attempt.completedAt?.toISOString() ?? null,
     })),
   };
 }

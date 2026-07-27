@@ -1486,6 +1486,9 @@ function MigrationRunPage(): React.JSX.Element {
           review={patchReview}
         />
       )}
+      {run.verificationAttempts.length > 0 && (
+        <VerificationEvidencePanel attempts={run.verificationAttempts} />
+      )}
       <section className="panel">
         <p className="section-kicker">Persisted workflow evidence</p>
         <h2>Run timeline</h2>
@@ -1526,6 +1529,93 @@ function MigrationRunPage(): React.JSX.Element {
       )}
     </div>
   );
+}
+
+function VerificationEvidencePanel({
+  attempts,
+}: {
+  readonly attempts: PublicMigrationRunDetail['verificationAttempts'];
+}): React.JSX.Element {
+  return (
+    <section className="panel patch-review">
+      <div className="patch-review-heading">
+        <div>
+          <p className="section-kicker">Stage 6 verification</p>
+          <h2>Credential-free verification evidence</h2>
+          <p>
+            Each attempt is bound to one immutable patch. Only a complete passed result
+            is displayed as passed.
+          </p>
+        </div>
+        <span className="dependency-count">
+          {attempts.length} {attempts.length === 1 ? 'attempt' : 'attempts'} recorded
+        </span>
+      </div>
+      <ol className="patch-attempts">
+        {attempts.map(attempt => {
+          const outcome = attempt.outcome ?? 'running';
+          return (
+            <li key={attempt.id}>
+              <div>
+                <strong>Verification attempt {attempt.attemptNumber}</strong>
+                <span className={`status status-${verificationStatus(outcome)}`}>
+                  {outcome.replaceAll('_', ' ')}
+                </span>
+              </div>
+              <p>
+                Policy <code>{attempt.policyVersion}</code>
+                {attempt.completedAt
+                  ? ` · completed ${new Date(attempt.completedAt).toLocaleString()}`
+                  : ' · in progress'}
+              </p>
+              <div className="tag-row">
+                {attempt.profiles.map(profile => (
+                  <span className="dependency-kind" key={profile.profile}>
+                    {profile.profile.replaceAll('_', ' ')} · {profile.availability}
+                  </span>
+                ))}
+              </div>
+              {attempt.commands.length > 0 && (
+                <ul className="validation-checks">
+                  {attempt.commands.map(command => (
+                    <li key={command.commandId}>
+                      <span
+                        className={`validation-dot validation-${
+                          command.status === 'passed' ? 'passed' : 'failed'
+                        }`}
+                        aria-hidden="true"
+                      />
+                      <code>{command.commandId}</code>
+                      <strong>{command.status.replaceAll('_', ' ')}</strong>
+                    </li>
+                  ))}
+                </ul>
+              )}
+              {attempt.safeErrorCode && <code>{attempt.safeErrorCode}</code>}
+              {attempt.resultDigest && (
+                <small title={attempt.resultDigest}>
+                  Result evidence {attempt.resultDigest.slice(0, 12)}…
+                </small>
+              )}
+            </li>
+          );
+        })}
+      </ol>
+      <p className="approval-revocation-note">
+        Failed checks may trigger at most two evidence-driven repair attempts.
+        Unavailable, partial, timed-out, policy-rejected, and infrastructure outcomes
+        stop without being relabelled as passed.
+      </p>
+    </section>
+  );
+}
+
+function verificationStatus(
+  outcome:
+    PublicMigrationRunDetail['verificationAttempts'][number]['outcome'] | 'running',
+): 'running' | 'succeeded' | 'failed' {
+  if (outcome === 'running') return 'running';
+  return outcome === 'passed' ? 'succeeded' : 'failed';
 }
 
 function PatchReviewPanel({

@@ -240,7 +240,11 @@ data "aws_iam_policy_document" "api_artifacts" {
       "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/plan.json",
       "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/proposal.diff",
       "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/patch-manifest.json",
-      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/patch-validation.json"
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/patch-validation.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/repair-attempt-*/plan.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/repair-attempt-*/proposal.diff",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/repair-attempt-*/patch-manifest.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/repair-attempt-*/patch-validation.json"
     ]
   }
 

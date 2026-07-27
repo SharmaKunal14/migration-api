@@ -664,6 +664,7 @@ export interface VerificationAttemptResultTable {
     | 'policy_rejected'
     | 'infrastructure_failed';
   safeErrorCode: string | null;
+  commands: unknown;
   resultArtifactId: string | null;
   resultDigest: string | null;
   stdoutArtifactId: string | null;

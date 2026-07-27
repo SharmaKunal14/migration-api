@@ -29,7 +29,7 @@ describe('Stage 4E full migration workflow skeleton', () => {
       'RunMigrationAgent',
       'ValidatePatch',
       'RunVerifier',
-      'RunRepairAgent',
+      'RunMigrationRepairAgent',
       'PublishDraftPR',
       'ReconcilePublication',
       'RecordSuccess',
