@@ -261,6 +261,20 @@ resource "aws_iam_role_policy" "api_artifacts" {
   policy = data.aws_iam_policy_document.api_artifacts.json
 }
 
+data "aws_iam_policy_document" "api_impact_analysis" {
+  statement {
+    sid       = "StartImpactAnalysis"
+    actions   = ["states:StartExecution"]
+    resources = [aws_sfn_state_machine.impact_analysis.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "api_impact_analysis" {
+  name   = "start-impact-analysis"
+  role   = aws_iam_role.api.id
+  policy = data.aws_iam_policy_document.api_impact_analysis.json
+}
+
 data "aws_iam_policy_document" "workflow_artifacts" {
   statement {
     sid       = "ReadAgentResult"

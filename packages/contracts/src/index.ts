@@ -1872,6 +1872,14 @@ export const impactAnalysisWorkflowInputSchema = z
   })
   .strict();
 
+export const publicImpactAnalysisRequestSchema = z
+  .object({
+    candidateId: uuidSchema,
+    correlationId: uuidSchema,
+    status: z.literal('queued'),
+  })
+  .strict();
+
 export const impactAnalysisPreparedInputSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -2139,6 +2147,9 @@ export type RevokeMigrationApprovalRequest = z.infer<
 export type ImpactAnalysisWorkflowInput = z.infer<
   typeof impactAnalysisWorkflowInputSchema
 >;
+export type PublicImpactAnalysisRequest = z.infer<
+  typeof publicImpactAnalysisRequestSchema
+>;
 export type ImpactAnalysisPreparedInput = z.infer<
   typeof impactAnalysisPreparedInputSchema
 >;
@@ -2361,6 +2372,14 @@ export interface PublicMigrationCandidateDetail {
   readonly specification: PublicMigrationSpecificationDetail;
   readonly vendorEvidence: PublicVendorEvidenceItem[];
   readonly impactReport: PublicMigrationCandidateImpactReport | null;
+  readonly impactAnalysis: {
+    readonly correlationId: string;
+    readonly status: 'running' | 'succeeded' | 'failed';
+    readonly safeErrorCode: string | null;
+    readonly attempt: number;
+    readonly startedAt: string;
+    readonly completedAt: string | null;
+  } | null;
   readonly approval: PublicMigrationApprovalPreview;
 }
 

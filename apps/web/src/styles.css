@@ -1007,6 +1007,28 @@ input {
   justify-content: space-between;
 }
 
+.impact-analysis-control {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 2rem;
+}
+
+.impact-analysis-control h2,
+.impact-analysis-control p:last-child {
+  margin-bottom: 0;
+}
+
+.impact-analysis-actions {
+  display: grid;
+  flex: 0 0 min(290px, 100%);
+  gap: 0.65rem;
+}
+
+.impact-analysis-actions p {
+  margin: 0;
+}
+
 .migration-page-heading > a {
   flex: 0 0 auto;
 }
@@ -1604,6 +1626,10 @@ input {
 
   .migration-page-heading,
   .candidate-hero {
+    display: grid;
+  }
+
+  .impact-analysis-control {
     display: grid;
   }
 

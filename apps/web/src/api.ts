@@ -8,6 +8,7 @@ import type {
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
   PublicMigrationApprovalResult,
+  PublicImpactAnalysisRequest,
   PublicMigrationPatchReview,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
@@ -156,6 +157,23 @@ export async function loadMigrationCandidate(
   return request(
     token,
     `/v1/organisations/${organisationId}/migration-candidates/${candidateId}`,
+  );
+}
+
+export async function requestImpactAnalysis(
+  token: string,
+  organisationId: string,
+  candidateId: string,
+  idempotencyKey: string,
+): Promise<{ analysis: PublicImpactAnalysisRequest }> {
+  return request(
+    token,
+    `/v1/organisations/${organisationId}/migration-candidates/${candidateId}/impact-analysis`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify({}),
+    },
   );
 }
 

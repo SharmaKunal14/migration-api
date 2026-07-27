@@ -12,6 +12,7 @@ import type {
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
   PublicMigrationApprovalResult,
+  PublicImpactAnalysisRequest,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
   PublicMigrationSpecification,
@@ -34,6 +35,7 @@ import type {
   MigrationPatchReviewRecord,
   OrganisationRecord,
   ReviewMigrationSpecificationInput,
+  RequestImpactAnalysisInput,
   RevokeMigrationApprovalInput,
 } from '../services/api/src/repository.js';
 
@@ -53,6 +55,8 @@ const config: ApiConfig = {
   SUPABASE_JWKS_URL: 'https://project.supabase.co/auth/v1/.well-known/jwks.json',
   GITHUB_APP_SLUG: 'migration-api-development',
   GITHUB_TOKEN_BROKER_FUNCTION_NAME: 'migration-api-development-github-token-broker',
+  IMPACT_ANALYSIS_STATE_MACHINE_ARN:
+    'arn:aws:states:ap-southeast-2:123456789012:stateMachine:impact-analysis',
 };
 
 const queuedRun: AgentRunRecord = {
@@ -155,6 +159,18 @@ class FakeRepository implements ApiRepositoryPort {
       createdAt: '2026-07-24T00:00:00.000Z',
       startedAt: null,
       completedAt: null,
+    }),
+  );
+  public readonly requestImpactAnalysisMock = vi.fn<
+    (
+      userId: string,
+      input: RequestImpactAnalysisInput,
+    ) => Promise<PublicImpactAnalysisRequest>
+  >((_userId, input) =>
+    Promise.resolve({
+      candidateId: input.candidateId,
+      correlationId: runId,
+      status: 'queued',
     }),
   );
   public readonly createDemoRunMock = vi.fn<
@@ -327,6 +343,13 @@ class FakeRepository implements ApiRepositoryPort {
     return this.createRepositoryScanMock(requestedBy, input);
   }
 
+  public requestImpactAnalysis(
+    requestedBy: string,
+    input: RequestImpactAnalysisInput,
+  ): Promise<PublicImpactAnalysisRequest> {
+    return this.requestImpactAnalysisMock(requestedBy, input);
+  }
+
   public createGithubInstallLink(
     requestedBy: string,
     requestedOrganisationId: string,
@@ -461,6 +484,7 @@ class FakeRepository implements ApiRepositoryPort {
       },
       vendorEvidence: [],
       impactReport: null,
+      impactAnalysis: null,
       approval: {
         eligible: false,
         blockers: ['CURRENT_IMPACT_REPORT_REQUIRED'],
@@ -508,11 +532,19 @@ class FakeRepository implements ApiRepositoryPort {
   }
 }
 
-function dependencies(repository = new FakeRepository()): ApiDependencies {
+function dependencies(
+  repository = new FakeRepository(),
+  stepFunctionsSend: ApiDependencies['stepFunctions']['send'] = vi.fn(() =>
+    Promise.resolve({}),
+  ),
+): ApiDependencies {
   return {
     config,
     repository,
     s3: new S3Client({ region: 'ap-southeast-2' }),
+    stepFunctions: {
+      send: stepFunctionsSend,
+    },
     tokenVerifier: {
       verify(): Promise<Actor> {
         return Promise.resolve({ userId, subject: userId });
@@ -689,6 +721,41 @@ describe('API handler trust boundary', () => {
     );
     expect(parsedBody(response)).toMatchObject({
       scan: { id: runId, repositoryId: runId, status: 'queued' },
+    });
+  });
+
+  it('starts tenant-scoped impact analysis with an idempotency key', async () => {
+    const repository = new FakeRepository();
+    const startExecution = vi.fn(() => Promise.resolve({}));
+    const dependency = dependencies(repository, startExecution);
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/organisations/${organisationId}/migration-candidates/${runId}/impact-analysis`,
+        {},
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'impact:01J7Y5ABCD',
+        },
+      ),
+      dependency,
+    );
+    expect(response.statusCode).toBe(202);
+    expect(repository.requestImpactAnalysisMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        organisationId,
+        candidateId: runId,
+        idempotencyKey: 'impact:01J7Y5ABCD',
+      }),
+    );
+    expect(startExecution).toHaveBeenCalledOnce();
+    expect(parsedBody(response)).toEqual({
+      analysis: {
+        candidateId: runId,
+        correlationId: runId,
+        status: 'queued',
+      },
     });
   });
 

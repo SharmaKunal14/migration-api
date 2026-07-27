@@ -273,6 +273,7 @@ resource "aws_lambda_function" "api" {
       DATABASE_SECRET_ARN               = var.database_secret_arn
       GITHUB_APP_SLUG                   = var.github_app_slug
       GITHUB_TOKEN_BROKER_FUNCTION_NAME = aws_lambda_function.github_token_broker.function_name
+      IMPACT_ANALYSIS_STATE_MACHINE_ARN = aws_sfn_state_machine.impact_analysis.arn
       OPENAI_MODEL                      = var.openai_model
       SUPABASE_JWT_AUDIENCE             = var.supabase_jwt_audience
       SUPABASE_JWT_ISSUER               = var.supabase_jwt_issuer

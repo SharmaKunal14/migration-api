@@ -41,6 +41,7 @@ import {
   loadMigrationRuns,
   loadRepositories,
   loadRun,
+  requestImpactAnalysis,
   revokeMigrationApproval,
   startRepositoryScan,
 } from './api.js';
@@ -848,6 +849,13 @@ function MigrationCandidatePage(): React.JSX.Element {
         </div>
       </header>
 
+      <ImpactAnalysisAction
+        detail={detail}
+        organisationId={orgId ?? ''}
+        token={session?.access_token ?? ''}
+        onUpdated={setDetail}
+      />
+
       <section className="detail-overview">
         <article className="panel version-panel">
           <p className="section-kicker">Version route</p>
@@ -1044,6 +1052,170 @@ function MigrationCandidatePage(): React.JSX.Element {
         or open a pull request.
       </p>
     </div>
+  );
+}
+
+function ImpactAnalysisAction({
+  detail,
+  organisationId,
+  token,
+  onUpdated,
+}: {
+  readonly detail: PublicMigrationCandidateDetail;
+  readonly organisationId: string;
+  readonly token: string;
+  readonly onUpdated: (detail: PublicMigrationCandidateDetail) => void;
+}): React.JSX.Element {
+  const [status, setStatus] = useState<
+    'idle' | 'submitting' | 'queued' | 'completed' | 'polling_failed'
+  >('idle');
+  const [error, setError] = useState<string | null>(null);
+  const idempotencyKey = useRef(`impact:${crypto.randomUUID()}`);
+  const baselineReportId = useRef<string | null>(null);
+  const requestedCorrelationId = useRef<string | null>(null);
+  const report = detail.impactReport;
+  const isCurrent = report?.freshness === 'current';
+  const roleBlocked = detail.approval.blockers.includes('APPROVAL_ROLE_REQUIRED');
+  const canRequest =
+    Boolean(token) &&
+    detail.candidate.status === 'open' &&
+    !isCurrent &&
+    !roleBlocked &&
+    status !== 'submitting' &&
+    status !== 'queued';
+
+  useEffect(() => {
+    if (status !== 'queued') return;
+    let active = true;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    let attempts = 0;
+    const poll = async (): Promise<void> => {
+      attempts += 1;
+      try {
+        const response = await loadMigrationCandidate(
+          token,
+          organisationId,
+          detail.candidate.id,
+        );
+        if (!active) return;
+        const updatedReport = response.candidate.impactReport;
+        onUpdated(response.candidate);
+        if (
+          updatedReport?.freshness === 'current' &&
+          updatedReport.id !== baselineReportId.current
+        ) {
+          idempotencyKey.current = `impact:${crypto.randomUUID()}`;
+          setStatus('completed');
+          return;
+        }
+        if (
+          response.candidate.impactAnalysis?.status === 'failed' &&
+          response.candidate.impactAnalysis.correlationId ===
+            requestedCorrelationId.current
+        ) {
+          idempotencyKey.current = `impact:${crypto.randomUUID()}`;
+          setError(
+            `Impact analysis stopped safely${
+              response.candidate.impactAnalysis.safeErrorCode
+                ? ` (${response.candidate.impactAnalysis.safeErrorCode})`
+                : ''
+            }. You can retry it.`,
+          );
+          setStatus('polling_failed');
+          return;
+        }
+      } catch (caught) {
+        if (!active) return;
+        idempotencyKey.current = `impact:${crypto.randomUUID()}`;
+        setError(
+          `${errorText(caught)} The analysis request may still be running; refresh this page to check it.`,
+        );
+        setStatus('polling_failed');
+        return;
+      }
+      if (attempts >= 132) {
+        idempotencyKey.current = `impact:${crypto.randomUUID()}`;
+        setError(
+          'The analysis is taking longer than expected. Refresh this page to check its latest state.',
+        );
+        setStatus('polling_failed');
+        return;
+      }
+      timer = setTimeout(() => void poll(), 5_000);
+    };
+    timer = setTimeout(() => void poll(), 2_000);
+    return (): void => {
+      active = false;
+      if (timer) clearTimeout(timer);
+    };
+  }, [detail.candidate.id, onUpdated, organisationId, status, token]);
+
+  async function requestAnalysis(): Promise<void> {
+    if (!canRequest) return;
+    baselineReportId.current = report?.id ?? null;
+    setStatus('submitting');
+    setError(null);
+    try {
+      const response = await requestImpactAnalysis(
+        token,
+        organisationId,
+        detail.candidate.id,
+        idempotencyKey.current,
+      );
+      requestedCorrelationId.current = response.analysis.correlationId;
+      setStatus('queued');
+    } catch (caught) {
+      setError(errorText(caught));
+      setStatus('idle');
+    }
+  }
+
+  const label = isCurrent
+    ? 'Impact report current'
+    : report
+      ? 'Refresh impact analysis'
+      : 'Run impact analysis';
+  return (
+    <section className="panel detail-section impact-analysis-control">
+      <div>
+        <p className="section-kicker">Read-only analysis control</p>
+        <h2>{isCurrent ? 'Impact evidence is current' : 'Impact evidence required'}</h2>
+        <p>
+          Analysis reads the exact repository snapshot shown below without executing or
+          modifying repository code.
+        </p>
+      </div>
+      <div className="impact-analysis-actions">
+        <button
+          className="secondary-button"
+          disabled={!canRequest}
+          type="button"
+          onClick={() => void requestAnalysis()}
+        >
+          {status === 'submitting'
+            ? 'Queuing analysis…'
+            : status === 'queued'
+              ? 'Analysis running…'
+              : label}
+        </button>
+        <p aria-live="polite" className={error ? 'form-error' : 'fine-print'}>
+          {error ??
+            (status === 'queued'
+              ? 'Analysis is queued. This page will update automatically.'
+              : status === 'completed'
+                ? 'The current impact report is ready.'
+                : roleBlocked
+                  ? 'Your workspace role cannot request impact analysis.'
+                  : detail.impactAnalysis?.status === 'failed'
+                    ? `The last analysis stopped safely${
+                        detail.impactAnalysis.safeErrorCode
+                          ? ` (${detail.impactAnalysis.safeErrorCode})`
+                          : ''
+                      }.`
+                    : '')}
+        </p>
+      </div>
+    </section>
   );
 }
 

@@ -2,6 +2,11 @@ import { createHash, randomUUID } from 'node:crypto';
 
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  ExecutionAlreadyExists,
+  SFNClient,
+  StartExecutionCommand,
+} from '@aws-sdk/client-sfn';
 import type { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from 'aws-lambda';
 import { z } from 'zod';
 
@@ -18,6 +23,7 @@ import {
   githubInstallLinkRequestSchema,
   githubInstallationVerificationSchema,
   githubSetupCompletionRequestSchema,
+  impactAnalysisWorkflowInputSchema,
   migrationSpecificationReviewRequestSchema,
   repositoryScanRequestSchema,
   revokeMigrationApprovalRequestSchema,
@@ -54,6 +60,7 @@ export interface ApiDependencies {
   readonly tokenVerifier: TokenVerifier;
   readonly installationVerifier: GithubInstallationVerifier;
   readonly s3: S3Client;
+  readonly stepFunctions: WorkflowStarter;
 }
 
 export interface GithubInstallationVerifier {
@@ -65,6 +72,10 @@ interface LambdaInvoker {
     readonly FunctionError?: string;
     readonly Payload?: Uint8Array;
   }>;
+}
+
+export interface WorkflowStarter {
+  send(command: StartExecutionCommand): Promise<unknown>;
 }
 
 let cachedDependencies: ApiDependencies | undefined;
@@ -89,6 +100,7 @@ async function dependencies(): Promise<ApiDependencies> {
       config.GITHUB_TOKEN_BROKER_FUNCTION_NAME,
     ),
     s3: new S3Client({ region: config.AWS_REGION }),
+    stepFunctions: new SFNClient({ region: config.AWS_REGION }),
   };
   return cachedDependencies;
 }
@@ -171,6 +183,12 @@ export async function handleRequest(
       const candidateMatch =
         method === 'GET'
           ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-candidates\/([0-9a-f-]{36})$/u.exec(
+              path,
+            )
+          : null;
+      const impactAnalysisMatch =
+        method === 'POST'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-candidates\/([0-9a-f-]{36})\/impact-analysis$/u.exec(
               path,
             )
           : null;
@@ -319,6 +337,20 @@ export async function handleRequest(
             z.uuid().parse(candidateMatch[2]),
           ),
         });
+      } else if (impactAnalysisMatch?.[1] && impactAnalysisMatch[2]) {
+        repositoryScanRequestSchema.parse(parseBody(event));
+        const analysis = await repository.requestImpactAnalysis(userId, {
+          organisationId: z.uuid().parse(impactAnalysisMatch[1]),
+          candidateId: z.uuid().parse(impactAnalysisMatch[2]),
+          idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+          requestId,
+        });
+        await startImpactAnalysis(
+          dependency.stepFunctions,
+          dependency.config.IMPACT_ANALYSIS_STATE_MACHINE_ARN,
+          analysis,
+        );
+        response = json(202, { analysis });
       } else if (approveCandidateMatch?.[1] && approveCandidateMatch[2]) {
         const input = createMigrationApprovalRequestSchema.parse(parseBody(event));
         response = json(
@@ -447,6 +479,32 @@ export async function handleRequest(
       }),
       requestId,
     );
+  }
+}
+
+async function startImpactAnalysis(
+  stepFunctions: WorkflowStarter,
+  stateMachineArn: string,
+  analysis: {
+    readonly candidateId: string;
+    readonly correlationId: string;
+  },
+): Promise<void> {
+  const workflow = impactAnalysisWorkflowInputSchema.parse({
+    schemaVersion: '1.0',
+    candidateId: analysis.candidateId,
+    correlationId: analysis.correlationId,
+  });
+  try {
+    await stepFunctions.send(
+      new StartExecutionCommand({
+        stateMachineArn,
+        name: `impact-${analysis.correlationId}`,
+        input: JSON.stringify(workflow),
+      }),
+    );
+  } catch (error) {
+    if (!(error instanceof ExecutionAlreadyExists)) throw error;
   }
 }
 

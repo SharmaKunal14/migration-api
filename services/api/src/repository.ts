@@ -26,6 +26,7 @@ import type {
   PublicMigrationCandidateImpactReport,
   PublicMigrationApprovalPreview,
   PublicMigrationApprovalResult,
+  PublicImpactAnalysisRequest,
   PublicMigrationPatchAttempt,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
@@ -85,6 +86,13 @@ export interface CreateDemoRunInput {
 export interface CreateRepositoryScanInput {
   readonly organisationId: string;
   readonly repositoryId: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+}
+
+export interface RequestImpactAnalysisInput {
+  readonly organisationId: string;
+  readonly candidateId: string;
   readonly idempotencyKey: string;
   readonly requestId: string;
 }
@@ -197,6 +205,10 @@ export interface ApiRepositoryPort {
     userId: string,
     input: CreateRepositoryScanInput,
   ): Promise<PublicRepositoryScan>;
+  requestImpactAnalysis(
+    userId: string,
+    input: RequestImpactAnalysisInput,
+  ): Promise<PublicImpactAnalysisRequest>;
   createGithubInstallLink(
     userId: string,
     organisationId: string,
@@ -988,6 +1000,153 @@ export class ApiRepository implements ApiRepositoryPort {
     });
   }
 
+  public async requestImpactAnalysis(
+    userId: string,
+    input: RequestImpactAnalysisInput,
+  ): Promise<PublicImpactAnalysisRequest> {
+    const requestDigest = digestJson({
+      organisationId: input.organisationId,
+      candidateId: input.candidateId,
+    });
+    return this.database.transaction().execute(async transaction => {
+      requireAction(
+        await this.membership(input.organisationId, userId, transaction),
+        'repository:scan',
+      );
+      const candidate = await transaction
+        .selectFrom('migrationCandidates as candidate')
+        .innerJoin(
+          'dependencyObservations as observation',
+          'observation.id',
+          'candidate.dependencyObservationId',
+        )
+        .innerJoin(
+          'repositorySnapshots as snapshot',
+          'snapshot.id',
+          'observation.repositorySnapshotId',
+        )
+        .innerJoin(
+          'migrationSpecifications as specification',
+          'specification.id',
+          'candidate.migrationSpecificationId',
+        )
+        .innerJoin(
+          'repositories as repository',
+          'repository.id',
+          'candidate.repositoryId',
+        )
+        .innerJoin(
+          'githubInstallations as installation',
+          'installation.id',
+          'repository.installationId',
+        )
+        .select([
+          'candidate.id',
+          'candidate.status',
+          'candidate.migrationSpecificationId',
+          'snapshot.id as repositorySnapshotId',
+          'snapshot.digest as snapshotDigest',
+          'snapshot.status as snapshotStatus',
+          'snapshot.expiresAt',
+          'specification.trustState',
+          'repository.selected',
+          'repository.enabled',
+          'repository.archived',
+          'installation.status as installationStatus',
+        ])
+        .where('candidate.id', '=', input.candidateId)
+        .where('candidate.organisationId', '=', input.organisationId)
+        .executeTakeFirst();
+      if (!candidate) {
+        throw new DomainError(
+          'MIGRATION_CANDIDATE_NOT_FOUND',
+          'The migration candidate was not found.',
+          404,
+        );
+      }
+      if (
+        candidate.status !== 'open' ||
+        !['reviewed', 'vendor_verified'].includes(candidate.trustState) ||
+        candidate.snapshotStatus !== 'available' ||
+        candidate.expiresAt <= new Date() ||
+        !isRepositoryScannable(candidate)
+      ) {
+        throw new DomainError(
+          'IMPACT_ANALYSIS_NOT_AVAILABLE',
+          'Impact analysis is not available for the current candidate.',
+          409,
+        );
+      }
+
+      const previous = await transaction
+        .selectFrom('apiIdempotencyKeys')
+        .select(['requestDigest', 'resultResourceId'])
+        .where('actorId', '=', userId)
+        .where('action', '=', 'impact_analysis:request')
+        .where('idempotencyKey', '=', input.idempotencyKey)
+        .executeTakeFirst();
+      if (previous) {
+        if (previous.requestDigest !== requestDigest) {
+          throw new DomainError(
+            'IDEMPOTENCY_CONFLICT',
+            'The idempotency key was already used for another request.',
+            409,
+          );
+        }
+        return {
+          candidateId: input.candidateId,
+          correlationId: previous.resultResourceId,
+          status: 'queued',
+        };
+      }
+
+      const active = await transaction
+        .selectFrom('impactAnalysisRuns')
+        .select('id')
+        .where('candidateId', '=', input.candidateId)
+        .where('repositorySnapshotId', '=', candidate.repositorySnapshotId)
+        .where('migrationSpecificationId', '=', candidate.migrationSpecificationId)
+        .where('snapshotDigest', '=', candidate.snapshotDigest)
+        .where('status', '=', 'running')
+        .executeTakeFirst();
+      if (active) {
+        throw new DomainError(
+          'IMPACT_ANALYSIS_IN_PROGRESS',
+          'Impact analysis is already in progress.',
+          409,
+        );
+      }
+
+      const correlationId = randomUUID();
+      const now = new Date();
+      await transaction
+        .insertInto('apiIdempotencyKeys')
+        .values({
+          actorId: userId,
+          action: 'impact_analysis:request',
+          idempotencyKey: input.idempotencyKey,
+          requestDigest,
+          resultResourceId: correlationId,
+          createdAt: now,
+          expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1000),
+        })
+        .executeTakeFirstOrThrow();
+      await writeAudit(transaction, {
+        organisationId: input.organisationId,
+        actorId: userId,
+        action: 'impact_analysis.requested',
+        resourceType: 'migration_candidate',
+        resourceId: input.candidateId,
+        requestId: input.requestId,
+      });
+      return {
+        candidateId: input.candidateId,
+        correlationId,
+        status: 'queued',
+      };
+    });
+  }
+
   public async listMigrationSpecifications(
     userId: string,
     trustState: 'draft' | 'reviewed' | 'vendor_verified',
@@ -1408,7 +1567,7 @@ export class ApiRepository implements ApiRepositoryPort {
         500,
       );
     }
-    const [evidenceRows, reportRow] = await Promise.all([
+    const [evidenceRows, reportRow, impactAnalysisRun] = await Promise.all([
       this.database
         .selectFrom('vendorEvidenceItems as evidence')
         .innerJoin('vendorSources as source', 'source.id', 'evidence.vendorSourceId')
@@ -1449,6 +1608,22 @@ export class ApiRepository implements ApiRepositoryPort {
         ])
         .where('report.candidateId', '=', row.id)
         .orderBy('report.revision', 'desc')
+        .executeTakeFirst(),
+      this.database
+        .selectFrom('impactAnalysisRuns')
+        .select([
+          'correlationId',
+          'status',
+          'safeErrorCode',
+          'attempt',
+          'startedAt',
+          'completedAt',
+        ])
+        .where('candidateId', '=', row.id)
+        .where('repositorySnapshotId', '=', row.repositorySnapshotId)
+        .where('migrationSpecificationId', '=', row.migrationSpecificationId)
+        .where('snapshotDigest', '=', row.snapshotDigest)
+        .orderBy('updatedAt', 'desc')
         .executeTakeFirst(),
     ]);
     const impactReport = reportRow
@@ -1510,6 +1685,13 @@ export class ApiRepository implements ApiRepositoryPort {
         retrievedAt: evidence.retrievedAt.toISOString(),
       })),
       impactReport,
+      impactAnalysis: impactAnalysisRun
+        ? {
+            ...impactAnalysisRun,
+            startedAt: impactAnalysisRun.startedAt.toISOString(),
+            completedAt: impactAnalysisRun.completedAt?.toISOString() ?? null,
+          }
+        : null,
     };
     return {
       ...detail,
