@@ -2563,52 +2563,6 @@ resource "aws_sfn_state_machine" "migration" {
         ]
         Default = "MarkInfrastructureFailure"
       }
-      RecordSuccess = {
-        Type     = "Task"
-        Resource = "arn:aws:states:::lambda:invoke"
-        Parameters = {
-          FunctionName = aws_lambda_function.workflow_control.arn
-          Payload = {
-            operation    = "evaluate_migration_stage_capability"
-            stage        = "publishing"
-            "workflow.$" = "$.workflow"
-          }
-        }
-        ResultPath = "$.boundary"
-        Retry = [{
-          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
-          IntervalSeconds = 2
-          BackoffRate     = 2
-          MaxAttempts     = 3
-        }]
-        Catch = [{
-          ErrorEquals = ["States.ALL"]
-          Next        = "MarkInfrastructureFailure"
-          ResultPath  = null
-        }]
-        Next = "EvaluateCompletion"
-      }
-      EvaluateCompletion = {
-        Type = "Choice"
-        Choices = [
-          {
-            Variable     = "$.boundary.Payload.status"
-            StringEquals = "unavailable"
-            Next         = "StopAtUnavailableBoundary"
-          },
-          {
-            Variable     = "$.boundary.Payload.status"
-            StringEquals = "cancelled"
-            Next         = "Cancelled"
-          },
-          {
-            Variable     = "$.boundary.Payload.status"
-            StringEquals = "completed"
-            Next         = "Complete"
-          }
-        ]
-        Default = "MarkInfrastructureFailure"
-      }
       StopAtUnavailableBoundary = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"

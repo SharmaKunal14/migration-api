@@ -42,7 +42,6 @@ describe('Stage 4E full migration workflow skeleton', () => {
       'RunMigrationRepairAgent',
       'PublishDraftPR',
       'ReconcilePublication',
-      'RecordSuccess',
       'Complete',
       'Cancelled',
       'StaleApproval',
