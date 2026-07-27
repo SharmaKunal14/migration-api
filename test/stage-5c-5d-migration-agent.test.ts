@@ -1,0 +1,530 @@
+import { readFileSync } from 'node:fs';
+
+import { describe, expect, it } from 'vitest';
+
+import {
+  migrationAgentInputArtifactSchema,
+  migrationAgentProposedEditSchema,
+  migrationAgentResultSchema,
+  migrationExecutionPlanSchema,
+  type MigrationAgentInputArtifact,
+  type MigrationExecutionPlan,
+} from '@migration/contracts';
+import {
+  buildAndValidatePatch,
+  parsePatchPaths,
+  type PatchBuildResult,
+} from '@migration/patch-policy';
+
+const binding = {
+  migrationRunId: '6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624',
+  approvalId: '8955ed33-d1d8-4fdb-bd48-3a0835562934',
+  baseCommitSha: 'a'.repeat(40),
+  snapshotDigest: 'b'.repeat(64),
+  migrationSpecification: {
+    id: 'e4e2d9db-bd1c-4eef-b685-231128724583',
+    revision: 1,
+    digest: 'c'.repeat(64),
+  },
+  impactReport: {
+    id: '12a906c7-f7df-4c65-9137-70bcf17eec86',
+    revision: 1,
+    digest: 'd'.repeat(64),
+  },
+} as const;
+
+const input = migrationAgentInputArtifactSchema.parse({
+  schemaVersion: '1.0',
+  organisationId: '07a17d5a-820d-4199-93d9-4e71b1c2d4f5',
+  repositoryId: 'fb88f567-56f6-4151-8a42-c84981f49ec6',
+  binding,
+  attemptNumber: 1,
+  snapshot: {
+    objectKey:
+      'env/development/org/07a17d5a-820d-4199-93d9-4e71b1c2d4f5/run/6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624/input/source/snapshot.tar.gz',
+    digest: binding.snapshotDigest,
+  },
+  migrationSpecification: {
+    schemaVersion: '1.0',
+    vendor: { slug: 'orbitchat', name: 'OrbitChat' },
+    product: { ecosystem: 'npm', identifier: '@orbitchat/sdk' },
+    sourceCompatibility: '1.x',
+    targetVersion: '2.0.0',
+    changes: [
+      {
+        changeId: 'C-01',
+        category: 'request',
+        summary: 'messages.send becomes messages.create',
+        certainty: 'vendor_confirmed',
+        evidenceIds: ['C-01'],
+        transformations: [
+          {
+            kind: 'rename_symbol',
+            before: 'messages.send',
+            after: 'messages.create',
+            condition: null,
+          },
+        ],
+      },
+    ],
+    evidence: [
+      {
+        evidenceId: 'C-01',
+        sourceKey: 'migration_guide',
+        sourceUrl: 'https://docs.orbitchat.example/migrate-v2',
+        digest: 'e'.repeat(64),
+        summary: 'Reviewed method rename evidence.',
+      },
+    ],
+    preconditions: ['The installed package resolves to an OrbitChat 1.x release.'],
+    verificationRecommendations: ['typescript_static'],
+    uncertainties: [],
+    trust: {
+      status: 'reviewed',
+      generatedBy: 'change_intelligence_agent',
+      reviewedAt: '2026-07-26T06:41:47.620Z',
+    },
+    revision: 1,
+    generatedAt: '2026-07-26T05:47:25.267Z',
+  },
+  impact: {
+    outcome: 'affected',
+    affectedFiles: [
+      {
+        path: 'src/orbitchat-client.ts',
+        classification: 'direct_usage',
+        symbols: ['sendSupportMessage'],
+        expectedChanges: ['Use messages.create.'],
+      },
+    ],
+    risk: 'medium',
+    uncertainties: [],
+  },
+  authority: {
+    agentPolicyVersion: 'migration-agent-1.0',
+    toolRegistryVersion: 'migration-tools-1.0',
+    patchPolicyVersion: 'typescript-bounded-1.0',
+    patchPolicy: {
+      schemaVersion: '1.0',
+      allowedPaths: ['src/orbitchat-client.ts'],
+      allowedChangeCategories: ['direct_usage'],
+      maxChangedFiles: 1,
+      maxPatchBytes: 16_384,
+      maxAddedLines: 20,
+      maxDeletedLines: 20,
+    },
+    patchPolicyDigest: 'f'.repeat(64),
+  },
+});
+
+const plan = migrationExecutionPlanSchema.parse({
+  schemaVersion: '1.0',
+  binding,
+  attemptNumber: 1,
+  trust: { status: 'proposed', generatedBy: 'migration_agent' },
+  summary: 'Apply the reviewed OrbitChat method rename.',
+  files: [
+    {
+      path: 'src/orbitchat-client.ts',
+      operation: 'modify',
+      changeCategory: 'direct_usage',
+      rationale: 'Use the reviewed OrbitChat v2 method.',
+      evidenceChangeIds: ['C-01'],
+      transformationIds: ['C-01'],
+    },
+  ],
+  unresolved: [],
+  verificationProfiles: ['typescript_static'],
+});
+
+describe('Stage 5C and 5D bounded migration planning and patching', () => {
+  it('builds a deterministic accepted patch tied to exact approved evidence', () => {
+    const before =
+      "import { client } from './client.js';\n\nexport const send = client.messages.send;\n";
+    const after =
+      "import { client } from './client.js';\n\nexport const send = client.messages.create;\n";
+    const first = build(input, plan, before, after);
+    const second = build(input, plan, before, after);
+
+    expect(second).toEqual(first);
+    expect(first.validation.status).toBe('accepted');
+    expect(first.validation.checks).toHaveLength(7);
+    expect(first.manifest.binding).toEqual(binding);
+    expect(parsePatchPaths(first.patch)).toEqual(['src/orbitchat-client.ts']);
+    expect(first.patch).toContain('-export const send = client.messages.send;');
+    expect(first.patch).toContain('+export const send = client.messages.create;');
+  });
+
+  it('rejects paths outside approval and hard-denies control-plane files', () => {
+    const outside = withPath(input, plan, 'src/unreviewed.ts', 'direct_usage');
+    expect(outside.validation.status).toBe('rejected');
+    expect(outside.validation.safeErrorCode).toBe('PATCH_SCOPE_NOT_AUTHORIZED');
+
+    const controlPlaneInput = {
+      ...input,
+      authority: {
+        ...input.authority,
+        patchPolicy: {
+          ...input.authority.patchPolicy,
+          allowedPaths: ['.github/workflows/deploy.yml'],
+        },
+      },
+    } as MigrationAgentInputArtifact;
+    const controlPlanePlan = withPlanPath(
+      plan,
+      '.github/workflows/deploy.yml',
+      'direct_usage',
+    );
+    const forbidden = buildAndValidatePatch({
+      migration: controlPlaneInput,
+      plan: controlPlanePlan,
+      edits: [
+        migrationAgentProposedEditSchema.parse({
+          path: '.github/workflows/deploy.yml',
+          operation: 'modify',
+          changeCategory: 'direct_usage',
+          content: 'name: changed\n',
+        }),
+      ],
+      readFile: () => 'name: original\n',
+    });
+    expect(forbidden.validation.status).toBe('rejected');
+    expect(forbidden.validation.safeErrorCode).toBe('PATCH_FORBIDDEN_PATH');
+  });
+
+  it('rejects plan/edit mismatches and approved-budget overruns', () => {
+    const mismatched = buildAndValidatePatch({
+      migration: input,
+      plan,
+      edits: [
+        migrationAgentProposedEditSchema.parse({
+          path: 'src/orbitchat-client.ts',
+          operation: 'modify',
+          changeCategory: 'test',
+          content: 'changed\n',
+        }),
+      ],
+      readFile: () => 'original\n',
+    });
+    expect(mismatched.validation.status).toBe('rejected');
+    expect(mismatched.validation.safeErrorCode).toBe('PATCH_PLAN_MISMATCH');
+
+    const smallBudget = {
+      ...input,
+      authority: {
+        ...input.authority,
+        patchPolicy: {
+          ...input.authority.patchPolicy,
+          maxAddedLines: 1,
+        },
+      },
+    } as MigrationAgentInputArtifact;
+    const oversized = build(
+      smallBudget,
+      plan,
+      'export const value = 1;\n',
+      'export const value = 2;\nexport const second = 3;\n',
+    );
+    expect(oversized.validation.status).toBe('rejected');
+    expect(oversized.validation.safeErrorCode).toBe('PATCH_CHANGE_BUDGET_EXCEEDED');
+
+    const wrongBindingPlan = {
+      ...plan,
+      binding: { ...plan.binding, baseCommitSha: '9'.repeat(40) },
+    } as MigrationExecutionPlan;
+    const wrongBinding = build(
+      input,
+      wrongBindingPlan,
+      'export const value = 1;\n',
+      'export const value = 2;\n',
+    );
+    expect(wrongBinding.validation.status).toBe('rejected');
+    expect(wrongBinding.validation.safeErrorCode).toBe('PATCH_BASE_BINDING_MISMATCH');
+  });
+
+  it('rejects traversal and binary model output at the contract boundary', () => {
+    expect(() =>
+      migrationAgentProposedEditSchema.parse({
+        path: '../secret.txt',
+        operation: 'modify',
+        changeCategory: 'direct_usage',
+        content: 'leak',
+      }),
+    ).toThrow();
+    expect(() =>
+      migrationAgentProposedEditSchema.parse({
+        path: 'src/orbitchat-client.ts',
+        operation: 'modify',
+        changeCategory: 'direct_usage',
+        content: 'binary\u0000content',
+      }),
+    ).toThrow();
+  });
+
+  it('emits valid zero-line hunk coordinates and preserves missing-newline markers', () => {
+    const createdPlan = migrationExecutionPlanSchema.parse({
+      ...plan,
+      files: [{ ...plan.files[0], operation: 'create' }],
+    });
+    const created = buildAndValidatePatch({
+      migration: input,
+      plan: createdPlan,
+      edits: [
+        migrationAgentProposedEditSchema.parse({
+          path: 'src/orbitchat-client.ts',
+          operation: 'create',
+          changeCategory: 'direct_usage',
+          content: 'export const created = true;',
+        }),
+      ],
+      readFile: () => undefined,
+    });
+    expect(created.patch).toContain('@@ -0,0 +1,1 @@');
+    expect(created.patch).toContain('\\ No newline at end of file');
+
+    const deletedPlan = migrationExecutionPlanSchema.parse({
+      ...plan,
+      files: [{ ...plan.files[0], operation: 'delete' }],
+    });
+    const deleted = buildAndValidatePatch({
+      migration: input,
+      plan: deletedPlan,
+      edits: [
+        migrationAgentProposedEditSchema.parse({
+          path: 'src/orbitchat-client.ts',
+          operation: 'delete',
+          changeCategory: 'direct_usage',
+          content: null,
+        }),
+      ],
+      readFile: () => 'export const removed = true;',
+    });
+    expect(deleted.patch).toContain('@@ -1,1 +0,0 @@');
+    expect(deleted.patch).toContain('deleted file mode 100644');
+
+    const newlineOnly = build(
+      input,
+      plan,
+      'export const value = true;',
+      'export const value = true;\n',
+    );
+    expect(newlineOnly.manifest.addedLines).toBe(1);
+    expect(newlineOnly.manifest.deletedLines).toBe(1);
+
+    const unchangedFinalLine = build(
+      input,
+      plan,
+      'const value = 1;\nexport { value };',
+      'const value = 2;\nexport { value };',
+    );
+    expect(unchangedFinalLine.patch).toContain('\\ No newline at end of file');
+  });
+
+  it('rejects invented evidence and safely handles malformed proposal structure', () => {
+    const inventedEvidencePlan = {
+      ...plan,
+      files: [
+        {
+          ...plan.files[0],
+          evidenceChangeIds: ['C-99'],
+          transformationIds: ['C-99'],
+        },
+      ],
+    } as MigrationExecutionPlan;
+    const inventedEvidence = build(input, inventedEvidencePlan, 'old\n', 'new\n');
+    expect(inventedEvidence.validation.safeErrorCode).toBe(
+      'PATCH_PLAN_EVIDENCE_INVALID',
+    );
+
+    expect(
+      parsePatchPaths(
+        ['diff --git a/a.ts b/a.ts', 'diff --git a/a.ts b/a.ts', ''].join('\n'),
+      ),
+    ).toEqual([]);
+    expect(parsePatchPaths('diff --git a/a.ts b/b.ts\n')).toEqual([]);
+    expect(parsePatchPaths('')).toEqual([]);
+
+    expect(() =>
+      buildAndValidatePatch({
+        migration: input,
+        plan,
+        edits: [
+          {
+            path: '../unsafe.ts',
+            operation: 'modify',
+            changeCategory: 'direct_usage',
+            content: 'unsafe\n',
+          },
+        ],
+        readFile: () => 'old\n',
+      }),
+    ).toThrow();
+    expect(() => build(input, plan, 'unchanged\n', 'unchanged\n')).toThrow();
+  });
+
+  it('accepts only internally consistent terminal agent results', () => {
+    const patch = build(input, plan, 'old\n', 'new\n');
+    const result = {
+      schemaVersion: '1.0',
+      organisationId: input.organisationId,
+      repositoryId: input.repositoryId,
+      migrationRunId: input.binding.migrationRunId,
+      attemptNumber: input.attemptNumber,
+      inputDigest: '1'.repeat(64),
+      status: 'succeeded',
+      safeErrorCode: null,
+      model: {
+        requestedModel: 'gpt-5.6-sol',
+        returnedModel: 'gpt-5.6-sol',
+        requestId: null,
+      },
+      usage: {
+        modelCalls: 1,
+        toolCalls: 5,
+        iterations: 2,
+        inputTokens: 100,
+        outputTokens: 50,
+        durationMs: 1_000,
+      },
+      actions: [],
+      plan,
+      patch: patch.patch,
+      manifest: patch.manifest,
+      validation: patch.validation,
+      checkpoints: [
+        {
+          schemaVersion: '1.0',
+          binding,
+          attemptNumber: 1,
+          sequence: 1,
+          phase: 'context',
+          lastActionSequence: 0,
+          remainingBudget: {
+            modelCalls: 5,
+            toolCalls: 40,
+            iterations: 6,
+          },
+          planDigest: null,
+          patchDigest: null,
+        },
+        {
+          schemaVersion: '1.0',
+          binding,
+          attemptNumber: 1,
+          sequence: 2,
+          phase: 'patching',
+          lastActionSequence: 5,
+          remainingBudget: {
+            modelCalls: 4,
+            toolCalls: 35,
+            iterations: 4,
+          },
+          planDigest: patch.manifest.planDigest,
+          patchDigest: patch.manifest.patchDigest,
+        },
+      ],
+    } as const;
+    expect(migrationAgentResultSchema.parse(result).status).toBe('succeeded');
+    expect(() =>
+      migrationAgentResultSchema.parse({
+        ...result,
+        status: 'failed',
+        safeErrorCode: 'MIGRATION_AGENT_FAILED',
+      }),
+    ).toThrow();
+    expect(() =>
+      migrationAgentResultSchema.parse({
+        ...result,
+        status: 'rejected',
+        safeErrorCode: 'PATCH_REJECTED',
+      }),
+    ).toThrow();
+  });
+
+  it('wires a separate read-only migration workload and advances only to verification', () => {
+    const foundation = read('infra/terraform/foundation/main.tf');
+    const compute = read('infra/terraform/environments/development/compute.tf');
+    const iam = read('infra/terraform/environments/development/iam.tf');
+    const worker = read('workers/migration-agent/src/main.ts');
+    const gateway = read('workers/migration-agent/src/gateway.ts');
+    const migration = read('supabase/migrations/0016_stage_5c_5d_migration_agent.sql');
+
+    expect(foundation).toContain('migration-api-development-migration-agent');
+    expect(compute).toContain(
+      'TaskDefinition = aws_ecs_task_definition.migration_agent.arn',
+    );
+    expect(compute).toContain('operation    = "prepare_migration_agent"');
+    expect(compute).toContain('operation    = "ingest_migration_plan"');
+    expect(compute).toContain('operation    = "ingest_migration_patch"');
+    expect(compute).toContain('stage        = "verifying"');
+    expect(iam).toContain('ReadExactApprovedMigrationInputs');
+    expect(iam).toContain('WriteMigrationAgentResult');
+    expect(iam).not.toContain('migration-agent-github');
+    expect(worker).not.toContain('child_process');
+    expect(gateway).toContain('store: false');
+    expect(gateway).toContain('Use only the supplied read-only repository tools');
+    expect(migration).toContain("'plan_created'");
+    expect(migration).toContain("'patch_validated'");
+  });
+});
+
+function build(
+  migration: MigrationAgentInputArtifact,
+  executionPlan: MigrationExecutionPlan,
+  before: string,
+  after: string,
+): PatchBuildResult {
+  return buildAndValidatePatch({
+    migration,
+    plan: executionPlan,
+    edits: [
+      migrationAgentProposedEditSchema.parse({
+        path: executionPlan.files[0]?.path,
+        operation: 'modify',
+        changeCategory: executionPlan.files[0]?.changeCategory,
+        content: after,
+      }),
+    ],
+    readFile: () => before,
+  });
+}
+
+function withPath(
+  migration: MigrationAgentInputArtifact,
+  executionPlan: MigrationExecutionPlan,
+  path: string,
+  changeCategory: 'direct_usage',
+): PatchBuildResult {
+  return buildAndValidatePatch({
+    migration,
+    plan: withPlanPath(executionPlan, path, changeCategory),
+    edits: [
+      migrationAgentProposedEditSchema.parse({
+        path,
+        operation: 'modify',
+        changeCategory,
+        content: 'changed\n',
+      }),
+    ],
+    readFile: () => 'original\n',
+  });
+}
+
+function withPlanPath(
+  executionPlan: MigrationExecutionPlan,
+  path: string,
+  changeCategory: 'direct_usage',
+): MigrationExecutionPlan {
+  return migrationExecutionPlanSchema.parse({
+    ...executionPlan,
+    files: executionPlan.files.map(file => ({
+      ...file,
+      path,
+      changeCategory,
+    })),
+  });
+}
+
+function read(path: string): string {
+  return readFileSync(new URL(`../${path}`, import.meta.url), 'utf8');
+}

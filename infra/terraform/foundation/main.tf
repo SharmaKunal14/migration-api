@@ -152,6 +152,28 @@ resource "aws_ecr_lifecycle_policy" "impact_analysis_agent" {
   policy     = local.image_lifecycle_policy
 }
 
+resource "aws_ecr_repository" "migration_agent" {
+  name                 = "migration-api-development-migration-agent"
+  image_tag_mutability = "IMMUTABLE"
+  force_delete         = false
+
+  encryption_configuration {
+    encryption_type = "KMS"
+    kms_key         = aws_kms_key.container_images.arn
+  }
+
+  image_scanning_configuration {
+    scan_on_push = true
+  }
+
+  tags = { Stage = "5" }
+}
+
+resource "aws_ecr_lifecycle_policy" "migration_agent" {
+  repository = aws_ecr_repository.migration_agent.name
+  policy     = local.image_lifecycle_policy
+}
+
 locals {
   image_lifecycle_policy = jsonencode({
     rules = [

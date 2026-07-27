@@ -82,6 +82,18 @@ resource "aws_cloudwatch_log_metric_filter" "impact_analysis_failure" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "migration_agent_failure" {
+  name           = "migration-api-development-migration-agent-failure"
+  log_group_name = aws_cloudwatch_log_group.migration_agent.name
+  pattern        = "{ $.event = \"migration_agent_result_written\" && $.outcome = \"failed\" }"
+
+  metric_transformation {
+    name      = "MigrationAgentFailed"
+    namespace = "MigrationApi/Development"
+    value     = "1"
+  }
+}
+
 resource "aws_cloudwatch_metric_alarm" "api_errors" {
   alarm_name          = "migration-api-development-api-errors"
   alarm_description   = "Control API returned Lambda errors."
@@ -361,6 +373,19 @@ resource "aws_cloudwatch_metric_alarm" "impact_analysis_failure" {
   alarm_description   = "A read-only impact report could not be generated safely."
   namespace           = "MigrationApi/Development"
   metric_name         = "ImpactAnalysisFailed"
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "migration_agent_failure" {
+  alarm_name          = "migration-api-development-migration-agent-failure"
+  alarm_description   = "The bounded migration agent could not produce an acceptable proposal."
+  namespace           = "MigrationApi/Development"
+  metric_name         = "MigrationAgentFailed"
   statistic           = "Sum"
   period              = 300
   evaluation_periods  = 1

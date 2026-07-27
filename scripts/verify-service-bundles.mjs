@@ -19,6 +19,7 @@ const workerBundles = [
   'dist/workers/source-fetcher/main.js',
   'dist/workers/change-intelligence-agent/main.js',
   'dist/workers/impact-analysis-agent/main.js',
+  'dist/workers/migration-agent/main.js',
 ];
 
 for (const bundle of serviceBundles) {

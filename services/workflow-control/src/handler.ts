@@ -1,15 +1,29 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { GetObjectCommand, HeadObjectCommand, S3Client } from '@aws-sdk/client-s3';
+import {
+  GetObjectCommand,
+  HeadObjectCommand,
+  PutObjectCommand,
+  S3Client,
+  S3ServiceException,
+} from '@aws-sdk/client-s3';
 import type { Context } from 'aws-lambda';
 import { z } from 'zod';
 
 import {
   agentResultEnvelopeSchema,
+  migrationAgentInputArtifactSchema,
+  migrationAgentPreparedInputSchema,
+  migrationAgentResultSchema,
+  migrationApprovalPatchPolicySchema,
   migrationAcquisitionResultSchema,
+  migrationSpecificationSchema,
   migrationWorkflowInputSchema,
   workflowInputSchema,
   type AgentResultEnvelope,
+  type MigrationAgentInputArtifact,
+  type MigrationAgentPreparedInput,
+  type MigrationAgentResult,
   type MigrationWorkflowInput,
 } from '@migration/contracts';
 import {
@@ -17,12 +31,18 @@ import {
   workflowControlConfigSchema,
   type WorkflowControlConfig,
 } from '@migration/config';
-import { createDatabase, type AppDatabase, type Database } from '@migration/database';
-import type { Transaction } from 'kysely';
+import {
+  createDatabase,
+  type AppDatabase,
+  type Database,
+  type MigrationRunTable,
+} from '@migration/database';
+import type { Selectable, Transaction } from 'kysely';
 import type { TerminalCode } from '@migration/domain';
 import { writeLog } from '@migration/observability';
 
 const MAX_RESULT_BYTES = 1024 * 1024;
+const MAX_MIGRATION_AGENT_RESULT_BYTES = 2 * 1024 * 1024;
 
 export const migrationExecutionStageSchema = z.enum([
   'acquiring',
@@ -104,6 +124,26 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('prepare_migration_agent'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('ingest_migration_plan'),
+      workflow: migrationWorkflowInputSchema,
+      prepared: migrationAgentPreparedInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('ingest_migration_patch'),
+      workflow: migrationWorkflowInputSchema,
+      prepared: migrationAgentPreparedInputSchema,
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('mark_migration_infrastructure_failed'),
       workflow: migrationWorkflowInputSchema,
     })
@@ -145,10 +185,13 @@ export async function handleWorkflowCommand(
   event: unknown,
   requestId: string,
   dependency: WorkflowDependencies,
-): Promise<{
-  readonly status: string;
-  readonly stage?: MigrationExecutionStage;
-}> {
+): Promise<
+  | {
+      readonly status: string;
+      readonly stage?: MigrationExecutionStage;
+    }
+  | MigrationAgentPreparedInput
+> {
   const command = workflowCommandSchema.parse(event);
   if (command.operation === 'validate_migration_approval') {
     const status = await validateMigrationApproval(
@@ -194,6 +237,50 @@ export async function handleWorkflowCommand(
       outcome: status,
     });
     return { status, stage: 'acquiring' };
+  }
+  if (command.operation === 'prepare_migration_agent') {
+    const prepared = await prepareMigrationAgent(dependency, command.workflow);
+    writeLog('info', {
+      event: 'migration_agent_prepared',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      outcome: prepared.status,
+    });
+    return prepared;
+  }
+  if (command.operation === 'ingest_migration_plan') {
+    const status = await ingestMigrationPlan(
+      dependency,
+      command.workflow,
+      command.prepared,
+    );
+    writeLog(status === 'completed' ? 'info' : 'warn', {
+      event: 'migration_plan_ingested',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      outcome: status,
+    });
+    return { status, stage: 'planning' };
+  }
+  if (command.operation === 'ingest_migration_patch') {
+    const status = await ingestMigrationPatch(
+      dependency,
+      command.workflow,
+      command.prepared,
+    );
+    writeLog(status === 'completed' ? 'info' : 'warn', {
+      event: 'migration_patch_ingested',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      outcome: status,
+    });
+    return { status, stage: 'patching' };
   }
   if (command.operation === 'evaluate_migration_stage_capability') {
     const status = await evaluateMigrationStageCapability(
@@ -872,6 +959,920 @@ async function ingestMigrationAcquisition(
   });
 }
 
+const storedImpactSummarySchema = z
+  .object({
+    affectedFiles: z
+      .array(
+        z
+          .object({
+            path: z.string(),
+            classification: z.enum([
+              'dependency_manifest',
+              'lockfile',
+              'direct_usage',
+              'indirect_usage',
+              'test',
+            ]),
+            symbols: z.array(z.string()),
+            expectedChanges: z.array(z.string()),
+          })
+          .loose(),
+      )
+      .min(1)
+      .max(500),
+  })
+  .loose();
+
+const storedUncertaintiesSchema = z
+  .array(
+    z
+      .object({
+        code: z.string(),
+        summary: z.string(),
+      })
+      .loose(),
+  )
+  .max(50);
+
+async function prepareMigrationAgent(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+): Promise<MigrationAgentPreparedInput | { readonly status: 'cancelled' | 'stale' }> {
+  const preparation = await dependency.database
+    .transaction()
+    .execute(async transaction => {
+      const run = await transaction
+        .selectFrom('migrationRuns as run')
+        .innerJoin('migrationApprovals as approval', join =>
+          join
+            .onRef('approval.id', '=', 'run.approvalId')
+            .onRef('approval.organisationId', '=', 'run.organisationId'),
+        )
+        .innerJoin(
+          'migrationSpecifications as specification',
+          'specification.id',
+          'approval.migrationSpecificationId',
+        )
+        .innerJoin('impactReports as report', 'report.id', 'approval.impactReportId')
+        .innerJoin('migrationArtifacts as snapshot', join =>
+          join
+            .onRef('snapshot.migrationRunId', '=', 'run.id')
+            .onRef('snapshot.organisationId', '=', 'run.organisationId')
+            .on('snapshot.artifactType', '=', 'source_snapshot'),
+        )
+        .select([
+          'run.status',
+          'run.currentStage',
+          'run.attempt',
+          'run.version',
+          'run.cancellationRequestedAt',
+          'approval.baseCommitSha',
+          'approval.snapshotDigest',
+          'approval.migrationSpecificationId',
+          'approval.migrationSpecificationRevision',
+          'approval.migrationSpecificationDigest',
+          'approval.impactReportId',
+          'approval.impactReportRevision',
+          'approval.impactReportDigest',
+          'approval.agentPolicyVersion',
+          'approval.toolRegistryVersion',
+          'approval.patchPolicyVersion',
+          'approval.patchPolicy',
+          'approval.patchPolicyDigest',
+          'specification.specification',
+          'report.outcome',
+          'report.affectedSummary',
+          'report.riskCategory',
+          'report.uncertainty',
+          'snapshot.objectKey as snapshotObjectKey',
+          'snapshot.digest as acquiredSnapshotDigest',
+        ])
+        .where('run.id', '=', workflow.migrationRunId)
+        .where('run.organisationId', '=', workflow.organisationId)
+        .where('run.candidateId', '=', workflow.candidateId)
+        .where('run.approvalId', '=', workflow.approvalId)
+        .where('run.repositoryId', '=', workflow.repositoryId)
+        .forUpdate('run')
+        .executeTakeFirstOrThrow();
+      if (run.status === 'cancelled') {
+        return { status: 'cancelled' as const, source: null };
+      }
+      if (run.cancellationRequestedAt !== null) {
+        await markMigrationCancelled(transaction, workflow, run.version);
+        return { status: 'cancelled' as const, source: null };
+      }
+      if (
+        run.status !== 'running' ||
+        run.currentStage !== 'planning' ||
+        run.attempt !== workflow.expectedAttempt
+      ) {
+        throw new Error('The migration run cannot prepare the migration agent.');
+      }
+      const approval = await loadMigrationApprovalState(transaction, workflow);
+      if (isMigrationApprovalStale(approval, new Date())) {
+        await markMigrationStale(transaction, workflow, run.version);
+        return { status: 'stale' as const, source: null };
+      }
+      return { status: 'ready' as const, source: run };
+    });
+  if (preparation.source === null) return { status: preparation.status };
+  const source = preparation.source;
+  if (
+    source.outcome !== 'affected' ||
+    source.snapshotDigest !== source.acquiredSnapshotDigest
+  ) {
+    throw new Error('The migration-agent evidence binding is invalid.');
+  }
+  const specification = migrationSpecificationSchema.parse(source.specification);
+  const affected = storedImpactSummarySchema.parse(source.affectedSummary);
+  const uncertainties = storedUncertaintiesSchema.parse(source.uncertainty);
+  const patchPolicy = migrationApprovalPatchPolicySchema.parse(source.patchPolicy);
+  const prefix = migrationAgentPrefix(
+    dependency.config.APP_ENVIRONMENT,
+    workflow.organisationId,
+    workflow.migrationRunId,
+  );
+  const inputObjectKey = `${prefix}/context.json`;
+  const resultObjectKey = `${prefix}/result.json`;
+  const input = migrationAgentInputArtifactSchema.parse({
+    schemaVersion: '1.0',
+    organisationId: workflow.organisationId,
+    repositoryId: workflow.repositoryId,
+    binding: {
+      migrationRunId: workflow.migrationRunId,
+      approvalId: workflow.approvalId,
+      baseCommitSha: source.baseCommitSha,
+      snapshotDigest: source.snapshotDigest,
+      migrationSpecification: {
+        id: source.migrationSpecificationId,
+        revision: source.migrationSpecificationRevision,
+        digest: source.migrationSpecificationDigest,
+      },
+      impactReport: {
+        id: source.impactReportId,
+        revision: source.impactReportRevision,
+        digest: source.impactReportDigest,
+      },
+    },
+    attemptNumber: source.attempt,
+    snapshot: {
+      objectKey: source.snapshotObjectKey,
+      digest: source.acquiredSnapshotDigest,
+    },
+    migrationSpecification: specification,
+    impact: {
+      outcome: 'affected',
+      affectedFiles: affected.affectedFiles.map(file => ({
+        path: file.path,
+        classification: file.classification,
+        symbols: file.symbols,
+        expectedChanges: file.expectedChanges,
+      })),
+      risk: source.riskCategory,
+      uncertainties: uncertainties.map(item => ({
+        code: item.code,
+        summary: item.summary,
+      })),
+    },
+    authority: {
+      agentPolicyVersion: source.agentPolicyVersion,
+      toolRegistryVersion: source.toolRegistryVersion,
+      patchPolicyVersion: source.patchPolicyVersion,
+      patchPolicy,
+      patchPolicyDigest: source.patchPolicyDigest,
+    },
+  });
+  const body = Buffer.from(JSON.stringify(input), 'utf8');
+  const inputDigest = sha256(body);
+  await putImmutableObject(
+    dependency,
+    inputObjectKey,
+    body,
+    'application/json',
+    inputDigest,
+    workflow.migrationRunId,
+  );
+  return migrationAgentPreparedInputSchema.parse({
+    status: 'ready',
+    organisationId: workflow.organisationId,
+    repositoryId: workflow.repositoryId,
+    migrationRunId: workflow.migrationRunId,
+    attemptNumber: source.attempt,
+    inputObjectKey,
+    inputDigest,
+    resultObjectKey,
+  });
+}
+
+async function ingestMigrationPlan(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+  prepared: MigrationAgentPreparedInput,
+): Promise<'completed' | 'failed' | 'cancelled' | 'stale'> {
+  const { input, inputBytes, result } = await readMigrationAgentArtifacts(
+    dependency,
+    workflow,
+    prepared,
+  );
+  if (result.status === 'failed' || result.plan === null) {
+    return markMigrationAgentFailed(
+      dependency.database,
+      workflow,
+      'planning',
+      'MIGRATION_AGENT_FAILED',
+    );
+  }
+  const planBody = Buffer.from(JSON.stringify(result.plan), 'utf8');
+  const planDigest = sha256(planBody);
+  if (
+    result.manifest?.planDigest !== planDigest ||
+    !sameJson(result.plan.binding, input.binding)
+  ) {
+    throw new Error('The migration plan binding or digest is invalid.');
+  }
+  const prefix = migrationAgentPrefix(
+    dependency.config.APP_ENVIRONMENT,
+    workflow.organisationId,
+    workflow.migrationRunId,
+  );
+  const planKey = `${prefix}/plan.json`;
+  await putImmutableObject(
+    dependency,
+    planKey,
+    planBody,
+    'application/json',
+    planDigest,
+    workflow.migrationRunId,
+  );
+  const planningCheckpoints = result.checkpoints.filter(
+    checkpoint => checkpoint.phase !== 'patching',
+  );
+  const checkpointArtifacts = await Promise.all(
+    planningCheckpoints.map(async checkpoint => {
+      const body = Buffer.from(JSON.stringify(checkpoint), 'utf8');
+      const digest = sha256(body);
+      const key = `${prefix}/checkpoint-${String(checkpoint.sequence)}.json`;
+      await putImmutableObject(
+        dependency,
+        key,
+        body,
+        'application/json',
+        digest,
+        workflow.migrationRunId,
+      );
+      return { checkpoint, body, digest, key };
+    }),
+  );
+
+  return dependency.database.transaction().execute(async transaction => {
+    const run = await lockedMigrationRun(transaction, workflow);
+    if (run.status === 'cancelled') return 'cancelled';
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return 'cancelled';
+    }
+    const approval = await loadMigrationApprovalState(transaction, workflow);
+    if (isMigrationApprovalStale(approval, new Date())) {
+      await markMigrationStale(transaction, workflow, run.version);
+      return 'stale';
+    }
+    const existing = await transaction
+      .selectFrom('migrationPlans')
+      .select(['id', 'artifactDigest'])
+      .where('migrationRunId', '=', workflow.migrationRunId)
+      .where('attemptNumber', '=', prepared.attemptNumber)
+      .executeTakeFirst();
+    if (existing) {
+      if (existing.artifactDigest !== planDigest) {
+        throw new Error('An immutable migration plan cannot be replaced.');
+      }
+      return 'completed';
+    }
+    if (run.status !== 'running' || run.currentStage !== 'planning') {
+      throw new Error('The migration run cannot ingest a plan.');
+    }
+    const now = new Date();
+    const contextArtifactId = randomUUID();
+    await insertMigrationArtifact(transaction, {
+      id: contextArtifactId,
+      workflow,
+      artifactType: 'context_manifest',
+      objectKey: prepared.inputObjectKey,
+      digest: prepared.inputDigest,
+      bytes: inputBytes.byteLength,
+      mediaType: 'application/json',
+      createdAt: now,
+    });
+    for (const artifact of checkpointArtifacts) {
+      const artifactId = randomUUID();
+      await insertMigrationArtifact(transaction, {
+        id: artifactId,
+        workflow,
+        artifactType: 'agent_checkpoint',
+        objectKey: artifact.key,
+        digest: artifact.digest,
+        bytes: artifact.body.byteLength,
+        mediaType: 'application/json',
+        createdAt: now,
+      });
+      await transaction
+        .insertInto('migrationAgentCheckpoints')
+        .values({
+          id: randomUUID(),
+          organisationId: workflow.organisationId,
+          migrationRunId: workflow.migrationRunId,
+          attemptNumber: prepared.attemptNumber,
+          sequence: artifact.checkpoint.sequence,
+          phase: artifact.checkpoint.phase,
+          artifactId,
+          artifactDigest: artifact.digest,
+          createdAt: now,
+        })
+        .executeTakeFirstOrThrow();
+    }
+    const planArtifactId = randomUUID();
+    await insertMigrationArtifact(transaction, {
+      id: planArtifactId,
+      workflow,
+      artifactType: 'migration_plan',
+      objectKey: planKey,
+      digest: planDigest,
+      bytes: planBody.byteLength,
+      mediaType: 'application/json',
+      createdAt: now,
+    });
+    await transaction
+      .insertInto('migrationPlans')
+      .values({
+        id: randomUUID(),
+        organisationId: workflow.organisationId,
+        migrationRunId: workflow.migrationRunId,
+        approvalId: workflow.approvalId,
+        attemptNumber: prepared.attemptNumber,
+        artifactId: planArtifactId,
+        artifactDigest: planDigest,
+        schemaVersion: '1.0',
+        trustState: 'proposed',
+        baseCommitSha: input.binding.baseCommitSha,
+        snapshotDigest: input.binding.snapshotDigest,
+        migrationSpecificationId: input.binding.migrationSpecification.id,
+        migrationSpecificationRevision: input.binding.migrationSpecification.revision,
+        migrationSpecificationDigest: input.binding.migrationSpecification.digest,
+        impactReportId: input.binding.impactReport.id,
+        impactReportRevision: input.binding.impactReport.revision,
+        impactReportDigest: input.binding.impactReport.digest,
+        createdAt: now,
+      })
+      .executeTakeFirstOrThrow();
+    await transaction
+      .updateTable('migrationRuns')
+      .set({
+        currentStage: 'patching',
+        updatedAt: now,
+        version: run.version + 1,
+      })
+      .where('id', '=', workflow.migrationRunId)
+      .where('version', '=', run.version)
+      .executeTakeFirstOrThrow();
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:plan-created:${String(
+        prepared.attemptNumber,
+      )}`,
+      eventType: 'plan_created',
+      status: 'running',
+      stage: 'planning',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:stage:patching:${String(
+        prepared.attemptNumber,
+      )}`,
+      eventType: 'stage_entered',
+      status: 'running',
+      stage: 'patching',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    return 'completed';
+  });
+}
+
+async function ingestMigrationPatch(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+  prepared: MigrationAgentPreparedInput,
+): Promise<'completed' | 'failed' | 'cancelled' | 'stale'> {
+  const { input, result } = await readMigrationAgentArtifacts(
+    dependency,
+    workflow,
+    prepared,
+  );
+  if (
+    result.status === 'failed' ||
+    result.plan === null ||
+    result.patch === null ||
+    result.manifest === null ||
+    result.validation === null
+  ) {
+    return markMigrationAgentFailed(
+      dependency.database,
+      workflow,
+      'patching',
+      'MIGRATION_AGENT_FAILED',
+    );
+  }
+  if (
+    !sameJson(result.manifest.binding, input.binding) ||
+    !sameJson(result.validation.binding, input.binding) ||
+    result.validation.policyDigest !== input.authority.patchPolicyDigest ||
+    result.validation.policyVersion !== input.authority.patchPolicyVersion
+  ) {
+    throw new Error('The migration patch authority binding is invalid.');
+  }
+  const patchBody = Buffer.from(result.patch, 'utf8');
+  const manifest = result.manifest;
+  const validation = result.validation;
+  const manifestBody = Buffer.from(JSON.stringify(manifest), 'utf8');
+  const validationBody = Buffer.from(JSON.stringify(validation), 'utf8');
+  const patchDigest = sha256(patchBody);
+  const manifestDigest = sha256(manifestBody);
+  const validationDigest = sha256(validationBody);
+  if (manifest.patchDigest !== patchDigest || validation.patchDigest !== patchDigest) {
+    throw new Error('The migration patch digest is invalid.');
+  }
+  const prefix = migrationAgentPrefix(
+    dependency.config.APP_ENVIRONMENT,
+    workflow.organisationId,
+    workflow.migrationRunId,
+  );
+  const patchKey = `${prefix}/proposal.diff`;
+  const manifestKey = `${prefix}/patch-manifest.json`;
+  const validationKey = `${prefix}/patch-validation.json`;
+  await Promise.all([
+    putImmutableObject(
+      dependency,
+      patchKey,
+      patchBody,
+      'text/x-diff',
+      patchDigest,
+      workflow.migrationRunId,
+    ),
+    putImmutableObject(
+      dependency,
+      manifestKey,
+      manifestBody,
+      'application/json',
+      manifestDigest,
+      workflow.migrationRunId,
+    ),
+    putImmutableObject(
+      dependency,
+      validationKey,
+      validationBody,
+      'application/json',
+      validationDigest,
+      workflow.migrationRunId,
+    ),
+  ]);
+  const patchCheckpoint = result.checkpoints.find(
+    checkpoint => checkpoint.phase === 'patching',
+  );
+  if (!patchCheckpoint) {
+    throw new Error('The migration patch checkpoint is missing.');
+  }
+  const checkpointBody = Buffer.from(JSON.stringify(patchCheckpoint), 'utf8');
+  const checkpointDigest = sha256(checkpointBody);
+  const checkpointKey = `${prefix}/checkpoint-${String(patchCheckpoint.sequence)}.json`;
+  await putImmutableObject(
+    dependency,
+    checkpointKey,
+    checkpointBody,
+    'application/json',
+    checkpointDigest,
+    workflow.migrationRunId,
+  );
+
+  return dependency.database.transaction().execute(async transaction => {
+    const run = await lockedMigrationRun(transaction, workflow);
+    if (run.status === 'cancelled') return 'cancelled';
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return 'cancelled';
+    }
+    const approval = await loadMigrationApprovalState(transaction, workflow);
+    if (isMigrationApprovalStale(approval, new Date())) {
+      await markMigrationStale(transaction, workflow, run.version);
+      return 'stale';
+    }
+    const existing = await transaction
+      .selectFrom('patchAttempts')
+      .select(['status', 'patchDigest'])
+      .where('migrationRunId', '=', workflow.migrationRunId)
+      .where('attemptNumber', '=', prepared.attemptNumber)
+      .executeTakeFirst();
+    if (existing) {
+      if (existing.patchDigest !== patchDigest) {
+        throw new Error('An immutable patch attempt cannot be replaced.');
+      }
+      return existing.status === 'accepted' ? 'completed' : 'failed';
+    }
+    if (run.status !== 'running' || run.currentStage !== 'patching') {
+      throw new Error('The migration run cannot ingest a patch.');
+    }
+    const plan = await transaction
+      .selectFrom('migrationPlans')
+      .select(['id', 'artifactDigest'])
+      .where('migrationRunId', '=', workflow.migrationRunId)
+      .where('attemptNumber', '=', prepared.attemptNumber)
+      .executeTakeFirstOrThrow();
+    if (plan.artifactDigest !== manifest.planDigest) {
+      throw new Error('The patch is not bound to the stored migration plan.');
+    }
+    const now = new Date();
+    const patchArtifactId = randomUUID();
+    const manifestArtifactId = randomUUID();
+    const validationArtifactId = randomUUID();
+    const checkpointArtifactId = randomUUID();
+    await insertMigrationArtifact(transaction, {
+      id: patchArtifactId,
+      workflow,
+      artifactType: 'patch_proposal',
+      objectKey: patchKey,
+      digest: patchDigest,
+      bytes: patchBody.byteLength,
+      mediaType: 'text/x-diff',
+      createdAt: now,
+    });
+    await insertMigrationArtifact(transaction, {
+      id: manifestArtifactId,
+      workflow,
+      artifactType: 'patch_manifest',
+      objectKey: manifestKey,
+      digest: manifestDigest,
+      bytes: manifestBody.byteLength,
+      mediaType: 'application/json',
+      createdAt: now,
+    });
+    await insertMigrationArtifact(transaction, {
+      id: validationArtifactId,
+      workflow,
+      artifactType: 'patch_validation',
+      objectKey: validationKey,
+      digest: validationDigest,
+      bytes: validationBody.byteLength,
+      mediaType: 'application/json',
+      createdAt: now,
+    });
+    await insertMigrationArtifact(transaction, {
+      id: checkpointArtifactId,
+      workflow,
+      artifactType: 'agent_checkpoint',
+      objectKey: checkpointKey,
+      digest: checkpointDigest,
+      bytes: checkpointBody.byteLength,
+      mediaType: 'application/json',
+      createdAt: now,
+    });
+    await transaction
+      .insertInto('migrationAgentCheckpoints')
+      .values({
+        id: randomUUID(),
+        organisationId: workflow.organisationId,
+        migrationRunId: workflow.migrationRunId,
+        attemptNumber: prepared.attemptNumber,
+        sequence: patchCheckpoint.sequence,
+        phase: patchCheckpoint.phase,
+        artifactId: checkpointArtifactId,
+        artifactDigest: checkpointDigest,
+        createdAt: now,
+      })
+      .executeTakeFirstOrThrow();
+    await transaction
+      .insertInto('patchAttempts')
+      .values({
+        id: randomUUID(),
+        organisationId: workflow.organisationId,
+        migrationRunId: workflow.migrationRunId,
+        attemptNumber: prepared.attemptNumber,
+        parentPatchAttemptId: null,
+        migrationPlanId: plan.id,
+        patchArtifactId,
+        patchDigest,
+        validationArtifactId,
+        validationDigest,
+        policyVersion: validation.policyVersion,
+        policyDigest: validation.policyDigest,
+        status: validation.status === 'accepted' ? 'accepted' : 'rejected',
+        safeErrorCode: validation.safeErrorCode,
+        summaryCode:
+          validation.status === 'accepted' ? 'PATCH_ACCEPTED' : 'PATCH_REJECTED',
+        changedFiles: manifest.changedFiles,
+        addedLines: manifest.addedLines,
+        deletedLines: manifest.deletedLines,
+        patchBytes: manifest.patchBytes,
+        createdAt: now,
+      })
+      .executeTakeFirstOrThrow();
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:patch-proposed:${String(
+        prepared.attemptNumber,
+      )}`,
+      eventType: 'patch_proposed',
+      status: 'running',
+      stage: 'patching',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    if (validation.status === 'rejected') {
+      await markMigrationFailedInTransaction(
+        transaction,
+        workflow,
+        run.version,
+        'MIGRATION_PATCH_REJECTED',
+        'patching',
+      );
+      return 'failed';
+    }
+    await transaction
+      .updateTable('migrationRuns')
+      .set({
+        currentStage: 'verifying',
+        updatedAt: now,
+        version: run.version + 1,
+      })
+      .where('id', '=', workflow.migrationRunId)
+      .where('version', '=', run.version)
+      .executeTakeFirstOrThrow();
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:patch-validated:${String(
+        prepared.attemptNumber,
+      )}`,
+      eventType: 'patch_validated',
+      status: 'running',
+      stage: 'patching',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:stage:verifying:${String(
+        prepared.attemptNumber,
+      )}`,
+      eventType: 'stage_entered',
+      status: 'running',
+      stage: 'verifying',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    return 'completed';
+  });
+}
+
+async function readMigrationAgentArtifacts(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+  prepared: MigrationAgentPreparedInput,
+): Promise<{
+  readonly input: MigrationAgentInputArtifact;
+  readonly inputBytes: Buffer;
+  readonly result: MigrationAgentResult;
+}> {
+  if (
+    prepared.organisationId !== workflow.organisationId ||
+    prepared.repositoryId !== workflow.repositoryId ||
+    prepared.migrationRunId !== workflow.migrationRunId ||
+    prepared.attemptNumber !== workflow.expectedAttempt
+  ) {
+    throw new Error('The prepared migration-agent input has invalid ownership.');
+  }
+  const [inputBytes, resultBytes] = await Promise.all([
+    readBoundedArtifact(dependency, prepared.inputObjectKey, 4 * 1024 * 1024),
+    readBoundedArtifact(
+      dependency,
+      prepared.resultObjectKey,
+      MAX_MIGRATION_AGENT_RESULT_BYTES,
+    ),
+  ]);
+  if (sha256(inputBytes) !== prepared.inputDigest) {
+    throw new Error('The prepared migration-agent input digest is invalid.');
+  }
+  const input = migrationAgentInputArtifactSchema.parse(
+    JSON.parse(inputBytes.toString('utf8')),
+  );
+  const result = migrationAgentResultSchema.parse(
+    JSON.parse(resultBytes.toString('utf8')),
+  );
+  if (
+    input.binding.migrationRunId !== workflow.migrationRunId ||
+    result.organisationId !== workflow.organisationId ||
+    result.repositoryId !== workflow.repositoryId ||
+    result.migrationRunId !== workflow.migrationRunId ||
+    result.attemptNumber !== workflow.expectedAttempt ||
+    result.inputDigest !== prepared.inputDigest
+  ) {
+    throw new Error('The migration-agent result has invalid ownership.');
+  }
+  return { input, inputBytes, result };
+}
+
+async function lockedMigrationRun(
+  transaction: Transaction<Database>,
+  workflow: MigrationWorkflowInput,
+): Promise<
+  Pick<
+    Selectable<MigrationRunTable>,
+    'status' | 'currentStage' | 'attempt' | 'version' | 'cancellationRequestedAt'
+  >
+> {
+  const run = await transaction
+    .selectFrom('migrationRuns')
+    .select(['status', 'currentStage', 'attempt', 'version', 'cancellationRequestedAt'])
+    .where('id', '=', workflow.migrationRunId)
+    .where('organisationId', '=', workflow.organisationId)
+    .where('candidateId', '=', workflow.candidateId)
+    .where('approvalId', '=', workflow.approvalId)
+    .where('repositoryId', '=', workflow.repositoryId)
+    .forUpdate()
+    .executeTakeFirstOrThrow();
+  if (run.attempt !== workflow.expectedAttempt) {
+    throw new Error('The migration-agent attempt does not match its run.');
+  }
+  return run;
+}
+
+async function markMigrationAgentFailed(
+  database: AppDatabase,
+  workflow: MigrationWorkflowInput,
+  stage: Extract<MigrationExecutionStage, 'planning' | 'patching'>,
+  safeErrorCode: 'MIGRATION_AGENT_FAILED',
+): Promise<'failed' | 'cancelled'> {
+  return markMigrationFailed(database, workflow, safeErrorCode, stage);
+}
+
+interface NewMigrationArtifact {
+  readonly id: string;
+  readonly workflow: MigrationWorkflowInput;
+  readonly artifactType:
+    | 'context_manifest'
+    | 'agent_checkpoint'
+    | 'migration_plan'
+    | 'patch_proposal'
+    | 'patch_manifest'
+    | 'patch_validation';
+  readonly objectKey: string;
+  readonly digest: string;
+  readonly bytes: number;
+  readonly mediaType: string;
+  readonly createdAt: Date;
+}
+
+async function insertMigrationArtifact(
+  transaction: Transaction<Database>,
+  artifact: NewMigrationArtifact,
+): Promise<void> {
+  await transaction
+    .insertInto('migrationArtifacts')
+    .values({
+      id: artifact.id,
+      organisationId: artifact.workflow.organisationId,
+      migrationRunId: artifact.workflow.migrationRunId,
+      artifactType: artifact.artifactType,
+      objectKey: artifact.objectKey,
+      digest: artifact.digest,
+      bytes: artifact.bytes,
+      mediaType: artifact.mediaType,
+      retentionClass: 'audit',
+      createdAt: artifact.createdAt,
+      expiresAt: null,
+    })
+    .executeTakeFirstOrThrow();
+}
+
+async function putImmutableObject(
+  dependency: WorkflowDependencies,
+  key: string,
+  body: Buffer,
+  contentType: string,
+  digest: string,
+  migrationRunId: string,
+): Promise<void> {
+  try {
+    const existing = await dependency.s3.send(
+      new HeadObjectCommand({
+        Bucket: dependency.config.ARTIFACT_BUCKET,
+        Key: key,
+      }),
+    );
+    assertImmutableObject(existing, body, contentType, digest, migrationRunId);
+    return;
+  } catch (error) {
+    if (!(
+      error instanceof S3ServiceException &&
+      (error.name === 'NotFound' || error.$metadata.httpStatusCode === 404)
+    )) {
+      throw error;
+    }
+  }
+  try {
+    await dependency.s3.send(
+      new PutObjectCommand({
+        Bucket: dependency.config.ARTIFACT_BUCKET,
+        Key: key,
+        Body: body,
+        ContentType: contentType,
+        ServerSideEncryption: 'aws:kms',
+        SSEKMSKeyId: dependency.config.ARTIFACT_KMS_KEY_ARN,
+        Metadata: {
+          digest,
+          'migration-run-id': migrationRunId,
+        },
+        IfNoneMatch: '*',
+      }),
+    );
+  } catch (error) {
+    if (!(
+      error instanceof S3ServiceException && error.$metadata.httpStatusCode === 412
+    )) {
+      throw error;
+    }
+    const existing = await dependency.s3.send(
+      new HeadObjectCommand({
+        Bucket: dependency.config.ARTIFACT_BUCKET,
+        Key: key,
+      }),
+    );
+    assertImmutableObject(existing, body, contentType, digest, migrationRunId);
+  }
+}
+
+function assertImmutableObject(
+  existing: {
+    readonly ContentLength?: number;
+    readonly ContentType?: string;
+    readonly Metadata?: Record<string, string>;
+  },
+  body: Buffer,
+  contentType: string,
+  digest: string,
+  migrationRunId: string,
+): void {
+  const metadata = existing.Metadata;
+  if (
+    existing.ContentLength !== body.byteLength ||
+    existing.ContentType !== contentType ||
+    metadata?.digest !== digest ||
+    metadata['migration-run-id'] !== migrationRunId
+  ) {
+    throw new Error('An immutable migration artifact cannot be replaced.');
+  }
+}
+
+async function readBoundedArtifact(
+  dependency: WorkflowDependencies,
+  key: string,
+  maximumBytes: number,
+): Promise<Buffer> {
+  const response = await dependency.s3.send(
+    new GetObjectCommand({
+      Bucket: dependency.config.ARTIFACT_BUCKET,
+      Key: key,
+    }),
+  );
+  if (
+    response.ContentLength === undefined ||
+    response.ContentLength < 1 ||
+    response.ContentLength > maximumBytes
+  ) {
+    throw new Error('The migration artifact size is invalid.');
+  }
+  const bytes = await response.Body?.transformToByteArray();
+  if (bytes?.byteLength !== response.ContentLength) {
+    throw new Error('The migration artifact could not be read completely.');
+  }
+  return Buffer.from(bytes);
+}
+
+function migrationAgentPrefix(
+  environment: string,
+  organisationId: string,
+  migrationRunId: string,
+): string {
+  return `env/${environment}/org/${organisationId}/run/${migrationRunId}/agent`;
+}
+
+function sha256(value: Uint8Array): string {
+  return createHash('sha256').update(value).digest('hex');
+}
+
+function sameJson(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
+
 async function evaluateMigrationStageCapability(
   database: AppDatabase,
   workflow: MigrationWorkflowInput,
@@ -939,6 +1940,8 @@ async function markMigrationFailed(
   safeErrorCode:
     | StageUnavailableSafeErrorCode
     | 'MIGRATION_REPAIR_BUDGET_EXHAUSTED'
+    | 'MIGRATION_AGENT_FAILED'
+    | 'MIGRATION_PATCH_REJECTED'
     | 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
   expectedStage?: MigrationExecutionStage,
 ): Promise<'failed' | 'cancelled'> {
@@ -1091,12 +2094,22 @@ interface SystemMigrationRunEvent {
     | 'approval_validated'
     | 'stage_entered'
     | 'source_acquired'
+    | 'plan_created'
+    | 'patch_proposed'
+    | 'patch_validated'
     | 'run_cancelled'
     | 'run_failed'
     | 'run_stale';
   readonly status: 'running' | 'failed' | 'cancelled' | 'stale';
   readonly stage:
-    'revalidating' | 'acquiring' | 'planning' | 'failed' | 'cancelled' | 'stale';
+    | 'revalidating'
+    | 'acquiring'
+    | 'planning'
+    | 'patching'
+    | 'verifying'
+    | 'failed'
+    | 'cancelled'
+    | 'stale';
   readonly safeErrorCode: string | null;
   readonly createdAt: Date;
 }

@@ -82,6 +82,12 @@ resource "aws_cloudwatch_log_group" "impact_analysis_agent" {
   kms_key_id        = aws_kms_key.logs.arn
 }
 
+resource "aws_cloudwatch_log_group" "migration_agent" {
+  name              = "/migration-api/development/migration-agent"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
 resource "aws_cloudwatch_log_group" "migrator" {
   name              = "/migration-api/development/database-migrator"
   retention_in_days = 30
@@ -559,10 +565,11 @@ resource "aws_lambda_function" "workflow_control" {
 
   environment {
     variables = {
-      APP_ENVIRONMENT     = "development"
-      ARTIFACT_BUCKET     = aws_s3_bucket.artifacts.bucket
-      DATABASE_SECRET_ARN = var.database_secret_arn
-      NODE_OPTIONS        = "--enable-source-maps"
+      APP_ENVIRONMENT      = "development"
+      ARTIFACT_BUCKET      = aws_s3_bucket.artifacts.bucket
+      ARTIFACT_KMS_KEY_ARN = aws_kms_key.artifacts.arn
+      DATABASE_SECRET_ARN  = var.database_secret_arn
+      NODE_OPTIONS         = "--enable-source-maps"
     }
   }
 
@@ -852,6 +859,56 @@ resource "aws_ecs_task_definition" "impact_analysis_agent" {
   ])
 }
 
+resource "aws_ecs_task_definition" "migration_agent" {
+  family                   = "migration-api-development-migration-agent"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 1024
+  memory                   = 2048
+  execution_role_arn       = aws_iam_role.migration_agent_execution.arn
+  task_role_arn            = aws_iam_role.migration_agent_task.arn
+
+  runtime_platform {
+    cpu_architecture        = "ARM64"
+    operating_system_family = "LINUX"
+  }
+
+  container_definitions = jsonencode([
+    {
+      name                   = "migration-agent"
+      image                  = "${data.aws_ecr_repository.migration_agent.repository_url}@${var.migration_agent_image_digest}"
+      essential              = true
+      readonlyRootFilesystem = true
+      user                   = "10001:10001"
+      stopTimeout            = 30
+      linuxParameters = {
+        initProcessEnabled = true
+        capabilities       = { drop = ["ALL"] }
+      }
+      environment = [
+        { name = "APP_ENVIRONMENT", value = "development" },
+        { name = "AWS_REGION", value = var.aws_region },
+        { name = "AWS_STS_REGIONAL_ENDPOINTS", value = "regional" },
+        { name = "ARTIFACT_BUCKET", value = aws_s3_bucket.artifacts.bucket },
+        { name = "ARTIFACT_KMS_KEY_ARN", value = aws_kms_key.artifacts.arn },
+        { name = "OPENAI_IDENTITY_PROVIDER_ID", value = var.migration_agent_openai_identity_provider_id },
+        { name = "OPENAI_SERVICE_ACCOUNT_ID", value = var.migration_agent_openai_service_account_id },
+        { name = "OPENAI_WIF_AUDIENCE", value = "https://api.openai.com/v1" },
+        { name = "OPENAI_MODEL", value = var.openai_model },
+        { name = "OPENAI_PROJECT_ALIAS", value = "development-migration-agent" }
+      ]
+      logConfiguration = {
+        logDriver = "awslogs"
+        options = {
+          awslogs-group         = aws_cloudwatch_log_group.migration_agent.name
+          awslogs-region        = var.aws_region
+          awslogs-stream-prefix = "migration-agent"
+        }
+      }
+    }
+  ])
+}
+
 resource "aws_ecs_task_definition" "migrator" {
   family                   = "migration-api-development-database-migrator"
   requires_compatibilities = ["FARGATE"]
@@ -930,7 +987,8 @@ data "aws_iam_policy_document" "step_functions" {
       aws_ecs_task_definition.source_fetcher.arn,
       aws_ecs_task_definition.vendor_fetcher.arn,
       aws_ecs_task_definition.change_intelligence_agent.arn,
-      aws_ecs_task_definition.impact_analysis_agent.arn
+      aws_ecs_task_definition.impact_analysis_agent.arn,
+      aws_ecs_task_definition.migration_agent.arn
     ]
 
     condition {
@@ -959,7 +1017,9 @@ data "aws_iam_policy_document" "step_functions" {
       aws_iam_role.change_intelligence_execution.arn,
       aws_iam_role.change_intelligence_task.arn,
       aws_iam_role.impact_analysis_execution.arn,
-      aws_iam_role.impact_analysis_task.arn
+      aws_iam_role.impact_analysis_task.arn,
+      aws_iam_role.migration_agent_execution.arn,
+      aws_iam_role.migration_agent_task.arn
     ]
   }
 
@@ -1743,7 +1803,7 @@ resource "aws_sfn_state_machine" "migration" {
           {
             Variable     = "$.boundary.Payload.status"
             StringEquals = "completed"
-            Next         = "RunMigrationAgent"
+            Next         = "PrepareMigrationAgent"
           },
           {
             Variable     = "$.boundary.Payload.status"
@@ -1758,15 +1818,103 @@ resource "aws_sfn_state_machine" "migration" {
         ]
         Default = "MarkInfrastructureFailure"
       }
-      RunMigrationAgent = {
+      PrepareMigrationAgent = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
           FunctionName = aws_lambda_function.workflow_control.arn
           Payload = {
-            operation    = "evaluate_migration_stage_capability"
-            stage        = "planning"
+            operation    = "prepare_migration_agent"
             "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.agent"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateMigrationAgentPreparation"
+      }
+      EvaluateMigrationAgentPreparation = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.agent.Payload.status"
+            StringEquals = "ready"
+            Next         = "RunMigrationAgent"
+          },
+          {
+            Variable     = "$.agent.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.agent.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      RunMigrationAgent = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::ecs:runTask.sync"
+        TimeoutSeconds = 900
+        Parameters = {
+          Cluster        = aws_ecs_cluster.agent.arn
+          TaskDefinition = aws_ecs_task_definition.migration_agent.arn
+          LaunchType     = "FARGATE"
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              AssignPublicIp = "DISABLED"
+              SecurityGroups = [aws_security_group.agent.id]
+              Subnets        = [for subnet in aws_subnet.agent : subnet.id]
+            }
+          }
+          Overrides = {
+            ContainerOverrides = [{
+              Name = "migration-agent"
+              Environment = [
+                { Name = "ORGANISATION_ID", "Value.$" = "$.agent.Payload.organisationId" },
+                { Name = "REPOSITORY_ID", "Value.$" = "$.agent.Payload.repositoryId" },
+                { Name = "MIGRATION_RUN_ID", "Value.$" = "$.agent.Payload.migrationRunId" },
+                { Name = "INPUT_OBJECT_KEY", "Value.$" = "$.agent.Payload.inputObjectKey" },
+                { Name = "INPUT_DIGEST", "Value.$" = "$.agent.Payload.inputDigest" },
+                { Name = "RESULT_OBJECT_KEY", "Value.$" = "$.agent.Payload.resultObjectKey" }
+              ]
+            }]
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["ECS.AmazonECSException", "ECS.ThrottlingException"]
+          IntervalSeconds = 5
+          BackoffRate     = 2
+          MaxAttempts     = 2
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "IngestMigrationPlan"
+      }
+      IngestMigrationPlan = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "ingest_migration_plan"
+            "workflow.$" = "$.workflow"
+            "prepared.$" = "$.agent.Payload"
           }
         }
         ResultPath = "$.boundary"
@@ -1788,13 +1936,18 @@ resource "aws_sfn_state_machine" "migration" {
         Choices = [
           {
             Variable     = "$.boundary.Payload.status"
-            StringEquals = "unavailable"
-            Next         = "StopAtUnavailableBoundary"
+            StringEquals = "failed"
+            Next         = "SafeBoundaryReached"
           },
           {
             Variable     = "$.boundary.Payload.status"
             StringEquals = "cancelled"
             Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
           },
           {
             Variable     = "$.boundary.Payload.status"
@@ -1810,9 +1963,9 @@ resource "aws_sfn_state_machine" "migration" {
         Parameters = {
           FunctionName = aws_lambda_function.workflow_control.arn
           Payload = {
-            operation    = "evaluate_migration_stage_capability"
-            stage        = "patching"
+            operation    = "ingest_migration_patch"
             "workflow.$" = "$.workflow"
+            "prepared.$" = "$.agent.Payload"
           }
         }
         ResultPath = "$.boundary"
@@ -1834,13 +1987,18 @@ resource "aws_sfn_state_machine" "migration" {
         Choices = [
           {
             Variable     = "$.boundary.Payload.status"
-            StringEquals = "unavailable"
-            Next         = "StopAtUnavailableBoundary"
+            StringEquals = "failed"
+            Next         = "SafeBoundaryReached"
           },
           {
             Variable     = "$.boundary.Payload.status"
             StringEquals = "cancelled"
             Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
           },
           {
             Variable     = "$.boundary.Payload.status"

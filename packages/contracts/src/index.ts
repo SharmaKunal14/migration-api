@@ -1299,6 +1299,222 @@ export const migrationAgentCheckpointSchema = z
     }
   });
 
+const migrationAgentImpactFileSchema = z
+  .object({
+    path: repositoryRelativePathSchema,
+    classification: migrationChangeCategorySchema,
+    symbols: z.array(z.string().min(1).max(512)).max(100),
+    expectedChanges: z.array(z.string().min(1).max(1_024)).max(50),
+  })
+  .strict();
+
+export const migrationAgentInputArtifactSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    organisationId: uuidSchema,
+    repositoryId: uuidSchema,
+    binding: migrationPatchBindingSchema,
+    attemptNumber: z.number().int().min(1).max(10),
+    snapshot: z
+      .object({
+        objectKey: z.string().min(1).max(1_024),
+        digest: sha256Schema,
+      })
+      .strict(),
+    migrationSpecification: migrationSpecificationSchema,
+    impact: z
+      .object({
+        outcome: z.literal('affected'),
+        affectedFiles: z.array(migrationAgentImpactFileSchema).min(1).max(500),
+        risk: z.enum(['low', 'medium', 'high', 'unknown']),
+        uncertainties: z
+          .array(
+            z
+              .object({
+                code: z.string().regex(/^[A-Z][A-Z0-9_]{2,63}$/u),
+                summary: z.string().min(1).max(2_000),
+              })
+              .strict(),
+          )
+          .max(50),
+      })
+      .strict(),
+    authority: z
+      .object({
+        agentPolicyVersion: policyVersionSchema,
+        toolRegistryVersion: policyVersionSchema,
+        patchPolicyVersion: policyVersionSchema,
+        patchPolicy: migrationApprovalPatchPolicySchema,
+        patchPolicyDigest: sha256Schema,
+      })
+      .strict(),
+  })
+  .strict()
+  .superRefine((input, context) => {
+    if (input.snapshot.digest !== input.binding.snapshotDigest) {
+      context.addIssue({
+        code: 'custom',
+        message: 'The migration snapshot must match the approved binding.',
+        path: ['snapshot', 'digest'],
+      });
+    }
+  });
+
+export const migrationAgentPreparedInputSchema = z
+  .object({
+    status: z.literal('ready'),
+    organisationId: uuidSchema,
+    repositoryId: uuidSchema,
+    migrationRunId: uuidSchema,
+    attemptNumber: z.number().int().min(1).max(10),
+    inputObjectKey: z.string().min(1).max(1_024),
+    inputDigest: sha256Schema,
+    resultObjectKey: z.string().min(1).max(1_024),
+  })
+  .strict();
+
+export const migrationAgentProposedEditSchema = z
+  .object({
+    path: repositoryRelativePathSchema,
+    operation: z.enum(['create', 'modify', 'delete']),
+    changeCategory: migrationChangeCategorySchema,
+    content: z
+      .string()
+      .max(1024 * 1024)
+      .nullable(),
+  })
+  .strict()
+  .superRefine((edit, context) => {
+    if ((edit.operation === 'delete') !== (edit.content === null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only deleted files may omit replacement content.',
+        path: ['content'],
+      });
+    }
+    if (edit.content?.includes('\u0000')) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Patch content must be text.',
+        path: ['content'],
+      });
+    }
+  });
+
+const migrationAgentActionSchema = z
+  .object({
+    sequence: z.number().int().positive().max(40),
+    toolName: z.enum([
+      'list_repository_files',
+      'read_repository_file',
+      'search_repository',
+      'inspect_manifest',
+      'inspect_typescript',
+    ]),
+    path: repositoryRelativePathSchema.nullable(),
+    status: z.literal('succeeded'),
+    safeErrorCode: z.null(),
+    inputDigest: sha256Schema,
+    outputDigest: sha256Schema,
+  })
+  .strict();
+
+export const migrationAgentResultSchema = z
+  .object({
+    schemaVersion: z.literal('1.0'),
+    organisationId: uuidSchema,
+    repositoryId: uuidSchema,
+    migrationRunId: uuidSchema,
+    attemptNumber: z.number().int().min(1).max(10),
+    inputDigest: sha256Schema,
+    status: z.enum(['succeeded', 'rejected', 'failed']),
+    safeErrorCode: z
+      .string()
+      .regex(/^[A-Z][A-Z0-9_]{2,63}$/u)
+      .nullable(),
+    model: z
+      .object({
+        requestedModel: z.string().min(1).max(200),
+        returnedModel: z.string().min(1).max(200),
+        requestId: z
+          .string()
+          .regex(/^[A-Za-z][A-Za-z0-9_.-]{0,127}$/u)
+          .nullable(),
+      })
+      .strict(),
+    usage: z
+      .object({
+        modelCalls: z.number().int().nonnegative().max(5),
+        toolCalls: z.number().int().nonnegative().max(40),
+        iterations: z.number().int().nonnegative().max(6),
+        inputTokens: z.number().int().nonnegative().max(120_000),
+        outputTokens: z.number().int().nonnegative().max(24_000),
+        durationMs: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(10 * 60 * 1_000),
+      })
+      .strict(),
+    actions: z.array(migrationAgentActionSchema).max(40),
+    plan: migrationExecutionPlanSchema.nullable(),
+    patch: z
+      .string()
+      .min(1)
+      .max(1024 * 1024)
+      .nullable(),
+    manifest: migrationPatchManifestSchema.nullable(),
+    validation: migrationPatchValidationResultSchema.nullable(),
+    checkpoints: z.array(migrationAgentCheckpointSchema).max(3),
+  })
+  .strict()
+  .superRefine((result, context) => {
+    const hasArtifacts =
+      result.plan !== null &&
+      result.patch !== null &&
+      result.manifest !== null &&
+      result.validation !== null &&
+      result.checkpoints.length >= 2;
+    if (result.status === 'failed' && hasArtifacts) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Failed migration-agent results cannot contain patch artifacts.',
+        path: ['status'],
+      });
+    }
+    if (result.status !== 'failed' && !hasArtifacts) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Completed migration-agent results require all patch artifacts.',
+        path: ['plan'],
+      });
+    }
+    if (
+      (result.status === 'succeeded') !==
+      (result.validation?.status === 'accepted')
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only accepted patch validation may produce success.',
+        path: ['validation', 'status'],
+      });
+    }
+    if ((result.status === 'rejected') !== (result.validation?.status === 'rejected')) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Rejected results require rejected patch validation.',
+        path: ['validation', 'status'],
+      });
+    }
+    if ((result.status === 'succeeded') === (result.safeErrorCode !== null)) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Only unsuccessful migration-agent results require a safe error.',
+        path: ['safeErrorCode'],
+      });
+    }
+  });
+
 export const migrationApprovalAcknowledgementsSchema = z
   .object({
     sourceProcessing: z.literal(true),
@@ -1584,6 +1800,16 @@ export type MigrationPatchValidationResult = z.infer<
   typeof migrationPatchValidationResultSchema
 >;
 export type MigrationAgentCheckpoint = z.infer<typeof migrationAgentCheckpointSchema>;
+export type MigrationAgentInputArtifact = z.infer<
+  typeof migrationAgentInputArtifactSchema
+>;
+export type MigrationAgentPreparedInput = z.infer<
+  typeof migrationAgentPreparedInputSchema
+>;
+export type MigrationAgentProposedEdit = z.infer<
+  typeof migrationAgentProposedEditSchema
+>;
+export type MigrationAgentResult = z.infer<typeof migrationAgentResultSchema>;
 export type MigrationApprovalAcknowledgements = z.infer<
   typeof migrationApprovalAcknowledgementsSchema
 >;
@@ -1874,7 +2100,10 @@ export interface PublicMigrationRunEvent {
     | 'run_cancelled'
     | 'run_failed'
     | 'run_stale'
-    | 'run_completed';
+    | 'run_completed'
+    | 'plan_created'
+    | 'patch_proposed'
+    | 'patch_validated';
   readonly status:
     'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
   readonly stage:

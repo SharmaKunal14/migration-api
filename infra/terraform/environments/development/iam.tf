@@ -113,6 +113,16 @@ resource "aws_iam_role" "impact_analysis_task" {
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
 }
 
+resource "aws_iam_role" "migration_agent_execution" {
+  name               = "migration-api-development-migration-agent-execution"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
+resource "aws_iam_role" "migration_agent_task" {
+  name               = "migration-api-development-migration-agent-task"
+  assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
+}
+
 resource "aws_iam_role" "migrator_execution" {
   name               = "migration-api-development-migrator-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
@@ -248,8 +258,18 @@ data "aws_iam_policy_document" "workflow_artifacts" {
   }
 
   statement {
-    sid       = "DecryptAgentResult"
-    actions   = ["kms:Decrypt"]
+    sid       = "ReadWriteMigrationAgentArtifacts"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/*"]
+  }
+
+  statement {
+    sid = "MigrationControlArtifactEncryption"
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:GenerateDataKey"
+    ]
     resources = [aws_kms_key.artifacts.arn]
   }
 }
@@ -339,6 +359,91 @@ resource "aws_iam_role_policy" "agent_task" {
   name   = "bounded-agent-runtime"
   role   = aws_iam_role.agent_task.id
   policy = data.aws_iam_policy_document.agent_task.json
+}
+
+data "aws_iam_policy_document" "migration_agent_execution" {
+  statement {
+    sid = "PullMigrationAgentImage"
+    actions = [
+      "ecr:BatchCheckLayerAvailability",
+      "ecr:BatchGetImage",
+      "ecr:GetDownloadUrlForLayer"
+    ]
+    resources = [data.aws_ecr_repository.migration_agent.arn]
+  }
+
+  # ECR authorization tokens do not support resource-level permissions.
+  statement {
+    sid       = "EcrAuthorization"
+    actions   = ["ecr:GetAuthorizationToken"]
+    resources = ["*"]
+  }
+
+  statement {
+    sid       = "WriteMigrationAgentLogs"
+    actions   = ["logs:CreateLogStream", "logs:PutLogEvents"]
+    resources = ["${aws_cloudwatch_log_group.migration_agent.arn}:*"]
+  }
+}
+
+resource "aws_iam_role_policy" "migration_agent_execution" {
+  name   = "migration-agent-image-and-logs"
+  role   = aws_iam_role.migration_agent_execution.id
+  policy = data.aws_iam_policy_document.migration_agent_execution.json
+}
+
+data "aws_iam_policy_document" "migration_agent_task" {
+  statement {
+    sid     = "ReadExactApprovedMigrationInputs"
+    actions = ["s3:GetObject"]
+    resources = [
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/input/source/*",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/context.json",
+      "${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/result.json"
+    ]
+  }
+
+  statement {
+    sid       = "WriteMigrationAgentResult"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/agent/result.json"]
+  }
+
+  statement {
+    sid = "ArtifactEncryption"
+    actions = [
+      "kms:Decrypt",
+      "kms:Encrypt",
+      "kms:GenerateDataKey"
+    ]
+    resources = [aws_kms_key.artifacts.arn]
+  }
+
+  # STS does not support resource scoping for GetWebIdentityToken. Audience and
+  # duration conditions constrain the otherwise unavoidable wildcard.
+  statement {
+    sid       = "OpenAiWorkloadIdentity"
+    actions   = ["sts:GetWebIdentityToken"]
+    resources = ["*"]
+
+    condition {
+      test     = "ForAllValues:StringEquals"
+      variable = "sts:IdentityTokenAudience"
+      values   = ["https://api.openai.com/v1"]
+    }
+
+    condition {
+      test     = "NumericLessThanEquals"
+      variable = "sts:DurationSeconds"
+      values   = ["300"]
+    }
+  }
+}
+
+resource "aws_iam_role_policy" "migration_agent_task" {
+  name   = "bounded-migration-agent-runtime"
+  role   = aws_iam_role.migration_agent_task.id
+  policy = data.aws_iam_policy_document.migration_agent_task.json
 }
 
 data "aws_iam_policy_document" "source_fetcher_execution" {

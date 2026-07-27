@@ -205,3 +205,23 @@ variable "impact_analysis_openai_service_account_id" {
   description = "Dedicated OpenAI service account ID for impact analysis; not a secret."
   type        = string
 }
+
+variable "migration_agent_image_digest" {
+  description = "Immutable sha256 digest of the reviewed Stage 5 migration-agent image."
+  type        = string
+
+  validation {
+    condition     = can(regex("^sha256:[a-f0-9]{64}$", var.migration_agent_image_digest))
+    error_message = "migration_agent_image_digest must be an immutable sha256 digest."
+  }
+}
+
+variable "migration_agent_openai_identity_provider_id" {
+  description = "Dedicated OpenAI WIF provider ID for the Stage 5 migration-agent workload."
+  type        = string
+}
+
+variable "migration_agent_openai_service_account_id" {
+  description = "Dedicated OpenAI service account ID for the Stage 5 migration agent; not a secret."
+  type        = string
+}

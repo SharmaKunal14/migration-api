@@ -1037,9 +1037,9 @@ function MigrationCandidatePage(): React.JSX.Element {
       />
       <p className="fine-print stage-boundary">
         Approval creates a durable authorization record and queues one migration run.
-        Stage 4 dispatches and audits the control workflow, but repository acquisition,
-        code execution, file mutation, and pull-request creation remain unavailable
-        until later stages.
+        Stage 5 acquires the approved snapshot and may produce a policy-validated patch
+        artifact. It does not execute repository code, write to GitHub, create a branch,
+        or open a pull request.
       </p>
     </div>
   );
@@ -1120,7 +1120,7 @@ function MigrationApprovalPanel({
         <h2>Migration run queued</h2>
         <p>
           Approval <code>{result.approval.id}</code> is immutable. Run{' '}
-          <code>{result.run.id}</code> has entered the durable Stage 4 workflow.
+          <code>{result.run.id}</code> has entered the durable migration workflow.
         </p>
         <Link
           className="primary-button"
@@ -1615,6 +1615,9 @@ function migrationRunEventLabel(
     run_failed: 'Run stopped',
     run_stale: 'Approval became stale',
     run_completed: 'Run completed',
+    plan_created: 'Migration plan created',
+    patch_proposed: 'Patch proposed',
+    patch_validated: 'Patch validated',
   };
   return labels[eventType];
 }

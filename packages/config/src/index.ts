@@ -76,6 +76,7 @@ export const dispatcherConfigSchema = commonSchema.extend({
 
 export const workflowControlConfigSchema = commonSchema.extend({
   ARTIFACT_BUCKET: nonEmpty,
+  ARTIFACT_KMS_KEY_ARN: awsArn,
   DATABASE_SECRET_ARN: awsArn,
 });
 
@@ -89,6 +90,22 @@ export const agentConfigSchema = commonSchema.extend({
   OPENAI_SERVICE_ACCOUNT_ID: nonEmpty,
   OPENAI_WIF_AUDIENCE: z.literal('https://api.openai.com/v1'),
   ORGANISATION_ID: z.uuid(),
+});
+
+export const migrationAgentConfigSchema = commonSchema.extend({
+  ARTIFACT_BUCKET: nonEmpty,
+  ARTIFACT_KMS_KEY_ARN: awsArn,
+  INPUT_DIGEST: z.string().regex(/^[a-f0-9]{64}$/u),
+  INPUT_OBJECT_KEY: z.string().min(1).max(1_024),
+  MIGRATION_RUN_ID: z.uuid(),
+  OPENAI_IDENTITY_PROVIDER_ID: nonEmpty,
+  OPENAI_MODEL: nonEmpty.default('gpt-5.6-sol'),
+  OPENAI_PROJECT_ALIAS: z.string().regex(/^[a-z][a-z0-9-]{1,62}$/u),
+  OPENAI_SERVICE_ACCOUNT_ID: nonEmpty,
+  OPENAI_WIF_AUDIENCE: z.literal('https://api.openai.com/v1'),
+  ORGANISATION_ID: z.uuid(),
+  REPOSITORY_ID: z.uuid(),
+  RESULT_OBJECT_KEY: z.string().min(1).max(1_024),
 });
 
 export const migratorConfigSchema = commonSchema.extend({
@@ -195,6 +212,7 @@ export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type DispatcherConfig = z.infer<typeof dispatcherConfigSchema>;
 export type WorkflowControlConfig = z.infer<typeof workflowControlConfigSchema>;
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
+export type MigrationAgentConfig = z.infer<typeof migrationAgentConfigSchema>;
 export type MigratorConfig = z.infer<typeof migratorConfigSchema>;
 export type GithubWebhookConfig = z.infer<typeof githubWebhookConfigSchema>;
 export type GithubTokenBrokerConfig = z.infer<typeof githubTokenBrokerConfigSchema>;

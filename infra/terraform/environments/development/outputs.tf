@@ -87,6 +87,14 @@ output "impact_analysis_agent_ecr_repository_url" {
   value = data.aws_ecr_repository.impact_analysis_agent.repository_url
 }
 
+output "migration_agent_ecr_repository_url" {
+  value = data.aws_ecr_repository.migration_agent.repository_url
+}
+
+output "migration_agent_task_definition_arn" {
+  value = aws_ecs_task_definition.migration_agent.arn
+}
+
 output "impact_analysis_task_definition_arn" {
   value = aws_ecs_task_definition.impact_analysis_agent.arn
 }

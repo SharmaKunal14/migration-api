@@ -125,6 +125,11 @@ export class RepositoryTools {
     }
   }
 
+  public readTextFile(path: string): string | undefined {
+    const parsed = repositoryPath.safeParse(path);
+    return parsed.success ? this.files.get(parsed.data) : undefined;
+  }
+
   private executeValidated(
     name: string,
     rawArguments: string,
@@ -268,8 +273,13 @@ export class RepositoryTools {
               !body.includes(0) &&
               storedBytes + body.byteLength <= MAX_STORED_TEXT_BYTES
             ) {
-              this.files.set(path, body.toString('utf8'));
-              storedBytes += body.byteLength;
+              try {
+                const text = new TextDecoder('utf-8', { fatal: true }).decode(body);
+                this.files.set(path, text);
+                storedBytes += body.byteLength;
+              } catch {
+                // Invalid UTF-8 is treated as binary and never exposed to agents.
+              }
             }
           }
           next();

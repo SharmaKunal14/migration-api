@@ -233,3 +233,7 @@ data "aws_ecr_repository" "change_intelligence_agent" {
 data "aws_ecr_repository" "impact_analysis_agent" {
   name = "migration-api-development-impact-analysis-agent"
 }
+
+data "aws_ecr_repository" "migration_agent" {
+  name = "migration-api-development-migration-agent"
+}

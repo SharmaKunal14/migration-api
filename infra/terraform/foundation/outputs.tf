@@ -25,3 +25,7 @@ output "change_intelligence_agent_ecr_repository_url" {
 output "impact_analysis_agent_ecr_repository_url" {
   value = aws_ecr_repository.impact_analysis_agent.repository_url
 }
+
+output "migration_agent_ecr_repository_url" {
+  value = aws_ecr_repository.migration_agent.repository_url
+}
