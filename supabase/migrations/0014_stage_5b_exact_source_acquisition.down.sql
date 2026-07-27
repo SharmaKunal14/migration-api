@@ -55,7 +55,7 @@ alter table migration_artifacts
       and bytes between 1 and 10485760
     )
   ),
-  add constraint migration_artifacts_check1 check (
+  add constraint migration_artifacts_media_type_check check (
     (artifact_type = 'patch_proposal' and media_type = 'text/x-diff')
     or (
       artifact_type <> 'patch_proposal'

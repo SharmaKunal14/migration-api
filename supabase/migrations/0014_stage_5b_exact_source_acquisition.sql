@@ -1,9 +1,78 @@
 begin;
 
-alter table migration_artifacts
-  drop constraint migration_artifacts_artifact_type_check,
-  drop constraint migration_artifacts_bytes_check,
-  drop constraint migration_artifacts_check1;
+do $$
+declare
+  constraint_name text;
+begin
+  select constraint_definition.conname
+  into constraint_name
+  from pg_constraint as constraint_definition
+  where constraint_definition.conrelid = 'migration_artifacts'::regclass
+    and constraint_definition.contype = 'c'
+    and position(
+      'agent_checkpoint'
+      in pg_get_constraintdef(constraint_definition.oid)
+    ) > 0
+    and position(
+      'media_type'
+      in pg_get_constraintdef(constraint_definition.oid)
+    ) = 0
+    and position(
+      'bytes'
+      in pg_get_constraintdef(constraint_definition.oid)
+    ) = 0;
+
+  if constraint_name is null then
+    raise exception
+      'Stage 5B could not identify the migration artifact type constraint';
+  end if;
+
+  execute format(
+    'alter table migration_artifacts drop constraint %I',
+    constraint_name
+  );
+
+  select constraint_definition.conname
+  into constraint_name
+  from pg_constraint as constraint_definition
+  where constraint_definition.conrelid = 'migration_artifacts'::regclass
+    and constraint_definition.contype = 'c'
+    and position(
+      'bytes'
+      in pg_get_constraintdef(constraint_definition.oid)
+    ) > 0;
+
+  if constraint_name is null then
+    raise exception
+      'Stage 5B could not identify the migration artifact size constraint';
+  end if;
+
+  execute format(
+    'alter table migration_artifacts drop constraint %I',
+    constraint_name
+  );
+
+  select constraint_definition.conname
+  into constraint_name
+  from pg_constraint as constraint_definition
+  where constraint_definition.conrelid = 'migration_artifacts'::regclass
+    and constraint_definition.contype = 'c'
+    and position(
+      'media_type'
+      in pg_get_constraintdef(constraint_definition.oid)
+    ) > 0;
+
+  if constraint_name is null then
+    raise exception
+      'Stage 5B could not identify the migration artifact media type constraint';
+  end if;
+
+  execute format(
+    'alter table migration_artifacts drop constraint %I',
+    constraint_name
+  );
+end
+$$;
 
 alter table migration_artifacts
   add constraint migration_artifacts_artifact_type_check check (
