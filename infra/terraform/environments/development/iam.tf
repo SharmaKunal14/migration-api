@@ -280,6 +280,12 @@ data "aws_iam_policy_document" "workflow_artifacts" {
   }
 
   statement {
+    sid       = "ReadWriteVerifierResults"
+    actions   = ["s3:GetObject", "s3:PutObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/org/*/run/*/verification/*"]
+  }
+
+  statement {
     sid = "MigrationControlArtifactEncryption"
     actions = [
       "kms:Decrypt",

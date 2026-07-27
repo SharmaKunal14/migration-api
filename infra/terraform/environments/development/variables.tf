@@ -226,6 +226,17 @@ variable "verifier_image_digest" {
   }
 }
 
+variable "verifier_registry_url" {
+  description = "Credential-free HTTPS npm registry endpoint approved for the isolated verifier."
+  type        = string
+  default     = "https://registry.npmjs.org/"
+
+  validation {
+    condition     = var.verifier_registry_url == "https://registry.npmjs.org/"
+    error_message = "verifier_registry_url must match the registry.npmjs.org Network Firewall allowlist."
+  }
+}
+
 variable "migration_agent_openai_identity_provider_id" {
   description = "Dedicated OpenAI WIF provider ID for the Stage 5 migration-agent workload."
   type        = string

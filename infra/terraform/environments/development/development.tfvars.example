@@ -35,5 +35,6 @@ impact_analysis_openai_identity_provider_id = "replace-with-dedicated-impact-ana
 impact_analysis_openai_service_account_id = "replace-with-dedicated-impact-analysis-service-account-id"
 migration_agent_image_digest = "sha256:replace-with-64-lowercase-hex-characters"
 verifier_image_digest        = "sha256:replace-with-64-lowercase-hex-characters"
+verifier_registry_url        = "https://registry.npmjs.org/"
 migration_agent_openai_identity_provider_id = "replace-with-dedicated-migration-agent-provider-id"
 migration_agent_openai_service_account_id = "replace-with-dedicated-migration-agent-service-account-id"

@@ -70,12 +70,13 @@ describe('Stage 6B verifier trust zone', () => {
     expect(policy).not.toContain('sts:GetWebIdentityToken');
   });
 
-  it('has no internet route and permits TLS only to private AWS endpoints', () => {
+  it('routes external TLS through the firewall and permits only the approved registry', () => {
     expect(network).toContain('resource "aws_route_table" "verifier"');
+    expect(network).toContain('resource "aws_route" "verifier_default"');
     expect(network).toContain(
       '[for route_table in aws_route_table.verifier : route_table.id]',
     );
-    expect(network).not.toContain('resource "aws_route" "verifier_default"');
+    expect(network).toContain('content:"registry.npmjs.org"');
 
     const securityGroup = resourceBody(
       network,
@@ -90,12 +91,13 @@ describe('Stage 6B verifier trust zone', () => {
     expect(securityGroup).toContain(
       'prefix_list_ids = [aws_vpc_endpoint.s3.prefix_list_id]',
     );
-    expect(securityGroup).not.toContain('0.0.0.0/0');
+    expect(securityGroup).toContain(
+      'description = "TLS through Network Firewall to the approved npm registry"',
+    );
   });
 
-  it('is fail-closed and is not yet reachable from a workflow', () => {
-    expect(verifier).toContain('MIGRATION_VERIFICATION_NOT_IMPLEMENTED');
-    expect(verifier).toContain('process.exitCode = 78');
-    expect(compute).not.toContain('aws_ecs_task_definition.verifier.arn');
+  it('is fail-closed when its signed work item is absent', () => {
+    expect(verifier).toContain("requiredEnvironment('VERIFICATION_WORK_ITEM')");
+    expect(verifier).toContain('VERIFICATION_INFRASTRUCTURE_FAILED');
   });
 });

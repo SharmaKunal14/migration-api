@@ -107,6 +107,27 @@ describe('Stage 6D verification runtime', () => {
     });
   });
 
+  it('rejects Git and other non-registry dependency sources as unavailable', async () => {
+    const fixture = await npmProject({ typecheck: 'tsc' });
+    await writeFile(
+      join(fixture.repositoryPath, 'package-lock.json'),
+      JSON.stringify({
+        name: 'fixture',
+        lockfileVersion: 3,
+        packages: {
+          '': { name: 'fixture' },
+          'node_modules/sdk': {
+            resolved: 'git+https://github.com/example/sdk.git#commit',
+          },
+        },
+      }),
+    );
+    await expect(runVerificationProfiles(baseInput(fixture))).resolves.toMatchObject({
+      outcome: 'unavailable',
+      safeErrorCode: 'VERIFICATION_DEPENDENCY_SOURCE_UNSUPPORTED',
+    });
+  });
+
   it('stops after dependency installation fails', async () => {
     const fixture = await npmProject({ typecheck: 'tsc' });
     let calls = 0;

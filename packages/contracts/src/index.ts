@@ -1598,6 +1598,11 @@ export const migrationVerificationPreparedInputSchema = z
         artifactId: uuidSchema,
         objectKey: z.string().min(1).max(1_024),
         digest: sha256Schema,
+        bytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(256 * 1024 * 1024),
       })
       .strict(),
     patch: z
@@ -1605,6 +1610,11 @@ export const migrationVerificationPreparedInputSchema = z
         artifactId: uuidSchema,
         objectKey: z.string().min(1).max(1_024),
         digest: sha256Schema,
+        bytes: z
+          .number()
+          .int()
+          .min(1)
+          .max(1024 * 1024),
         validationArtifactId: uuidSchema,
         validationObjectKey: z.string().min(1).max(1_024),
         validationDigest: sha256Schema,
@@ -1619,6 +1629,28 @@ export const migrationVerificationPreparedInputSchema = z
       .strict(),
   })
   .strict();
+
+export const migrationVerificationWorkItemSchema =
+  migrationVerificationPreparedInputSchema.extend({
+    transfers: z
+      .object({
+        snapshotDownloadUrl: z.url().max(4_096),
+        patchDownloadUrl: z.url().max(4_096),
+        resultUploadUrl: z.url().max(4_096),
+        stdoutUploadUrl: z.url().max(4_096),
+        stderrUploadUrl: z.url().max(4_096),
+        resultObjectKey: z.string().min(1).max(1_024),
+        stdoutObjectKey: z.string().min(1).max(1_024),
+        stderrObjectKey: z.string().min(1).max(1_024),
+        artifactBucket: z.string().min(3).max(63),
+        artifactKmsKeyArn: z
+          .string()
+          .regex(/^arn:aws[a-zA-Z-]*:kms:[^:]+:\d{12}:key\/[A-Za-z0-9-]+$/u),
+        awsRegion: z.string().regex(/^[a-z]{2}(?:-gov)?-[a-z]+-\d$/u),
+        approvedRegistryUrl: z.url().max(2_048),
+      })
+      .strict(),
+  });
 
 const verificationCommandResultSchema = z
   .object({
@@ -2030,6 +2062,9 @@ export type VerificationTerminalOutcome = z.infer<
 >;
 export type MigrationVerificationPreparedInput = z.infer<
   typeof migrationVerificationPreparedInputSchema
+>;
+export type MigrationVerificationWorkItem = z.infer<
+  typeof migrationVerificationWorkItemSchema
 >;
 export type MigrationVerificationResult = z.infer<
   typeof migrationVerificationResultSchema

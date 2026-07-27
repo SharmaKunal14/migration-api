@@ -7,6 +7,7 @@ import {
   S3Client,
   S3ServiceException,
 } from '@aws-sdk/client-s3';
+import { getSignedUrl } from '@aws-sdk/s3-request-presigner';
 import type { Context } from 'aws-lambda';
 import { z } from 'zod';
 
@@ -20,6 +21,8 @@ import {
   migrationAcquisitionResultSchema,
   migrationSpecificationSchema,
   migrationVerificationPreparedInputSchema,
+  migrationVerificationResultSchema,
+  migrationVerificationWorkItemSchema,
   migrationWorkflowInputSchema,
   workflowInputSchema,
   type AgentResultEnvelope,
@@ -27,6 +30,7 @@ import {
   type MigrationAgentPreparedInput,
   type MigrationAgentResult,
   type MigrationVerificationPreparedInput,
+  type MigrationVerificationWorkItem,
   type MigrationWorkflowInput,
 } from '@migration/contracts';
 import {
@@ -149,6 +153,13 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
     .object({
       operation: z.literal('prepare_migration_verification'),
       workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('ingest_migration_verification'),
+      workflow: migrationWorkflowInputSchema,
+      prepared: migrationVerificationWorkItemSchema,
     })
     .strict(),
   z
@@ -293,10 +304,7 @@ export async function handleWorkflowCommand(
     return { status, stage: 'patching' };
   }
   if (command.operation === 'prepare_migration_verification') {
-    const prepared = await prepareMigrationVerification(
-      dependency.database,
-      command.workflow,
-    );
+    const prepared = await prepareMigrationVerification(dependency, command.workflow);
     writeLog('info', {
       event: 'migration_verification_prepared',
       requestId,
@@ -309,6 +317,22 @@ export async function handleWorkflowCommand(
         : {}),
     });
     return prepared;
+  }
+  if (command.operation === 'ingest_migration_verification') {
+    const status = await ingestMigrationVerification(
+      dependency,
+      command.workflow,
+      command.prepared,
+    );
+    writeLog(status === 'completed' ? 'info' : 'warn', {
+      event: 'migration_verification_ingested',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      outcome: status,
+    });
+    return { status, stage: 'verifying' };
   }
   if (command.operation === 'evaluate_migration_stage_capability') {
     const status = await evaluateMigrationStageCapability(
@@ -1662,6 +1686,18 @@ async function ingestMigrationPatch(
 }
 
 async function prepareMigrationVerification(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+): Promise<MigrationVerificationWorkItem | { readonly status: 'cancelled' | 'stale' }> {
+  const prepared = await prepareMigrationVerificationRecord(
+    dependency.database,
+    workflow,
+  );
+  if (prepared.status !== 'ready') return prepared;
+  return createVerificationWorkItem(dependency, prepared);
+}
+
+async function prepareMigrationVerificationRecord(
   database: AppDatabase,
   workflow: MigrationWorkflowInput,
 ): Promise<
@@ -1714,10 +1750,12 @@ async function prepareMigrationVerification(
         'snapshot.id as snapshotArtifactId',
         'snapshot.objectKey as snapshotObjectKey',
         'snapshot.digest as snapshotDigest',
+        'snapshot.bytes as snapshotBytes',
         'patch.id as patchAttemptId',
         'patch.attemptNumber as patchAttemptNumber',
         'patch.patchArtifactId',
         'patchArtifact.objectKey as patchObjectKey',
+        'patchArtifact.bytes as patchBytes',
         'patch.patchDigest',
         'patch.validationArtifactId as patchValidationArtifactId',
         'patchValidation.objectKey as patchValidationObjectKey',
@@ -1818,11 +1856,13 @@ async function prepareMigrationVerification(
         artifactId: source.snapshotArtifactId,
         objectKey: source.snapshotObjectKey,
         digest: source.snapshotDigest,
+        bytes: Number(source.snapshotBytes),
       },
       patch: {
         artifactId: source.patchArtifactId,
         objectKey: source.patchObjectKey,
         digest: source.patchDigest,
+        bytes: Number(source.patchBytes),
         validationArtifactId: source.patchValidationArtifactId,
         validationObjectKey: source.patchValidationObjectKey,
         validationDigest: source.patchValidationDigest,
@@ -1833,6 +1873,272 @@ async function prepareMigrationVerification(
         verificationProfileDigest: source.verificationProfileDigest,
       },
     });
+  });
+}
+
+async function createVerificationWorkItem(
+  dependency: WorkflowDependencies,
+  prepared: MigrationVerificationPreparedInput,
+): Promise<MigrationVerificationWorkItem> {
+  const prefix = `env/${dependency.config.APP_ENVIRONMENT}/org/${prepared.organisationId}/run/${prepared.migrationRunId}/verification/attempt-${String(prepared.attemptNumber)}`;
+  const resultObjectKey = `${prefix}/result.json`;
+  const stdoutObjectKey = `${prefix}/stdout.log`;
+  const stderrObjectKey = `${prefix}/stderr.log`;
+  const expiresIn = 15 * 60;
+  const [
+    snapshotDownloadUrl,
+    patchDownloadUrl,
+    resultUploadUrl,
+    stdoutUploadUrl,
+    stderrUploadUrl,
+  ] = await Promise.all([
+    getSignedUrl(
+      dependency.s3,
+      new GetObjectCommand({
+        Bucket: dependency.config.ARTIFACT_BUCKET,
+        Key: prepared.snapshot.objectKey,
+      }),
+      { expiresIn },
+    ),
+    getSignedUrl(
+      dependency.s3,
+      new GetObjectCommand({
+        Bucket: dependency.config.ARTIFACT_BUCKET,
+        Key: prepared.patch.objectKey,
+      }),
+      { expiresIn },
+    ),
+    ...[resultObjectKey, stdoutObjectKey, stderrObjectKey].map(key =>
+      getSignedUrl(
+        dependency.s3,
+        new PutObjectCommand({
+          Bucket: dependency.config.ARTIFACT_BUCKET,
+          Key: key,
+          ServerSideEncryption: 'aws:kms',
+          SSEKMSKeyId: dependency.config.ARTIFACT_KMS_KEY_ARN,
+          IfNoneMatch: '*',
+        }),
+        { expiresIn },
+      ),
+    ),
+  ]);
+  return migrationVerificationWorkItemSchema.parse({
+    ...prepared,
+    transfers: {
+      snapshotDownloadUrl,
+      patchDownloadUrl,
+      resultUploadUrl,
+      stdoutUploadUrl,
+      stderrUploadUrl,
+      resultObjectKey,
+      stdoutObjectKey,
+      stderrObjectKey,
+      artifactBucket: dependency.config.ARTIFACT_BUCKET,
+      artifactKmsKeyArn: dependency.config.ARTIFACT_KMS_KEY_ARN,
+      awsRegion: dependency.config.AWS_REGION,
+      approvedRegistryUrl: dependency.config.VERIFIER_REGISTRY_URL,
+    },
+  });
+}
+
+async function ingestMigrationVerification(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+  prepared: MigrationVerificationWorkItem,
+): Promise<'completed' | 'failed' | 'cancelled'> {
+  if (
+    prepared.organisationId !== workflow.organisationId ||
+    prepared.repositoryId !== workflow.repositoryId ||
+    prepared.migrationRunId !== workflow.migrationRunId ||
+    prepared.attemptNumber !== workflow.expectedAttempt
+  ) {
+    throw new Error('The verification result has invalid ownership.');
+  }
+  const resultBytes = await readBoundedArtifact(
+    dependency,
+    prepared.transfers.resultObjectKey,
+    MAX_RESULT_BYTES,
+  );
+  const result = migrationVerificationResultSchema.parse(
+    JSON.parse(resultBytes.toString('utf8')),
+  );
+  if (
+    result.organisationId !== prepared.organisationId ||
+    result.repositoryId !== prepared.repositoryId ||
+    result.migrationRunId !== prepared.migrationRunId ||
+    result.approvalId !== prepared.approvalId ||
+    result.verificationAttemptId !== prepared.verificationAttemptId ||
+    result.patchAttemptId !== prepared.patchAttemptId ||
+    result.baseCommitSha !== prepared.baseCommitSha ||
+    result.snapshotDigest !== prepared.snapshot.digest ||
+    result.patchDigest !== prepared.patch.digest ||
+    result.patchValidationDigest !== prepared.patch.validationDigest ||
+    result.verificationPolicyVersion !== prepared.authority.verificationPolicyVersion ||
+    result.verificationProfileDigest !== prepared.authority.verificationProfileDigest
+  ) {
+    throw new Error('The verification result binding is invalid.');
+  }
+  for (const [reference, expectedKey] of [
+    [result.artifacts.stdout, prepared.transfers.stdoutObjectKey],
+    [result.artifacts.stderr, prepared.transfers.stderrObjectKey],
+  ] as const) {
+    if (reference !== null && reference.objectKey !== expectedKey) {
+      throw new Error('The verification log artifact binding is invalid.');
+    }
+  }
+  await Promise.all(
+    [result.artifacts.stdout, result.artifacts.stderr]
+      .filter(reference => reference !== null)
+      .map(async reference => {
+        const bytes = await readBoundedArtifact(
+          dependency,
+          reference.objectKey,
+          1024 * 1024,
+        );
+        if (
+          bytes.byteLength !== reference.bytes ||
+          sha256(bytes) !== reference.digest
+        ) {
+          throw new Error('The verification log artifact digest is invalid.');
+        }
+      }),
+  );
+  return dependency.database.transaction().execute(async transaction => {
+    const run = await lockedMigrationRun(transaction, workflow);
+    if (run.status === 'cancelled') return 'cancelled';
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return 'cancelled';
+    }
+    if (run.status !== 'running' || run.currentStage !== 'verifying') {
+      throw new Error('The migration run cannot ingest verification.');
+    }
+    const existing = await transaction
+      .selectFrom('verificationAttemptResults')
+      .select(['outcome'])
+      .where('verificationAttemptId', '=', prepared.verificationAttemptId)
+      .where('organisationId', '=', workflow.organisationId)
+      .where('migrationRunId', '=', workflow.migrationRunId)
+      .executeTakeFirst();
+    if (existing !== undefined) {
+      return existing.outcome === 'passed' ? 'completed' : 'failed';
+    }
+    const now = new Date();
+    const resultArtifactId = randomUUID();
+    const resultDigest = sha256(resultBytes);
+    await insertMigrationArtifact(transaction, {
+      id: resultArtifactId,
+      workflow,
+      artifactType: 'verification_result',
+      objectKey: prepared.transfers.resultObjectKey,
+      digest: resultDigest,
+      bytes: resultBytes.byteLength,
+      mediaType: 'application/json',
+      createdAt: now,
+    });
+    const stdoutArtifactId = result.artifacts.stdout === null ? null : randomUUID();
+    const stderrArtifactId = result.artifacts.stderr === null ? null : randomUUID();
+    if (result.artifacts.stdout !== null && stdoutArtifactId !== null) {
+      await insertMigrationArtifact(transaction, {
+        id: stdoutArtifactId,
+        workflow,
+        artifactType: 'verification_stdout',
+        objectKey: result.artifacts.stdout.objectKey,
+        digest: result.artifacts.stdout.digest,
+        bytes: result.artifacts.stdout.bytes,
+        mediaType: 'text/plain',
+        createdAt: now,
+      });
+    }
+    if (result.artifacts.stderr !== null && stderrArtifactId !== null) {
+      await insertMigrationArtifact(transaction, {
+        id: stderrArtifactId,
+        workflow,
+        artifactType: 'verification_stderr',
+        objectKey: result.artifacts.stderr.objectKey,
+        digest: result.artifacts.stderr.digest,
+        bytes: result.artifacts.stderr.bytes,
+        mediaType: 'text/plain',
+        createdAt: now,
+      });
+    }
+    await transaction
+      .insertInto('verificationAttemptResults')
+      .values({
+        id: randomUUID(),
+        organisationId: workflow.organisationId,
+        migrationRunId: workflow.migrationRunId,
+        verificationAttemptId: prepared.verificationAttemptId,
+        outcome: result.outcome,
+        safeErrorCode: result.safeErrorCode,
+        resultArtifactId,
+        resultDigest,
+        stdoutArtifactId,
+        stdoutDigest: result.artifacts.stdout?.digest ?? null,
+        stderrArtifactId,
+        stderrDigest: result.artifacts.stderr?.digest ?? null,
+        startedAt: new Date(result.startedAt),
+        completedAt: new Date(result.completedAt),
+        createdAt: now,
+      })
+      .executeTakeFirstOrThrow();
+    if (result.outcome === 'passed') {
+      await transaction
+        .updateTable('migrationRuns')
+        .set({
+          currentStage: 'publishing',
+          version: run.version + 1,
+          updatedAt: now,
+        })
+        .where('id', '=', workflow.migrationRunId)
+        .where('organisationId', '=', workflow.organisationId)
+        .where('version', '=', run.version)
+        .executeTakeFirstOrThrow();
+      await appendMigrationRunEvent(transaction, {
+        workflow,
+        eventKey: `run:${workflow.migrationRunId}:verification-completed:${String(prepared.attemptNumber)}`,
+        eventType: 'verification_completed',
+        status: 'running',
+        stage: 'verifying',
+        safeErrorCode: null,
+        createdAt: now,
+      });
+      await appendMigrationRunEvent(transaction, {
+        workflow,
+        eventKey: `run:${workflow.migrationRunId}:stage:publishing:${String(prepared.attemptNumber)}`,
+        eventType: 'stage_entered',
+        status: 'running',
+        stage: 'publishing',
+        safeErrorCode: null,
+        createdAt: now,
+      });
+      return 'completed';
+    }
+    await transaction
+      .updateTable('migrationRuns')
+      .set({
+        status: 'failed',
+        currentStage: 'failed',
+        terminalResult: 'failed',
+        safeErrorCode: 'MIGRATION_VERIFICATION_FAILED',
+        completedAt: now,
+        version: run.version + 1,
+        updatedAt: now,
+      })
+      .where('id', '=', workflow.migrationRunId)
+      .where('organisationId', '=', workflow.organisationId)
+      .where('version', '=', run.version)
+      .executeTakeFirstOrThrow();
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:failed:verification:${String(prepared.attemptNumber)}`,
+      eventType: 'run_failed',
+      status: 'failed',
+      stage: 'failed',
+      safeErrorCode: 'MIGRATION_VERIFICATION_FAILED',
+      createdAt: now,
+    });
+    return 'failed';
   });
 }
 
@@ -1926,7 +2232,10 @@ interface NewMigrationArtifact {
     | 'migration_plan'
     | 'patch_proposal'
     | 'patch_manifest'
-    | 'patch_validation';
+    | 'patch_validation'
+    | 'verification_result'
+    | 'verification_stdout'
+    | 'verification_stderr';
   readonly objectKey: string;
   readonly digest: string;
   readonly bytes: number;
@@ -2285,6 +2594,7 @@ interface SystemMigrationRunEvent {
     | 'patch_proposed'
     | 'patch_validated'
     | 'verification_prepared'
+    | 'verification_completed'
     | 'run_cancelled'
     | 'run_failed'
     | 'run_stale';
@@ -2295,6 +2605,7 @@ interface SystemMigrationRunEvent {
     | 'planning'
     | 'patching'
     | 'verifying'
+    | 'publishing'
     | 'failed'
     | 'cancelled'
     | 'stale';

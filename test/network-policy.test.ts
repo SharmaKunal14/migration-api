@@ -11,7 +11,7 @@ const networkConfiguration = readFileSync(
 );
 
 describe('workload outbound network policy', () => {
-  it('separates agent OpenAI egress from source-fetcher GitHub egress', () => {
+  it('separates agent, source-fetcher, and verifier domain allowlists', () => {
     const rules = /rules_string = <<-RULES(?<rules>[\s\S]*?)\n\s*RULES/u.exec(
       networkConfiguration,
     )?.groups?.rules;
@@ -26,6 +26,7 @@ describe('workload outbound network policy', () => {
       'auth.openai.com',
       'api.github.com',
       'codeload.github.com',
+      'registry.npmjs.org',
     ]);
     const ruleLines = rules!.split('\n');
     expect(
@@ -37,6 +38,11 @@ describe('workload outbound network policy', () => {
       ruleLines
         .filter(line => line.includes('github.com'))
         .every(line => line.includes('aws_subnet.source_fetcher')),
+    ).toBe(true);
+    expect(
+      ruleLines
+        .filter(line => line.includes('registry.npmjs.org'))
+        .every(line => line.includes('aws_subnet.verifier')),
     ).toBe(true);
     expect(rules).not.toContain('drop ip $HOME_NET');
     expect(networkConfiguration).toContain(

@@ -33,11 +33,13 @@ const prepared = {
     artifactId: snapshotArtifactId,
     objectKey: `env/development/org/${organisationId}/run/${migrationRunId}/input/source/snapshot.tar.gz`,
     digest: 'b'.repeat(64),
+    bytes: 1_024,
   },
   patch: {
     artifactId: patchArtifactId,
     objectKey: `env/development/org/${organisationId}/run/${migrationRunId}/agent/proposal.diff`,
     digest: 'c'.repeat(64),
+    bytes: 512,
     validationArtifactId,
     validationObjectKey: `env/development/org/${organisationId}/run/${migrationRunId}/agent/patch-validation.json`,
     validationDigest: 'd'.repeat(64),
@@ -261,7 +263,7 @@ describe('Stage 6A verification control plane', () => {
     expect(rollback).toContain('drop table if exists verification_attempts');
   });
 
-  it('prepares exactly one attempt before retaining the closed verifier boundary', () => {
+  it('prepares exactly one immutable attempt before verifier execution', () => {
     const compute = read('infra/terraform/environments/development/compute.tf');
     const control = read('services/workflow-control/src/handler.ts');
     const verifierState = compute.slice(
@@ -271,11 +273,8 @@ describe('Stage 6A verification control plane', () => {
 
     expect(verifierState).toContain('operation    = "prepare_migration_verification"');
     expect(verifierState).toContain('EvaluateVerificationPreparation');
-    expect(verifierState).toContain('CheckVerifierCapability');
-    expect(verifierState).toContain(
-      'operation    = "evaluate_migration_stage_capability"',
-    );
-    expect(verifierState).not.toContain('ecs:runTask.sync');
+    expect(verifierState).toContain('RunVerifierTask');
+    expect(verifierState).toContain('ecs:runTask.sync');
     expect(control).toContain('async function prepareMigrationVerification(');
     expect(control).toContain(".where('patchAttemptId', '=', source.patchAttemptId)");
     expect(control).toContain("eventType: 'verification_prepared'");

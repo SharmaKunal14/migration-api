@@ -327,6 +327,28 @@ async function inspectNpmProject(repositoryPath: string): Promise<
         safeErrorCode: 'VERIFICATION_LOCKFILE_UNSUPPORTED',
       };
     }
+    const lockfilePackages = lockfile.packages;
+    if (
+      lockfilePackages === null ||
+      typeof lockfilePackages !== 'object' ||
+      Array.isArray(lockfilePackages) ||
+      Object.values(lockfilePackages).some(entry => {
+        if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+          return true;
+        }
+        const resolved = (entry as Record<string, unknown>).resolved;
+        return (
+          typeof resolved === 'string' &&
+          !resolved.startsWith('https://registry.npmjs.org/')
+        );
+      })
+    ) {
+      return {
+        status: 'terminal',
+        outcome: 'unavailable',
+        safeErrorCode: 'VERIFICATION_DEPENDENCY_SOURCE_UNSUPPORTED',
+      };
+    }
     const scriptsValue = packageJson.scripts;
     const scripts =
       scriptsValue !== null &&

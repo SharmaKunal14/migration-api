@@ -526,7 +526,7 @@ describe('Stage 5C, 5D, and 5E bounded migration planning and patch validation',
     expect(compute).toContain('operation    = "prepare_migration_agent"');
     expect(compute).toContain('operation    = "ingest_migration_plan"');
     expect(compute).toContain('operation    = "ingest_migration_patch"');
-    expect(compute).toContain('stage        = "verifying"');
+    expect(compute).toContain('operation    = "prepare_migration_verification"');
     expect(iam).toContain('ReadExactApprovedMigrationInputs');
     expect(iam).toContain('WriteMigrationAgentResult');
     expect(iam).not.toContain('migration-agent-github');

@@ -155,6 +155,7 @@ resource "aws_networkfirewall_rule_group" "openai_egress" {
         pass tls [${join(",", [for subnet in aws_subnet.agent : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"auth.openai.com"; nocase; startswith; endswith; sid:2; rev:1;)
         pass tls [${join(",", [for subnet in aws_subnet.source_fetcher : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"api.github.com"; nocase; startswith; endswith; sid:3; rev:1;)
         pass tls [${join(",", [for subnet in aws_subnet.source_fetcher : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"codeload.github.com"; nocase; startswith; endswith; sid:4; rev:1;)
+        pass tls [${join(",", [for subnet in aws_subnet.verifier : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"registry.npmjs.org"; nocase; startswith; endswith; sid:5; rev:1;)
       RULES
     }
   }
@@ -217,6 +218,13 @@ resource "aws_route" "public_source_fetcher_return" {
   vpc_endpoint_id        = local.firewall_endpoints[each.key]
 }
 
+resource "aws_route" "public_verifier_return" {
+  for_each               = aws_route_table.public
+  route_table_id         = each.value.id
+  destination_cidr_block = aws_subnet.verifier[each.key].cidr_block
+  vpc_endpoint_id        = local.firewall_endpoints[each.key]
+}
+
 resource "aws_route_table" "agent" {
   for_each = aws_subnet.agent
   vpc_id   = aws_vpc.main.id
@@ -255,12 +263,17 @@ resource "aws_route_table_association" "source_fetcher" {
   route_table_id = aws_route_table.source_fetcher[each.key].id
 }
 
-# The verifier route table deliberately has no default route. Repository code
-# can reach only explicitly attached private AWS endpoints.
 resource "aws_route_table" "verifier" {
   for_each = aws_subnet.verifier
   vpc_id   = aws_vpc.main.id
   tags     = { Name = "${local.name_prefix}-verifier-${each.key}" }
+}
+
+resource "aws_route" "verifier_default" {
+  for_each               = aws_route_table.verifier
+  route_table_id         = each.value.id
+  destination_cidr_block = "0.0.0.0/0"
+  vpc_endpoint_id        = local.firewall_endpoints[each.key]
 }
 
 resource "aws_route_table_association" "verifier" {
@@ -406,7 +419,7 @@ resource "aws_security_group" "vendor_fetcher" {
 
 resource "aws_security_group" "verifier" {
   name        = "${local.name_prefix}-verifier"
-  description = "Verifier egress to private AWS endpoints only"
+  description = "Verifier egress to private AWS endpoints and allowlisted registry"
   vpc_id      = aws_vpc.main.id
 
   egress {
@@ -423,6 +436,14 @@ resource "aws_security_group" "verifier" {
     from_port       = 443
     to_port         = 443
     prefix_list_ids = [aws_vpc_endpoint.s3.prefix_list_id]
+  }
+
+  egress {
+    description = "TLS through Network Firewall to the approved npm registry"
+    protocol    = "tcp"
+    from_port   = 443
+    to_port     = 443
+    cidr_blocks = ["0.0.0.0/0"]
   }
 }
 

@@ -78,6 +78,9 @@ export const workflowControlConfigSchema = commonSchema.extend({
   ARTIFACT_BUCKET: nonEmpty,
   ARTIFACT_KMS_KEY_ARN: awsArn,
   DATABASE_SECRET_ARN: awsArn,
+  VERIFIER_REGISTRY_URL: z
+    .literal('https://registry.npmjs.org/')
+    .default('https://registry.npmjs.org/'),
 });
 
 export const agentConfigSchema = commonSchema.extend({

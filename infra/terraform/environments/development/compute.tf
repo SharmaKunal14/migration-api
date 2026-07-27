@@ -571,11 +571,12 @@ resource "aws_lambda_function" "workflow_control" {
 
   environment {
     variables = {
-      APP_ENVIRONMENT      = "development"
-      ARTIFACT_BUCKET      = aws_s3_bucket.artifacts.bucket
-      ARTIFACT_KMS_KEY_ARN = aws_kms_key.artifacts.arn
-      DATABASE_SECRET_ARN  = var.database_secret_arn
-      NODE_OPTIONS         = "--enable-source-maps"
+      APP_ENVIRONMENT       = "development"
+      ARTIFACT_BUCKET       = aws_s3_bucket.artifacts.bucket
+      ARTIFACT_KMS_KEY_ARN  = aws_kms_key.artifacts.arn
+      DATABASE_SECRET_ARN   = var.database_secret_arn
+      VERIFIER_REGISTRY_URL = var.verifier_registry_url
+      NODE_OPTIONS          = "--enable-source-maps"
     }
   }
 
@@ -1062,7 +1063,8 @@ data "aws_iam_policy_document" "step_functions" {
       aws_ecs_task_definition.vendor_fetcher.arn,
       aws_ecs_task_definition.change_intelligence_agent.arn,
       aws_ecs_task_definition.impact_analysis_agent.arn,
-      aws_ecs_task_definition.migration_agent.arn
+      aws_ecs_task_definition.migration_agent.arn,
+      aws_ecs_task_definition.verifier.arn
     ]
 
     condition {
@@ -1093,7 +1095,8 @@ data "aws_iam_policy_document" "step_functions" {
       aws_iam_role.impact_analysis_execution.arn,
       aws_iam_role.impact_analysis_task.arn,
       aws_iam_role.migration_agent_execution.arn,
-      aws_iam_role.migration_agent_task.arn
+      aws_iam_role.migration_agent_task.arn,
+      aws_iam_role.verifier_execution.arn
     ]
   }
 
@@ -2112,7 +2115,7 @@ resource "aws_sfn_state_machine" "migration" {
           {
             Variable     = "$.boundary.Payload.status"
             StringEquals = "ready"
-            Next         = "CheckVerifierCapability"
+            Next         = "RunVerifierTask"
           },
           {
             Variable     = "$.boundary.Payload.status"
@@ -2127,15 +2130,54 @@ resource "aws_sfn_state_machine" "migration" {
         ]
         Default = "MarkInfrastructureFailure"
       }
-      CheckVerifierCapability = {
+      RunVerifierTask = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::ecs:runTask.sync"
+        TimeoutSeconds = 1200
+        Parameters = {
+          Cluster        = aws_ecs_cluster.agent.arn
+          TaskDefinition = aws_ecs_task_definition.verifier.arn
+          LaunchType     = "FARGATE"
+          NetworkConfiguration = {
+            AwsvpcConfiguration = {
+              AssignPublicIp = "DISABLED"
+              SecurityGroups = [aws_security_group.verifier.id]
+              Subnets        = [for subnet in aws_subnet.verifier : subnet.id]
+            }
+          }
+          Overrides = {
+            ContainerOverrides = [{
+              Name = "verifier"
+              Environment = [{
+                Name      = "VERIFICATION_WORK_ITEM"
+                "Value.$" = "States.JsonToString($.boundary.Payload)"
+              }]
+            }]
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["ECS.AmazonECSException", "ECS.ThrottlingException"]
+          IntervalSeconds = 5
+          BackoffRate     = 2
+          MaxAttempts     = 2
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "IngestVerification"
+      }
+      IngestVerification = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
           FunctionName = aws_lambda_function.workflow_control.arn
           Payload = {
-            operation    = "evaluate_migration_stage_capability"
-            stage        = "verifying"
+            operation    = "ingest_migration_verification"
             "workflow.$" = "$.workflow"
+            "prepared.$" = "$.boundary.Payload"
           }
         }
         ResultPath = "$.boundary"
@@ -2157,8 +2199,8 @@ resource "aws_sfn_state_machine" "migration" {
         Choices = [
           {
             Variable     = "$.boundary.Payload.status"
-            StringEquals = "unavailable"
-            Next         = "StopAtUnavailableBoundary"
+            StringEquals = "failed"
+            Next         = "SafeBoundaryReached"
           },
           {
             Variable     = "$.boundary.Payload.status"
