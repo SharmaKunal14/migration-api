@@ -49,6 +49,9 @@ describe('Stage 6F bounded repair and verification evidence', () => {
     );
     expect(migration).toContain("add column commands jsonb not null default '[]'");
     expect(migration).toContain('jsonb_array_length(commands) <= 20');
+    expect(control).toContain(
+      'commands: sql<unknown>`${JSON.stringify(result.commands)}::jsonb`',
+    );
     expect(rollback).toContain('drop column if exists commands');
   });
 });

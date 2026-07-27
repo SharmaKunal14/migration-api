@@ -45,7 +45,7 @@ import {
   type Database,
   type MigrationRunTable,
 } from '@migration/database';
-import type { Selectable, Transaction } from 'kysely';
+import { sql, type Selectable, type Transaction } from 'kysely';
 import type { TerminalCode } from '@migration/domain';
 import { writeLog } from '@migration/observability';
 
@@ -2302,7 +2302,7 @@ async function ingestMigrationVerification(
         verificationAttemptId: prepared.verificationAttemptId,
         outcome: result.outcome,
         safeErrorCode: result.safeErrorCode,
-        commands: result.commands,
+        commands: sql<unknown>`${JSON.stringify(result.commands)}::jsonb`,
         resultArtifactId,
         resultDigest,
         stdoutArtifactId,
