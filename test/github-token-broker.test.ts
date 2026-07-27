@@ -60,12 +60,25 @@ function dependencies(
       commitSha: 'a'.repeat(40),
       snapshotDigest: 'b'.repeat(64),
     }),
+  lookupPublicationRepositoryAccess: BrokerDependencies['lookupPublicationRepositoryAccess'] = (
+    _migrationRunId,
+    _repositoryId,
+  ) =>
+    Promise.resolve({
+      githubInstallationId: '12345',
+      githubRepositoryId: '67890',
+      owner: 'acme',
+      name: 'widgets',
+      defaultBranch: 'main',
+      baseCommitSha: 'a'.repeat(40),
+    }),
 ): BrokerDependencies {
   return {
     appId: '98765',
     privateKey,
     lookupRepositoryAccess,
     lookupMigrationRepositoryAccess,
+    lookupPublicationRepositoryAccess,
     lookupInstallationAccess,
     fetch: fetchImplementation,
     now: (): Date => new Date('2026-07-25T00:00:00.000Z'),
@@ -212,6 +225,99 @@ describe('GitHub token broker', () => {
       name: 'widgets',
       commitSha: 'a'.repeat(40),
       snapshotDigest: 'b'.repeat(64),
+    });
+  });
+
+  it('verifies write access and the live base without returning a token', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>((input, init) => {
+      const url = requestUrl(input);
+      if (url.endsWith('/app/installations/12345/access_tokens')) {
+        if (typeof init?.body !== 'string') {
+          throw new Error('Expected a serialized JSON request body.');
+        }
+        expect(JSON.parse(init.body)).toEqual({
+          repository_ids: [67890],
+          permissions: {
+            contents: 'write',
+            pull_requests: 'write',
+          },
+        });
+        return Promise.resolve(
+          new Response(
+            JSON.stringify({
+              token: 'github-publication-token-never-returned',
+              expires_at: '2026-07-25T01:00:00.000Z',
+            }),
+            { status: 201 },
+          ),
+        );
+      }
+      expect(url).toBe('https://api.github.com/repos/acme/widgets/git/ref/heads/main');
+      return Promise.resolve(
+        new Response(JSON.stringify({ object: { sha: 'a'.repeat(40) } }), {
+          status: 200,
+        }),
+      );
+    });
+    const lookupPublication = vi.fn(
+      (): ReturnType<BrokerDependencies['lookupPublicationRepositoryAccess']> =>
+        Promise.resolve({
+          githubInstallationId: '12345',
+          githubRepositoryId: '67890',
+          owner: 'acme',
+          name: 'widgets',
+          defaultBranch: 'main',
+          baseCommitSha: 'a'.repeat(40),
+        }),
+    );
+
+    const result = await handleBrokerCommand(
+      {
+        operation: 'verify_publication_access',
+        migrationRunId: '8955ed33-d1d8-4fdb-bd48-3a0835562934',
+        repositoryId,
+      },
+      'request-id',
+      dependencies(fetchMock, undefined, undefined, undefined, lookupPublication),
+    );
+
+    expect(lookupPublication).toHaveBeenCalledWith(
+      '8955ed33-d1d8-4fdb-bd48-3a0835562934',
+      repositoryId,
+    );
+    expect(result).toEqual({
+      status: 'ready',
+      githubRepositoryId: '67890',
+      owner: 'acme',
+      name: 'widgets',
+      baseBranch: 'main',
+      headCommitSha: 'a'.repeat(40),
+    });
+    expect(result).not.toHaveProperty('token');
+  });
+
+  it('returns a safe denial when GitHub rejects publication permissions', async () => {
+    const fetchMock = vi.fn<typeof globalThis.fetch>(() =>
+      Promise.resolve(
+        new Response(JSON.stringify({ message: 'Resource not accessible' }), {
+          status: 403,
+        }),
+      ),
+    );
+
+    const result = await handleBrokerCommand(
+      {
+        operation: 'verify_publication_access',
+        migrationRunId: '8955ed33-d1d8-4fdb-bd48-3a0835562934',
+        repositoryId,
+      },
+      'request-id',
+      dependencies(fetchMock),
+    );
+
+    expect(result).toEqual({
+      status: 'denied',
+      safeErrorCode: 'GITHUB_PUBLICATION_ACCESS_DENIED',
     });
   });
 

@@ -572,12 +572,13 @@ resource "aws_lambda_function" "workflow_control" {
 
   environment {
     variables = {
-      APP_ENVIRONMENT       = "development"
-      ARTIFACT_BUCKET       = aws_s3_bucket.artifacts.bucket
-      ARTIFACT_KMS_KEY_ARN  = aws_kms_key.artifacts.arn
-      DATABASE_SECRET_ARN   = var.database_secret_arn
-      VERIFIER_REGISTRY_URL = var.verifier_registry_url
-      NODE_OPTIONS          = "--enable-source-maps"
+      APP_ENVIRONMENT                   = "development"
+      ARTIFACT_BUCKET                   = aws_s3_bucket.artifacts.bucket
+      ARTIFACT_KMS_KEY_ARN              = aws_kms_key.artifacts.arn
+      DATABASE_SECRET_ARN               = var.database_secret_arn
+      GITHUB_TOKEN_BROKER_FUNCTION_NAME = aws_lambda_function.github_token_broker.function_name
+      VERIFIER_REGISTRY_URL             = var.verifier_registry_url
+      NODE_OPTIONS                      = "--enable-source-maps"
     }
   }
 
@@ -2458,8 +2459,7 @@ resource "aws_sfn_state_machine" "migration" {
         Parameters = {
           FunctionName = aws_lambda_function.workflow_control.arn
           Payload = {
-            operation    = "evaluate_migration_stage_capability"
-            stage        = "publishing"
+            operation    = "prepare_migration_publication"
             "workflow.$" = "$.workflow"
           }
         }
@@ -2489,6 +2489,16 @@ resource "aws_sfn_state_machine" "migration" {
             Variable     = "$.boundary.Payload.status"
             StringEquals = "cancelled"
             Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "stale"
+            Next         = "StaleApproval"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "failed"
+            Next         = "SafeBoundaryReached"
           },
           {
             Variable     = "$.boundary.Payload.status"

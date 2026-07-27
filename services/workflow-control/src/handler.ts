@@ -1,5 +1,6 @@
 import { createHash, randomUUID } from 'node:crypto';
 
+import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import {
   GetObjectCommand,
   HeadObjectCommand,
@@ -13,6 +14,7 @@ import { z } from 'zod';
 
 import {
   agentResultEnvelopeSchema,
+  githubPublicationAccessResultSchema,
   migrationAgentInputArtifactSchema,
   migrationAgentPreparedInputSchema,
   migrationAgentResultSchema,
@@ -24,6 +26,7 @@ import {
   migrationVerificationDispatchSchema,
   migrationVerificationResultSchema,
   migrationVerificationWorkItemSchema,
+  publicationAttemptBindingSchema,
   migrationWorkflowInputSchema,
   workflowInputSchema,
   type AgentResultEnvelope,
@@ -33,6 +36,8 @@ import {
   type MigrationVerificationPreparedInput,
   type MigrationVerificationDispatch,
   type MigrationWorkflowInput,
+  type GithubPublicationAccess,
+  type GithubPublicationAccessResult,
 } from '@migration/contracts';
 import {
   parseConfig,
@@ -171,6 +176,12 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
     .strict(),
   z
     .object({
+      operation: z.literal('prepare_migration_publication'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
       operation: z.literal('mark_migration_infrastructure_failed'),
       workflow: migrationWorkflowInputSchema,
     })
@@ -187,6 +198,7 @@ interface WorkflowDependencies {
   readonly config: WorkflowControlConfig;
   readonly database: AppDatabase;
   readonly s3: S3Client;
+  readonly lambda: LambdaClient;
 }
 
 let cachedDependencies: WorkflowDependencies | undefined;
@@ -200,6 +212,7 @@ async function dependencies(): Promise<WorkflowDependencies> {
     config,
     database: await createDatabase(config.AWS_REGION, config.DATABASE_SECRET_ARN),
     s3: new S3Client({ region: config.AWS_REGION }),
+    lambda: new LambdaClient({ region: config.AWS_REGION }),
   };
   return cachedDependencies;
 }
@@ -353,6 +366,21 @@ export async function handleWorkflowCommand(
       outcome: status,
     });
     return { status, stage: 'verifying' };
+  }
+  if (command.operation === 'prepare_migration_publication') {
+    const prepared = await prepareMigrationPublication(dependency, command.workflow);
+    writeLog(prepared.status === 'completed' ? 'info' : 'warn', {
+      event: 'migration_publication_prepared',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      outcome: prepared.status,
+      ...(prepared.status === 'completed'
+        ? { publicationAttemptId: prepared.publicationAttemptId }
+        : {}),
+    });
+    return prepared;
   }
   if (command.operation === 'evaluate_migration_stage_capability') {
     const status = await evaluateMigrationStageCapability(
@@ -2646,6 +2674,270 @@ function sameJson(left: unknown, right: unknown): boolean {
   return JSON.stringify(left) === JSON.stringify(right);
 }
 
+async function prepareMigrationPublication(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+): Promise<
+  | { readonly status: 'completed'; readonly publicationAttemptId: string }
+  | { readonly status: 'cancelled' | 'failed' | 'stale' }
+> {
+  const boundary = await revalidatePublicationBoundary(dependency.database, workflow);
+  if (boundary !== 'ready') return { status: boundary };
+  const access = await verifyGithubPublicationAccess(dependency, workflow);
+  if (access.status === 'denied') {
+    const status = await markMigrationFailed(
+      dependency.database,
+      workflow,
+      'GITHUB_PUBLICATION_ACCESS_DENIED',
+      'publishing',
+    );
+    return { status };
+  }
+  return persistPublicationAttempt(dependency.database, workflow, access);
+}
+
+async function revalidatePublicationBoundary(
+  database: AppDatabase,
+  workflow: MigrationWorkflowInput,
+): Promise<'ready' | 'cancelled' | 'stale'> {
+  return database.transaction().execute(async transaction => {
+    const run = await lockedMigrationRun(transaction, workflow);
+    if (run.status === 'cancelled') return 'cancelled';
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return 'cancelled';
+    }
+    if (run.status !== 'running' || run.currentStage !== 'publishing') {
+      throw new Error('The migration run cannot prepare publication.');
+    }
+    const approval = await loadMigrationApprovalState(transaction, workflow);
+    if (isMigrationApprovalStale(approval, new Date())) {
+      await markMigrationStale(
+        transaction,
+        workflow,
+        run.version,
+        'MIGRATION_APPROVAL_STALE',
+      );
+      return 'stale';
+    }
+    return 'ready';
+  });
+}
+
+async function verifyGithubPublicationAccess(
+  dependency: WorkflowDependencies,
+  workflow: MigrationWorkflowInput,
+): Promise<GithubPublicationAccessResult> {
+  const response = await dependency.lambda.send(
+    new InvokeCommand({
+      FunctionName: dependency.config.GITHUB_TOKEN_BROKER_FUNCTION_NAME,
+      InvocationType: 'RequestResponse',
+      Payload: Buffer.from(
+        JSON.stringify({
+          operation: 'verify_publication_access',
+          migrationRunId: workflow.migrationRunId,
+          repositoryId: workflow.repositoryId,
+        }),
+      ),
+    }),
+  );
+  if (
+    response.FunctionError !== undefined ||
+    response.Payload === undefined ||
+    response.Payload.byteLength > 16 * 1024
+  ) {
+    throw new Error('The GitHub publication access check failed.');
+  }
+  try {
+    return githubPublicationAccessResultSchema.parse(
+      JSON.parse(Buffer.from(response.Payload).toString('utf8')),
+    );
+  } catch {
+    throw new Error('The GitHub publication access response is invalid.');
+  }
+}
+
+async function persistPublicationAttempt(
+  database: AppDatabase,
+  workflow: MigrationWorkflowInput,
+  access: GithubPublicationAccess,
+): Promise<
+  | { readonly status: 'completed'; readonly publicationAttemptId: string }
+  | { readonly status: 'cancelled' | 'stale' }
+> {
+  return database.transaction().execute(async transaction => {
+    const run = await lockedMigrationRun(transaction, workflow);
+    if (run.status === 'cancelled') return { status: 'cancelled' };
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return { status: 'cancelled' };
+    }
+    if (run.status !== 'running' || run.currentStage !== 'publishing') {
+      throw new Error('The migration run cannot persist publication evidence.');
+    }
+    const approvalState = await loadMigrationApprovalState(transaction, workflow);
+    if (isMigrationApprovalStale(approvalState, new Date())) {
+      await markMigrationStale(
+        transaction,
+        workflow,
+        run.version,
+        'MIGRATION_APPROVAL_STALE',
+      );
+      return { status: 'stale' };
+    }
+    const source = await transaction
+      .selectFrom('migrationRuns as migrationRun')
+      .innerJoin('migrationApprovals as approval', join =>
+        join
+          .onRef('approval.id', '=', 'migrationRun.approvalId')
+          .onRef('approval.organisationId', '=', 'migrationRun.organisationId')
+          .onRef('approval.repositoryId', '=', 'migrationRun.repositoryId'),
+      )
+      .innerJoin('verificationAttempts as verification', join =>
+        join
+          .onRef('verification.migrationRunId', '=', 'migrationRun.id')
+          .onRef('verification.organisationId', '=', 'migrationRun.organisationId')
+          .onRef('verification.approvalId', '=', 'migrationRun.approvalId')
+          .onRef('verification.baseCommitSha', '=', 'migrationRun.baseCommitSha'),
+      )
+      .innerJoin('verificationAttemptResults as result', join =>
+        join
+          .onRef('result.verificationAttemptId', '=', 'verification.id')
+          .onRef('result.migrationRunId', '=', 'migrationRun.id')
+          .onRef('result.organisationId', '=', 'migrationRun.organisationId')
+          .on('result.outcome', '=', 'passed'),
+      )
+      .innerJoin('patchAttempts as patch', join =>
+        join
+          .onRef('patch.id', '=', 'verification.patchAttemptId')
+          .onRef('patch.migrationRunId', '=', 'migrationRun.id')
+          .onRef('patch.organisationId', '=', 'migrationRun.organisationId')
+          .on('patch.status', '=', 'accepted'),
+      )
+      .select([
+        'approval.installationId',
+        'approval.githubRepositoryId',
+        'approval.baseBranch',
+        'approval.baseCommitSha',
+        'approval.publicationPolicyVersion',
+        'verification.id as verificationAttemptId',
+        'result.id as verificationResultId',
+        'result.outcome as verificationOutcome',
+        'patch.id as patchAttemptId',
+        'verification.patchArtifactId',
+        'verification.patchDigest',
+        'verification.patchValidationArtifactId',
+        'verification.patchValidationDigest',
+      ])
+      .where('migrationRun.id', '=', workflow.migrationRunId)
+      .where('migrationRun.organisationId', '=', workflow.organisationId)
+      .executeTakeFirstOrThrow();
+    if (
+      access.githubRepositoryId !== source.githubRepositoryId ||
+      access.baseBranch !== source.baseBranch ||
+      access.headCommitSha !== source.baseCommitSha
+    ) {
+      await markMigrationStale(
+        transaction,
+        workflow,
+        run.version,
+        'MIGRATION_PUBLICATION_BASE_STALE',
+      );
+      return { status: 'stale' };
+    }
+    const binding = publicationAttemptBindingSchema.parse({
+      schemaVersion: '1.0',
+      organisationId: workflow.organisationId,
+      migrationRunId: workflow.migrationRunId,
+      approvalId: workflow.approvalId,
+      repositoryId: workflow.repositoryId,
+      installationId: source.installationId,
+      githubRepositoryId: source.githubRepositoryId,
+      verificationAttemptId: source.verificationAttemptId,
+      verificationResultId: source.verificationResultId,
+      verificationOutcome: source.verificationOutcome,
+      patchAttemptId: source.patchAttemptId,
+      patchArtifactId: source.patchArtifactId,
+      patchDigest: source.patchDigest,
+      patchValidationArtifactId: source.patchValidationArtifactId,
+      patchValidationDigest: source.patchValidationDigest,
+      baseBranch: source.baseBranch,
+      baseCommitSha: source.baseCommitSha,
+      headBranch: `migration-api/run-${workflow.migrationRunId}`,
+      publicationPolicyVersion: source.publicationPolicyVersion,
+    });
+    const existing = await transaction
+      .selectFrom('publicationAttempts')
+      .select(['id'])
+      .where('migrationRunId', '=', workflow.migrationRunId)
+      .where('organisationId', '=', workflow.organisationId)
+      .executeTakeFirst();
+    if (existing !== undefined) {
+      return { status: 'completed', publicationAttemptId: existing.id };
+    }
+    const proposedPublicationAttemptId = randomUUID();
+    const now = new Date();
+    const inserted = await transaction
+      .insertInto('publicationAttempts')
+      .values({
+        id: proposedPublicationAttemptId,
+        organisationId: binding.organisationId,
+        migrationRunId: binding.migrationRunId,
+        approvalId: binding.approvalId,
+        repositoryId: binding.repositoryId,
+        installationId: binding.installationId,
+        githubRepositoryId: binding.githubRepositoryId,
+        verificationAttemptId: binding.verificationAttemptId,
+        verificationResultId: binding.verificationResultId,
+        verificationOutcome: binding.verificationOutcome,
+        patchAttemptId: binding.patchAttemptId,
+        patchArtifactId: binding.patchArtifactId,
+        patchDigest: binding.patchDigest,
+        patchValidationArtifactId: binding.patchValidationArtifactId,
+        patchValidationDigest: binding.patchValidationDigest,
+        baseBranch: binding.baseBranch,
+        baseCommitSha: binding.baseCommitSha,
+        headBranch: binding.headBranch,
+        publicationPolicyVersion: binding.publicationPolicyVersion,
+        status: 'queued',
+        attemptCount: 0,
+        safeErrorCode: null,
+        idempotencyKey: `publication:${workflow.migrationRunId}`,
+        correlationId: workflow.correlationId,
+        createdAt: now,
+        startedAt: null,
+        completedAt: null,
+        updatedAt: now,
+      })
+      .onConflict(conflict => conflict.column('migrationRunId').doNothing())
+      .returning('id')
+      .executeTakeFirst();
+    const publicationAttemptId =
+      inserted?.id ??
+      (
+        await transaction
+          .selectFrom('publicationAttempts')
+          .select('id')
+          .where('migrationRunId', '=', workflow.migrationRunId)
+          .where('organisationId', '=', workflow.organisationId)
+          .executeTakeFirstOrThrow()
+      ).id;
+    if (inserted === undefined) {
+      return { status: 'completed', publicationAttemptId };
+    }
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:publication-prepared`,
+      eventType: 'publication_prepared',
+      status: 'running',
+      stage: 'publishing',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    return { status: 'completed', publicationAttemptId };
+  });
+}
+
 async function evaluateMigrationStageCapability(
   database: AppDatabase,
   workflow: MigrationWorkflowInput,
@@ -2715,6 +3007,7 @@ async function markMigrationFailed(
     | 'MIGRATION_REPAIR_BUDGET_EXHAUSTED'
     | 'MIGRATION_AGENT_FAILED'
     | 'MIGRATION_PATCH_REJECTED'
+    | 'GITHUB_PUBLICATION_ACCESS_DENIED'
     | 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
   expectedStage?: MigrationExecutionStage,
 ): Promise<'failed' | 'cancelled'> {
@@ -2766,6 +3059,25 @@ async function markMigrationFailedInTransaction(
   expectedStage?: MigrationExecutionStage,
 ): Promise<void> {
   const now = new Date();
+  if (
+    expectedStage === 'publishing' &&
+    safeErrorCode === 'MIGRATION_PUBLICATION_NOT_IMPLEMENTED'
+  ) {
+    await transaction
+      .updateTable('publicationAttempts')
+      .set({
+        status: 'failed',
+        attemptCount: 1,
+        safeErrorCode,
+        startedAt: now,
+        completedAt: now,
+        updatedAt: now,
+      })
+      .where('migrationRunId', '=', workflow.migrationRunId)
+      .where('organisationId', '=', workflow.organisationId)
+      .where('status', '=', 'queued')
+      .execute();
+  }
   let update = transaction
     .updateTable('migrationRuns')
     .set({

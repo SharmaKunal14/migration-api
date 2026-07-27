@@ -79,6 +79,7 @@ export const workflowControlConfigSchema = commonSchema.extend({
   ARTIFACT_BUCKET: nonEmpty,
   ARTIFACT_KMS_KEY_ARN: awsArn,
   DATABASE_SECRET_ARN: awsArn,
+  GITHUB_TOKEN_BROKER_FUNCTION_NAME: z.string().regex(/^[A-Za-z0-9-_]{1,64}$/u),
   VERIFIER_REGISTRY_URL: z
     .literal('https://registry.npmjs.org/')
     .default('https://registry.npmjs.org/'),

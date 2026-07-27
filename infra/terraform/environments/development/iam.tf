@@ -202,6 +202,20 @@ resource "aws_iam_role_policy" "workflow_database" {
   policy = data.aws_iam_policy_document.database_secret.json
 }
 
+data "aws_iam_policy_document" "workflow_github_token_broker" {
+  statement {
+    sid       = "VerifyExactPublicationAccess"
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.github_token_broker.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "workflow_github_token_broker" {
+  name   = "verify-github-publication-access"
+  role   = aws_iam_role.workflow_control.id
+  policy = data.aws_iam_policy_document.workflow_github_token_broker.json
+}
+
 resource "aws_iam_role_policy" "github_reconciler_database" {
   name   = "runtime-database"
   role   = aws_iam_role.github_reconciler.id

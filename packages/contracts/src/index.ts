@@ -1925,6 +1925,27 @@ export const publicationAttemptBindingSchema = z
     }
   });
 
+export const githubPublicationAccessSchema = z
+  .object({
+    status: z.literal('ready'),
+    githubRepositoryId: githubIdSchema,
+    owner: z.string().min(1).max(255),
+    name: z.string().min(1).max(255),
+    baseBranch: z.string().min(1).max(255),
+    headCommitSha: commitShaSchema,
+  })
+  .strict();
+
+export const githubPublicationAccessResultSchema = z.discriminatedUnion('status', [
+  githubPublicationAccessSchema,
+  z
+    .object({
+      status: z.literal('denied'),
+      safeErrorCode: z.literal('GITHUB_PUBLICATION_ACCESS_DENIED'),
+    })
+    .strict(),
+]);
+
 export const publicationAttemptSchema = z
   .object({
     ...publicationAttemptBindingFields,
@@ -2404,6 +2425,10 @@ export type MigrationVerificationResult = z.infer<
 >;
 export type PublicationAttemptStatus = z.infer<typeof publicationAttemptStatusSchema>;
 export type PublicationAttemptBinding = z.infer<typeof publicationAttemptBindingSchema>;
+export type GithubPublicationAccess = z.infer<typeof githubPublicationAccessSchema>;
+export type GithubPublicationAccessResult = z.infer<
+  typeof githubPublicationAccessResultSchema
+>;
 export type PublicationAttempt = z.infer<typeof publicationAttemptSchema>;
 export type GithubPublication = z.infer<typeof githubPublicationSchema>;
 export type PublicationNotification = z.infer<typeof publicationNotificationSchema>;
