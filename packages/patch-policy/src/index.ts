@@ -14,7 +14,14 @@ const safePatchPath = /^[A-Za-z0-9._/-]+$/u;
 const forbiddenPaths = [
   /^\.git(?:\/|$)/u,
   /^\.github(?:\/|$)/u,
+  /^\.buildkite(?:\/|$)/u,
+  /^\.circleci(?:\/|$)/u,
+  /^\.gitlab(?:\/|$)/u,
+  /(?:^|\/)\.gitlab-ci\.ya?ml$/u,
+  /(?:^|\/)azure-pipelines\.ya?ml$/u,
+  /(?:^|\/)bitbucket-pipelines\.ya?ml$/u,
   /(?:^|\/)CODEOWNERS$/u,
+  /(?:^|\/)Jenkinsfile$/u,
   /(?:^|\/)\.env(?:\.|$)/u,
   /(?:^|\/)(?:secrets?|credentials?)(?:\.|\/|$)/iu,
 ];
@@ -76,6 +83,9 @@ export function buildAndValidatePatch(input: PatchBuildInput): PatchBuildResult 
   const planPaths = input.plan.files.map(file => file.path);
   const plansByPath = new Map(input.plan.files.map(file => [file.path, file]));
   const editsByPath = new Map(input.edits.map(edit => [edit.path, edit]));
+  const impactByPath = new Map(
+    input.migration.impact.affectedFiles.map(file => [file.path, file]),
+  );
   if (
     editsByPath.size !== input.edits.length ||
     planPaths.length !== input.edits.length ||
@@ -96,14 +106,30 @@ export function buildAndValidatePatch(input: PatchBuildInput): PatchBuildResult 
     if (!planMatches) {
       checks.set('diff_structure', 'PATCH_PLAN_MISMATCH');
     }
+    if (edit.operation !== 'modify' || planned?.operation !== 'modify') {
+      checks.set('diff_structure', 'PATCH_FILE_OPERATION_NOT_AUTHORIZED');
+    }
     if (!safePatchPath.test(edit.path) || edit.path.includes('//')) {
       checks.set('path_safety', 'PATCH_PATH_UNSAFE');
       continue;
     }
-    if (!allowedPaths.has(edit.path) || !allowedCategories.has(edit.changeCategory)) {
+    const isAllowed =
+      allowedPaths.has(edit.path) && allowedCategories.has(edit.changeCategory);
+    const isForbidden = forbiddenPaths.some(pattern => pattern.test(edit.path));
+    if (!isAllowed) {
       checks.set('allowed_paths', 'PATCH_SCOPE_NOT_AUTHORIZED');
     }
-    if (forbiddenPaths.some(pattern => pattern.test(edit.path))) {
+    const impacted = impactByPath.get(edit.path);
+    if (
+      isAllowed &&
+      !isForbidden &&
+      edit.changeCategory !== 'dependency_manifest' &&
+      edit.changeCategory !== 'lockfile' &&
+      impacted?.classification !== edit.changeCategory
+    ) {
+      checks.set('allowed_paths', 'PATCH_IMPACT_SCOPE_MISMATCH');
+    }
+    if (isForbidden) {
       checks.set('forbidden_paths', 'PATCH_FORBIDDEN_PATH');
     }
     if (edit.content?.includes('\u0000')) {

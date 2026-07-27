@@ -128,6 +128,25 @@ describe('Stage 3E impact-analysis boundary', () => {
     ).toThrow(RepositoryToolError);
   });
 
+  it('classifies binary files without exposing their contents to an agent', async () => {
+    const archive = await repositoryArchive({
+      'package.json': '{}',
+      'assets/logo.bin': '\u0000\u0001\u0002\u0003',
+    });
+    const tools = new RepositoryTools(
+      mockS3(archive),
+      'artifact-bucket',
+      snapshotKey,
+      sha256(archive),
+    );
+    await tools.initialize();
+
+    expect(tools.fileKind('package.json')).toBe('text');
+    expect(tools.fileKind('assets/logo.bin')).toBe('binary');
+    expect(tools.fileKind('missing.txt')).toBe('missing');
+    expect(tools.readTextFile('assets/logo.bin')).toBeUndefined();
+  });
+
   it('classifies identity and snapshot failures without exposing details', () => {
     const sensitiveDescription = 'mapping rejected sensitive-value';
     const identityFailure = classifyImpactAnalysisFailure(

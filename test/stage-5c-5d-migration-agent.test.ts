@@ -137,7 +137,7 @@ const plan = migrationExecutionPlanSchema.parse({
   verificationProfiles: ['typescript_static'],
 });
 
-describe('Stage 5C and 5D bounded migration planning and patching', () => {
+describe('Stage 5C, 5D, and 5E bounded migration planning and patch validation', () => {
   it('builds a deterministic accepted patch tied to exact approved evidence', () => {
     const before =
       "import { client } from './client.js';\n\nexport const send = client.messages.send;\n";
@@ -155,10 +155,28 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     expect(first.patch).toContain('+export const send = client.messages.create;');
   });
 
-  it('rejects paths outside approval and hard-denies control-plane files', () => {
+  it('rejects paths outside reviewed impact and hard-denies control-plane files', () => {
     const outside = withPath(input, plan, 'src/unreviewed.ts', 'direct_usage');
     expect(outside.validation.status).toBe('rejected');
     expect(outside.validation.safeErrorCode).toBe('PATCH_SCOPE_NOT_AUTHORIZED');
+
+    const unrelatedInput = {
+      ...input,
+      authority: {
+        ...input.authority,
+        patchPolicy: {
+          ...input.authority.patchPolicy,
+          allowedPaths: ['src/unreviewed.ts'],
+        },
+      },
+    } as MigrationAgentInputArtifact;
+    const unrelated = withPath(
+      unrelatedInput,
+      plan,
+      'src/unreviewed.ts',
+      'direct_usage',
+    );
+    expect(unrelated.validation.safeErrorCode).toBe('PATCH_IMPACT_SCOPE_MISMATCH');
 
     const controlPlaneInput = {
       ...input,
@@ -190,6 +208,33 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     });
     expect(forbidden.validation.status).toBe('rejected');
     expect(forbidden.validation.safeErrorCode).toBe('PATCH_FORBIDDEN_PATH');
+  });
+
+  it('rejects file creation and deletion without explicit approval authority', () => {
+    for (const operation of ['create', 'delete'] as const) {
+      const operationPlan = migrationExecutionPlanSchema.parse({
+        ...plan,
+        files: [{ ...plan.files[0], operation }],
+      });
+      const result = buildAndValidatePatch({
+        migration: input,
+        plan: operationPlan,
+        edits: [
+          migrationAgentProposedEditSchema.parse({
+            path: 'src/orbitchat-client.ts',
+            operation,
+            changeCategory: 'direct_usage',
+            content: operation === 'delete' ? null : 'export const created = true;\n',
+          }),
+        ],
+        readFile: () =>
+          operation === 'create' ? undefined : 'export const removed = true;\n',
+      });
+      expect(result.validation.status).toBe('rejected');
+      expect(result.validation.safeErrorCode).toBe(
+        'PATCH_FILE_OPERATION_NOT_AUTHORIZED',
+      );
+    }
   });
 
   it('rejects plan/edit mismatches and approved-budget overruns', () => {
@@ -261,7 +306,7 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     ).toThrow();
   });
 
-  it('emits valid zero-line hunk coordinates and preserves missing-newline markers', () => {
+  it('emits auditable rejected create/delete patches and preserves newline markers', () => {
     const createdPlan = migrationExecutionPlanSchema.parse({
       ...plan,
       files: [{ ...plan.files[0], operation: 'create' }],
@@ -281,6 +326,10 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     });
     expect(created.patch).toContain('@@ -0,0 +1,1 @@');
     expect(created.patch).toContain('\\ No newline at end of file');
+    expect(created.validation.status).toBe('rejected');
+    expect(created.validation.safeErrorCode).toBe(
+      'PATCH_FILE_OPERATION_NOT_AUTHORIZED',
+    );
 
     const deletedPlan = migrationExecutionPlanSchema.parse({
       ...plan,
@@ -301,6 +350,10 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     });
     expect(deleted.patch).toContain('@@ -1,1 +0,0 @@');
     expect(deleted.patch).toContain('deleted file mode 100644');
+    expect(deleted.validation.status).toBe('rejected');
+    expect(deleted.validation.safeErrorCode).toBe(
+      'PATCH_FILE_OPERATION_NOT_AUTHORIZED',
+    );
 
     const newlineOnly = build(
       input,
@@ -473,6 +526,8 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     expect(worker).toContain("IfNoneMatch: '*'");
     expect(worker).toContain('const preloadReadPaths = [');
     expect(worker).toContain('.filter(path => allowedPaths.has(path))');
+    expect(worker).toContain("tools.fileKind(path) === 'binary'");
+    expect(worker).toContain("MigrationAgentRuntimeError('PATCH_BINARY_SOURCE')");
     expect(gateway).toContain('store: false');
     expect(gateway).toContain('tool_choice: toolChoice');
     expect(gateway).toContain('Use only the supplied read-only repository tools');

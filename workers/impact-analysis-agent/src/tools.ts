@@ -73,6 +73,7 @@ export interface RepositoryToolExecution {
 
 export class RepositoryTools {
   private readonly files = new Map<string, string>();
+  private readonly binaryFiles = new Set<string>();
 
   public constructor(
     private readonly s3: S3Client,
@@ -128,6 +129,13 @@ export class RepositoryTools {
   public readTextFile(path: string): string | undefined {
     const parsed = repositoryPath.safeParse(path);
     return parsed.success ? this.files.get(parsed.data) : undefined;
+  }
+
+  public fileKind(path: string): 'text' | 'binary' | 'missing' {
+    const parsed = repositoryPath.safeParse(path);
+    if (!parsed.success) return 'missing';
+    if (this.files.has(parsed.data)) return 'text';
+    return this.binaryFiles.has(parsed.data) ? 'binary' : 'missing';
   }
 
   private executeValidated(
@@ -269,16 +277,15 @@ export class RepositoryTools {
         stream.once('end', () => {
           if (header.type === 'file' && bytes <= MAX_FILE_BYTES && path) {
             const body = Buffer.concat(chunks, bytes);
-            if (
-              !body.includes(0) &&
-              storedBytes + body.byteLength <= MAX_STORED_TEXT_BYTES
-            ) {
+            if (body.includes(0)) {
+              this.binaryFiles.add(path);
+            } else if (storedBytes + body.byteLength <= MAX_STORED_TEXT_BYTES) {
               try {
                 const text = new TextDecoder('utf-8', { fatal: true }).decode(body);
                 this.files.set(path, text);
                 storedBytes += body.byteLength;
               } catch {
-                // Invalid UTF-8 is treated as binary and never exposed to agents.
+                this.binaryFiles.add(path);
               }
             }
           }

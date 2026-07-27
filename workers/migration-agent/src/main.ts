@@ -106,6 +106,9 @@ async function main(): Promise<void> {
           .filter(path => allowedPaths.has(path)),
       ),
     ].sort();
+    if (preloadReadPaths.some(path => tools.fileKind(path) === 'binary')) {
+      throw new MigrationAgentRuntimeError('PATCH_BINARY_SOURCE');
+    }
     const proposal = await new MigrationAgentKernel(
       gateway,
       tools,
