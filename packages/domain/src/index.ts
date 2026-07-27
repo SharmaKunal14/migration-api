@@ -56,7 +56,9 @@ export type OrganisationAction =
   | 'github_installation:manage'
   | 'repository:read'
   | 'repository:scan'
-  | 'migration:approve';
+  | 'migration:approve'
+  | 'migration:read'
+  | 'migration:cancel';
 
 const allowedActions: Readonly<
   Record<OrganisationRole, readonly OrganisationAction[]>
@@ -70,6 +72,8 @@ const allowedActions: Readonly<
     'repository:read',
     'repository:scan',
     'migration:approve',
+    'migration:read',
+    'migration:cancel',
   ],
   admin: [
     'organisation:read',
@@ -79,6 +83,8 @@ const allowedActions: Readonly<
     'repository:read',
     'repository:scan',
     'migration:approve',
+    'migration:read',
+    'migration:cancel',
   ],
   reviewer: [
     'organisation:read',
@@ -87,8 +93,10 @@ const allowedActions: Readonly<
     'repository:read',
     'repository:scan',
     'migration:approve',
+    'migration:read',
+    'migration:cancel',
   ],
-  viewer: ['organisation:read', 'demo_run:read', 'repository:read'],
+  viewer: ['organisation:read', 'demo_run:read', 'repository:read', 'migration:read'],
 };
 
 export function requireAction(

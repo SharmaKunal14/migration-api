@@ -1569,7 +1569,7 @@ resource "aws_sfn_state_machine" "migration" {
   }
 
   definition = jsonencode({
-    Comment = "Stage 4C durable migration handoff; stops safely before mutation"
+    Comment = "Stage 4D durable migration control skeleton; Stage 5 acquisition remains disabled"
     StartAt = "PrepareControlState"
     States = {
       PrepareControlState = {
@@ -1609,17 +1609,62 @@ resource "aws_sfn_state_machine" "migration" {
           {
             Variable     = "$.validation.Payload.status"
             StringEquals = "running"
-            Next         = "StopBeforeMutation"
+            Next         = "EnterAcquisition"
           },
           {
             Variable     = "$.validation.Payload.status"
             StringEquals = "stale"
             Next         = "StaleApproval"
+          },
+          {
+            Variable     = "$.validation.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
           }
         ]
         Default = "MarkInfrastructureFailure"
       }
-      StopBeforeMutation = {
+      EnterAcquisition = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "enter_migration_acquisition"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.acquisition"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateAcquisition"
+      }
+      EvaluateAcquisition = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.acquisition.Payload.status"
+            StringEquals = "running"
+            Next         = "StopBeforeAcquisition"
+          },
+          {
+            Variable     = "$.acquisition.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      StopBeforeAcquisition = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
@@ -1653,10 +1698,22 @@ resource "aws_sfn_state_machine" "migration" {
             "workflow.$" = "$.workflow"
           }
         }
-        ResultPath = null
-        Next       = "MigrationInfrastructureFailed"
+        ResultPath = "$.infrastructure"
+        Next       = "EvaluateInfrastructureFailure"
+      }
+      EvaluateInfrastructureFailure = {
+        Type = "Choice"
+        Choices = [{
+          Variable     = "$.infrastructure.Payload.status"
+          StringEquals = "cancelled"
+          Next         = "Cancelled"
+        }]
+        Default = "MigrationInfrastructureFailed"
       }
       StaleApproval = {
+        Type = "Succeed"
+      }
+      Cancelled = {
         Type = "Succeed"
       }
       SafeBoundaryReached = {
@@ -1665,7 +1722,7 @@ resource "aws_sfn_state_machine" "migration" {
       MigrationInfrastructureFailed = {
         Type  = "Fail"
         Error = "MigrationInfrastructureFailed"
-        Cause = "The Stage 4C durable migration handoff failed."
+        Cause = "The Stage 4D durable migration control workflow failed."
       }
     }
   })

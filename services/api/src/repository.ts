@@ -24,6 +24,7 @@ import type {
   PublicMigrationCandidateImpactReport,
   PublicMigrationApprovalPreview,
   PublicMigrationApprovalResult,
+  PublicMigrationRunDetail,
   PublicImpactReportSummary,
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
@@ -94,6 +95,15 @@ export interface ReviewMigrationSpecificationInput {
 export interface CreateMigrationApprovalInput extends CreateMigrationApprovalRequest {
   readonly organisationId: string;
   readonly candidateId: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+}
+
+export interface CancelMigrationRunInput {
+  readonly organisationId: string;
+  readonly migrationRunId: string;
+  readonly expectedVersion: number;
+  readonly reasonCode: 'USER_REQUESTED';
   readonly idempotencyKey: string;
   readonly requestId: string;
 }
@@ -185,6 +195,15 @@ export interface ApiRepositoryPort {
     userId: string,
     input: CreateMigrationApprovalInput,
   ): Promise<PublicMigrationApprovalResult>;
+  getMigrationRun(
+    userId: string,
+    organisationId: string,
+    migrationRunId: string,
+  ): Promise<PublicMigrationRunDetail>;
+  cancelMigrationRun(
+    userId: string,
+    input: CancelMigrationRunInput,
+  ): Promise<PublicMigrationRunDetail>;
 }
 
 function digestJson(value: unknown): string {
@@ -1826,6 +1845,114 @@ export class ApiRepository implements ApiRepositoryPort {
     requireAction(await this.membership(organisationId, userId), 'demo_run:read');
     return loadRun(this.database, organisationId, runId);
   }
+
+  public async getMigrationRun(
+    userId: string,
+    organisationId: string,
+    migrationRunId: string,
+  ): Promise<PublicMigrationRunDetail> {
+    requireAction(await this.membership(organisationId, userId), 'migration:read');
+    return loadMigrationRun(this.database, organisationId, migrationRunId);
+  }
+
+  public async cancelMigrationRun(
+    userId: string,
+    input: CancelMigrationRunInput,
+  ): Promise<PublicMigrationRunDetail> {
+    requireAction(
+      await this.membership(input.organisationId, userId),
+      'migration:cancel',
+    );
+    await this.database.transaction().execute(async transaction => {
+      const run = await transaction
+        .selectFrom('migrationRuns')
+        .select(['id', 'status', 'currentStage', 'version', 'cancellationRequestedAt'])
+        .where('id', '=', input.migrationRunId)
+        .where('organisationId', '=', input.organisationId)
+        .forUpdate()
+        .executeTakeFirst();
+      if (!run) {
+        throw new DomainError(
+          'MIGRATION_RUN_NOT_FOUND',
+          'The requested migration run was not found.',
+          404,
+        );
+      }
+      if (run.cancellationRequestedAt !== null || run.status === 'cancelled') return;
+      if (!['queued', 'running'].includes(run.status)) {
+        throw new DomainError(
+          'MIGRATION_RUN_TERMINAL',
+          'A completed migration run cannot be cancelled.',
+          409,
+        );
+      }
+      if (run.version !== input.expectedVersion) {
+        throw new DomainError(
+          'MIGRATION_RUN_CHANGED',
+          'The migration run changed before cancellation was recorded.',
+          409,
+        );
+      }
+      const now = new Date();
+      const queued = run.status === 'queued';
+      await transaction
+        .updateTable('migrationRuns')
+        .set({
+          cancellationRequestedAt: now,
+          cancellationRequestedByUserId: userId,
+          cancellationReasonCode: input.reasonCode,
+          ...(queued
+            ? {
+                status: 'cancelled' as const,
+                currentStage: 'cancelled' as const,
+                terminalResult: 'cancelled' as const,
+                completedAt: now,
+              }
+            : {}),
+          updatedAt: now,
+          version: run.version + 1,
+        })
+        .where('id', '=', run.id)
+        .where('version', '=', run.version)
+        .executeTakeFirstOrThrow();
+      await appendMigrationRunEvent(transaction, {
+        organisationId: input.organisationId,
+        migrationRunId: run.id,
+        eventKey: `cancel:${input.idempotencyKey}`,
+        eventType: queued ? 'run_cancelled' : 'cancellation_requested',
+        status: queued ? 'cancelled' : 'running',
+        stage: queued ? 'cancelled' : run.currentStage,
+        safeErrorCode: null,
+        actorType: 'user',
+        actorUserId: userId,
+        requestId: input.requestId,
+        createdAt: now,
+      });
+      if (queued) {
+        await transaction
+          .updateTable('migrationRunOutbox')
+          .set({
+            deliveredAt: now,
+            leaseOwner: null,
+            leaseExpiresAt: null,
+            safeErrorCode: null,
+          })
+          .where('migrationRunId', '=', run.id)
+          .where('deliveredAt', 'is', null)
+          .where('leaseOwner', 'is', null)
+          .execute();
+      }
+      await writeAudit(transaction, {
+        organisationId: input.organisationId,
+        actorId: userId,
+        action: 'migration.cancellation_requested',
+        resourceType: 'migration_run',
+        resourceId: run.id,
+        requestId: input.requestId,
+      });
+    });
+    return loadMigrationRun(this.database, input.organisationId, input.migrationRunId);
+  }
 }
 
 async function loadRun(
@@ -2023,6 +2150,19 @@ async function persistMigrationApproval(
       createdAt: now,
     })
     .executeTakeFirstOrThrow();
+  await appendMigrationRunEvent(transaction, {
+    organisationId: context.input.organisationId,
+    migrationRunId,
+    eventKey: `run:${migrationRunId}:requested`,
+    eventType: 'run_requested',
+    status: 'queued',
+    stage: 'queued',
+    safeErrorCode: null,
+    actorType: 'user',
+    actorUserId: context.userId,
+    requestId: context.input.requestId,
+    createdAt: now,
+  });
   await writeAudit(transaction, {
     organisationId: context.input.organisationId,
     actorId: context.userId,
@@ -2032,6 +2172,165 @@ async function persistMigrationApproval(
     requestId: context.input.requestId,
   });
   return loadMigrationApprovalResult(transaction, approvalId);
+}
+
+interface MigrationRunEventInput {
+  readonly organisationId: string;
+  readonly migrationRunId: string;
+  readonly eventKey: string;
+  readonly eventType:
+    | 'run_requested'
+    | 'approval_validated'
+    | 'stage_entered'
+    | 'cancellation_requested'
+    | 'run_cancelled'
+    | 'run_failed'
+    | 'run_stale'
+    | 'run_completed';
+  readonly status:
+    'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
+  readonly stage:
+    | 'queued'
+    | 'revalidating'
+    | 'acquiring'
+    | 'planning'
+    | 'patching'
+    | 'verifying'
+    | 'repairing'
+    | 'publishing'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'stale';
+  readonly safeErrorCode: string | null;
+  readonly actorType: 'user' | 'system';
+  readonly actorUserId: string | null;
+  readonly requestId: string;
+  readonly createdAt: Date;
+}
+
+async function appendMigrationRunEvent(
+  transaction: Transaction<Database>,
+  input: MigrationRunEventInput,
+): Promise<void> {
+  const existing = await transaction
+    .selectFrom('migrationRunEvents')
+    .select('id')
+    .where('migrationRunId', '=', input.migrationRunId)
+    .where('eventKey', '=', input.eventKey)
+    .executeTakeFirst();
+  if (existing) return;
+  const latest = await transaction
+    .selectFrom('migrationRunEvents')
+    .select('sequence')
+    .where('migrationRunId', '=', input.migrationRunId)
+    .orderBy('sequence', 'desc')
+    .executeTakeFirst();
+  await transaction
+    .insertInto('migrationRunEvents')
+    .values({
+      id: randomUUID(),
+      organisationId: input.organisationId,
+      migrationRunId: input.migrationRunId,
+      sequence: (latest?.sequence ?? 0) + 1,
+      eventKey: input.eventKey,
+      eventType: input.eventType,
+      status: input.status,
+      stage: input.stage,
+      safeErrorCode: input.safeErrorCode,
+      actorType: input.actorType,
+      actorUserId: input.actorUserId,
+      requestId: input.requestId,
+      createdAt: input.createdAt,
+    })
+    .executeTakeFirstOrThrow();
+}
+
+async function loadMigrationRun(
+  database: AppDatabase | Transaction<Database>,
+  organisationId: string,
+  migrationRunId: string,
+): Promise<PublicMigrationRunDetail> {
+  const run = await database
+    .selectFrom('migrationRuns as run')
+    .innerJoin('migrationCandidates as candidate', 'candidate.id', 'run.candidateId')
+    .innerJoin('repositories as repository', 'repository.id', 'run.repositoryId')
+    .innerJoin(
+      'migrationSpecifications as specification',
+      'specification.id',
+      'candidate.migrationSpecificationId',
+    )
+    .innerJoin(
+      'vendorReleases as release',
+      'release.id',
+      'specification.vendorReleaseId',
+    )
+    .innerJoin('apiProducts as product', 'product.id', 'release.apiProductId')
+    .select([
+      'run.id',
+      'run.candidateId',
+      'run.approvalId',
+      'run.baseCommitSha',
+      'run.status',
+      'run.currentStage',
+      'run.workflowExecutionArn',
+      'run.safeErrorCode',
+      'run.cancellationRequestedAt',
+      'run.version',
+      'run.createdAt',
+      'run.completedAt',
+      'repository.fullName as repositoryFullName',
+      'product.canonicalIdentifier as packageName',
+      'specification.targetVersion',
+    ])
+    .where('run.id', '=', migrationRunId)
+    .where('run.organisationId', '=', organisationId)
+    .where('candidate.organisationId', '=', organisationId)
+    .where('repository.organisationId', '=', organisationId)
+    .executeTakeFirst();
+  if (!run) {
+    throw new DomainError(
+      'MIGRATION_RUN_NOT_FOUND',
+      'The requested migration run was not found.',
+      404,
+    );
+  }
+  const events = await database
+    .selectFrom('migrationRunEvents')
+    .select([
+      'sequence',
+      'eventType',
+      'status',
+      'stage',
+      'safeErrorCode',
+      'actorType',
+      'createdAt',
+    ])
+    .where('organisationId', '=', organisationId)
+    .where('migrationRunId', '=', migrationRunId)
+    .orderBy('sequence')
+    .execute();
+  return {
+    id: run.id,
+    candidateId: run.candidateId,
+    approvalId: run.approvalId,
+    repositoryFullName: run.repositoryFullName,
+    packageName: run.packageName,
+    baseCommitSha: run.baseCommitSha,
+    targetVersion: run.targetVersion,
+    status: run.status,
+    currentStage: run.currentStage,
+    workflowExecutionArn: run.workflowExecutionArn,
+    safeErrorCode: run.safeErrorCode,
+    cancellationRequestedAt: run.cancellationRequestedAt?.toISOString() ?? null,
+    version: run.version,
+    createdAt: run.createdAt.toISOString(),
+    completedAt: run.completedAt?.toISOString() ?? null,
+    events: events.map(event => ({
+      ...event,
+      createdAt: event.createdAt.toISOString(),
+    })),
+  };
 }
 
 async function loadMigrationApprovalResult(

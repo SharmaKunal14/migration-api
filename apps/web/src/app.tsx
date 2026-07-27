@@ -1,5 +1,13 @@
 import { useEffect, useMemo, useRef, useState, type SyntheticEvent } from 'react';
-import { Navigate, Outlet, Route, Routes, useNavigate, useParams } from 'react-router';
+import {
+  Link,
+  Navigate,
+  Outlet,
+  Route,
+  Routes,
+  useNavigate,
+  useParams,
+} from 'react-router';
 
 import type {
   PublicAgentRun,
@@ -8,6 +16,7 @@ import type {
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
   PublicMigrationApprovalResult,
+  PublicMigrationRunDetail,
   PublicOrganisation,
   PublicRepository,
 } from '@migration/contracts';
@@ -15,6 +24,7 @@ import type {
 import {
   ApiError,
   approveMigrationCandidate,
+  cancelMigrationRun,
   completeGithubSetup,
   createDemoRun,
   createGithubInstallLink,
@@ -24,6 +34,7 @@ import {
   loadMe,
   loadMigrationCandidate,
   loadMigrationCandidates,
+  loadMigrationRun,
   loadRepositories,
   loadRun,
   startRepositoryScan,
@@ -45,6 +56,10 @@ export function App(): React.JSX.Element {
         />
         <Route path="/organisations/:orgId/demo" element={<DemoPage />} />
         <Route path="/organisations/:orgId/runs/:runId" element={<RunPage />} />
+        <Route
+          path="/organisations/:orgId/migration-runs/:runId"
+          element={<MigrationRunPage />}
+        />
         <Route
           path="/organisations/:orgId/migrations"
           element={<MigrationInboxPage />}
@@ -379,7 +394,7 @@ function GithubSettingsPage(): React.JSX.Element {
           <li>Stage 2C scans an exact commit without executing repository code.</li>
         </ul>
         <button
-          className="primary-button"
+          className="primary-button link-button"
           type="button"
           disabled={starting}
           onClick={() => void startInstallation()}
@@ -1007,8 +1022,8 @@ function MigrationCandidatePage(): React.JSX.Element {
       />
       <p className="fine-print stage-boundary">
         Approval creates a durable authorization record and queues one migration run.
-        Stage 4B does not yet dispatch the workflow, execute repository code, modify
-        files, or create a pull request.
+        Stage 4D dispatches and audits the control workflow, but repository acquisition,
+        code execution, file mutation, and pull-request creation remain unavailable.
       </p>
     </div>
   );
@@ -1089,8 +1104,14 @@ function MigrationApprovalPanel({
         <h2>Migration run queued</h2>
         <p>
           Approval <code>{result.approval.id}</code> is immutable. Run{' '}
-          <code>{result.run.id}</code> is waiting for the Stage 4 dispatcher.
+          <code>{result.run.id}</code> has entered the durable Stage 4 workflow.
         </p>
+        <Link
+          className="primary-button"
+          to={`/organisations/${organisationId}/migration-runs/${result.run.id}`}
+        >
+          View run timeline
+        </Link>
       </section>
     );
   }
@@ -1188,6 +1209,166 @@ function MigrationApprovalPanel({
       </form>
     </section>
   );
+}
+
+function MigrationRunPage(): React.JSX.Element {
+  const { session } = useAuth();
+  const { orgId, runId } = useParams();
+  const [run, setRun] = useState<PublicMigrationRunDetail | null>(null);
+  const [error, setError] = useState<string | null>(null);
+  const [cancelling, setCancelling] = useState(false);
+  const cancellationKey = useRef(`cancel:${crypto.randomUUID()}`);
+
+  useEffect(() => {
+    if (!session || !orgId || !runId) return;
+    let active = true;
+    let timer: number | undefined;
+    const poll = async (): Promise<void> => {
+      try {
+        const response = await loadMigrationRun(session.access_token, orgId, runId);
+        if (!active) return;
+        setRun(response.run);
+        setError(null);
+        if (response.run.status === 'queued' || response.run.status === 'running') {
+          timer = window.setTimeout(() => void poll(), 2_000);
+        }
+      } catch (caught) {
+        if (active) setError(errorText(caught));
+      }
+    };
+    void poll();
+    return (): void => {
+      active = false;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
+  }, [orgId, runId, session]);
+
+  async function cancel(): Promise<void> {
+    if (!session || !orgId || !runId || !run) return;
+    setCancelling(true);
+    setError(null);
+    try {
+      const response = await cancelMigrationRun(
+        session.access_token,
+        orgId,
+        runId,
+        cancellationKey.current,
+        {
+          expectedVersion: run.version,
+          reasonCode: 'USER_REQUESTED',
+        },
+      );
+      setRun(response.run);
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setCancelling(false);
+    }
+  }
+
+  if (error && !run) return <FullPageMessage>{error}</FullPageMessage>;
+  if (!run) return <FullPageMessage>Loading migration run…</FullPageMessage>;
+  const active = run.status === 'queued' || run.status === 'running';
+  return (
+    <div className="page migration-run-page">
+      <div className="run-heading">
+        <div>
+          <p className="eyebrow">Durable migration run</p>
+          <h1>{run.repositoryFullName}</h1>
+          <p className="lede">
+            {run.packageName} → {run.targetVersion} from commit{' '}
+            <code>{shortSha(run.baseCommitSha)}</code>
+          </p>
+        </div>
+        <span className={`status status-${run.status}`}>{run.status}</span>
+      </div>
+
+      <section className="panel migration-run-summary">
+        <div>
+          <span>Current stage</span>
+          <strong>{run.currentStage.replaceAll('_', ' ')}</strong>
+        </div>
+        <div>
+          <span>Run version</span>
+          <strong>{run.version}</strong>
+        </div>
+        <div>
+          <span>Execution</span>
+          <code title={run.workflowExecutionArn ?? undefined}>
+            {run.workflowExecutionArn ? 'Recorded' : 'Pending'}
+          </code>
+        </div>
+        {active && (
+          <button
+            className="secondary-button"
+            disabled={cancelling}
+            type="button"
+            onClick={() => void cancel()}
+          >
+            {cancelling ? 'Requesting cancellation…' : 'Cancel run'}
+          </button>
+        )}
+      </section>
+
+      {error && <p className="error-message">{error}</p>}
+      <section className="panel">
+        <p className="section-kicker">Persisted workflow evidence</p>
+        <h2>Run timeline</h2>
+        <ol className="migration-event-list">
+          {run.events.map(event => (
+            <li key={event.sequence}>
+              <span>{event.sequence}</span>
+              <div>
+                <strong>{migrationRunEventLabel(event.eventType)}</strong>
+                <p>
+                  {event.stage.replaceAll('_', ' ')} ·{' '}
+                  {new Date(event.createdAt).toLocaleString()}
+                </p>
+                {event.safeErrorCode && <code>{event.safeErrorCode}</code>}
+              </div>
+            </li>
+          ))}
+        </ol>
+      </section>
+
+      {run.safeErrorCode === 'MIGRATION_ACQUISITION_NOT_IMPLEMENTED' && (
+        <section className="panel warning-panel">
+          <p className="section-kicker">Expected Stage 4 boundary</p>
+          <h2>Stopped before repository acquisition</h2>
+          <p>
+            The approval and orchestration controls worked. Stage 5 will add bounded
+            snapshot acquisition and patch generation; no repository content was changed
+            by this run.
+          </p>
+        </section>
+      )}
+      {run.status === 'cancelled' && (
+        <section className="panel">
+          <h2>Cancellation completed</h2>
+          <p>The run stopped at a safe control boundary without repository mutation.</p>
+        </section>
+      )}
+    </div>
+  );
+}
+
+function migrationRunEventLabel(
+  eventType: PublicMigrationRunDetail['events'][number]['eventType'],
+): string {
+  const labels: Record<
+    PublicMigrationRunDetail['events'][number]['eventType'],
+    string
+  > = {
+    run_requested: 'Run requested',
+    approval_validated: 'Approval revalidated',
+    stage_entered: 'Stage entered',
+    cancellation_requested: 'Cancellation requested',
+    run_cancelled: 'Run cancelled',
+    run_failed: 'Run stopped',
+    run_stale: 'Approval became stale',
+    run_completed: 'Run completed',
+  };
+  return labels[eventType];
 }
 
 function ApprovalCheckbox({

@@ -505,6 +505,42 @@ export interface MigrationRunOutboxTable {
   createdAt: Timestamp;
 }
 
+export interface MigrationRunEventTable {
+  id: string;
+  organisationId: string;
+  migrationRunId: string;
+  sequence: number;
+  eventKey: string;
+  eventType:
+    | 'run_requested'
+    | 'approval_validated'
+    | 'stage_entered'
+    | 'cancellation_requested'
+    | 'run_cancelled'
+    | 'run_failed'
+    | 'run_stale'
+    | 'run_completed';
+  status: 'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
+  stage:
+    | 'queued'
+    | 'revalidating'
+    | 'acquiring'
+    | 'planning'
+    | 'patching'
+    | 'verifying'
+    | 'repairing'
+    | 'publishing'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'stale';
+  safeErrorCode: string | null;
+  actorType: 'user' | 'system';
+  actorUserId: string | null;
+  requestId: string;
+  createdAt: Timestamp;
+}
+
 export interface VendorIngestionRunTable {
   id: string;
   vendorReleaseId: string;
@@ -586,6 +622,7 @@ export interface Database {
   migrationApprovalRevocations: MigrationApprovalRevocationTable;
   migrationRuns: MigrationRunTable;
   migrationRunOutbox: MigrationRunOutboxTable;
+  migrationRunEvents: MigrationRunEventTable;
   vendorIngestionRuns: VendorIngestionRunTable;
   vendorEvidenceItems: VendorEvidenceItemTable;
   changeIntelligenceRuns: ChangeIntelligenceRunTable;

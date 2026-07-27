@@ -12,6 +12,7 @@ import type {
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
   PublicMigrationApprovalResult,
+  PublicMigrationRunDetail,
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
@@ -24,6 +25,7 @@ import type {
   CompleteGithubInstallationInput,
   CompletedGithubInstallation,
   CreateMigrationApprovalInput,
+  CancelMigrationRunInput,
   CreateDemoRunInput,
   CreateRepositoryScanInput,
   CreateOrganisationInput,
@@ -82,6 +84,24 @@ const draftSpecification: PublicMigrationSpecification = {
 };
 
 class FakeRepository implements ApiRepositoryPort {
+  private readonly migrationRun: PublicMigrationRunDetail = {
+    id: runId,
+    candidateId: runId,
+    approvalId: organisationId,
+    repositoryFullName: 'SharmaKunal14/orbitchat-migration-fixture',
+    packageName: '@orbitchat/sdk',
+    baseCommitSha: 'a'.repeat(40),
+    targetVersion: '2.0.0',
+    status: 'running',
+    currentStage: 'revalidating',
+    workflowExecutionArn: null,
+    safeErrorCode: null,
+    cancellationRequestedAt: null,
+    version: 2,
+    createdAt: '2026-07-27T00:00:00.000Z',
+    completedAt: null,
+    events: [],
+  };
   public readonly createMigrationApprovalMock = vi.fn<
     (
       userId: string,
@@ -205,6 +225,28 @@ class FakeRepository implements ApiRepositoryPort {
     _runId: string,
   ): Promise<AgentRunRecord> {
     return Promise.resolve(queuedRun);
+  }
+
+  public getMigrationRun(
+    _userId: string,
+    _organisationId: string,
+    _migrationRunId: string,
+  ): Promise<PublicMigrationRunDetail> {
+    return Promise.resolve(this.migrationRun);
+  }
+
+  public cancelMigrationRun(
+    _userId: string,
+    _input: CancelMigrationRunInput,
+  ): Promise<PublicMigrationRunDetail> {
+    return Promise.resolve({
+      ...this.migrationRun,
+      status: 'cancelled',
+      currentStage: 'cancelled',
+      cancellationRequestedAt: '2026-07-27T00:01:00.000Z',
+      completedAt: '2026-07-27T00:01:00.000Z',
+      version: 3,
+    });
   }
 
   public listGithubInstallations(
@@ -719,6 +761,53 @@ describe('API handler trust boundary', () => {
     );
     expect(response.statusCode).toBe(400);
     expect(repository.createMigrationApprovalMock).not.toHaveBeenCalled();
+  });
+
+  it('returns the tenant-scoped durable migration timeline', async () => {
+    const response = await handleRequest(
+      event('GET', `/api/v1/organisations/${organisationId}/migration-runs/${runId}`),
+      dependencies(),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(parsedBody(response)).toMatchObject({
+      run: {
+        id: runId,
+        repositoryFullName: 'SharmaKunal14/orbitchat-migration-fixture',
+        currentStage: 'revalidating',
+      },
+    });
+  });
+
+  it('requires strict input and an idempotency key to cancel a migration', async () => {
+    const path = `/api/v1/organisations/${organisationId}/migration-runs/${runId}/cancellation`;
+    const missingKey = await handleRequest(
+      event('POST', path, {
+        expectedVersion: 2,
+        reasonCode: 'USER_REQUESTED',
+      }),
+      dependencies(),
+    );
+    expect(missingKey.statusCode).toBe(400);
+    expect(parsedBody(missingKey)).toMatchObject({
+      error: { code: 'INVALID_IDEMPOTENCY_KEY' },
+    });
+
+    const response = await handleRequest(
+      event(
+        'POST',
+        path,
+        { expectedVersion: 2, reasonCode: 'USER_REQUESTED' },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'cancel:01J7Y5ABCD',
+        },
+      ),
+      dependencies(),
+    );
+    expect(response.statusCode).toBe(202);
+    expect(parsedBody(response)).toMatchObject({
+      run: { id: runId, status: 'cancelled', currentStage: 'cancelled' },
+    });
   });
 
   it('reviews a draft only through the operator route with idempotency', async () => {

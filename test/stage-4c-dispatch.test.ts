@@ -186,13 +186,14 @@ describe('Stage 4C durable migration dispatch', () => {
     expect(dispatcher).toContain('database.transaction()');
   });
 
-  it('creates a least-privilege receiver that stops before mutation', () => {
+  it('creates a least-privilege receiver that delegates to the Stage 4 control plane', () => {
     expect(compute).toContain('resource "aws_sfn_state_machine" "migration"');
     expect(compute).toContain('validate_migration_approval');
-    expect(compute).toContain('StopBeforeMutation');
+    expect(compute).toContain('EnterAcquisition');
+    expect(compute).toContain('StopBeforeAcquisition');
     expect(compute).toContain('mark_migration_stage_unavailable');
     expect(compute).toContain('aws_sfn_state_machine.migration.arn');
     expect(workflowControl).toContain('MIGRATION_APPROVAL_STALE');
-    expect(workflowControl).toContain('MIGRATION_STAGE_NOT_IMPLEMENTED');
+    expect(workflowControl).toContain('MIGRATION_ACQUISITION_NOT_IMPLEMENTED');
   });
 });

@@ -16,7 +16,8 @@ import {
   workflowControlConfigSchema,
   type WorkflowControlConfig,
 } from '@migration/config';
-import { createDatabase, type AppDatabase } from '@migration/database';
+import { createDatabase, type AppDatabase, type Database } from '@migration/database';
+import type { Transaction } from 'kysely';
 import type { TerminalCode } from '@migration/domain';
 import { writeLog } from '@migration/observability';
 
@@ -63,6 +64,12 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
   z
     .object({
       operation: z.literal('mark_migration_stage_unavailable'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('enter_migration_acquisition'),
       workflow: migrationWorkflowInputSchema,
     })
     .strict(),
@@ -120,37 +127,67 @@ export async function handleWorkflowCommand(
     });
     return { status };
   }
-  if (command.operation === 'mark_migration_stage_unavailable') {
-    await markMigrationFailed(
+  if (command.operation === 'enter_migration_acquisition') {
+    const status = await enterMigrationAcquisition(
       dependency.database,
       command.workflow,
-      'MIGRATION_STAGE_NOT_IMPLEMENTED',
     );
-    writeLog('info', {
-      event: 'migration_stopped_before_mutation',
+    writeLog(status === 'running' ? 'info' : 'warn', {
+      event:
+        status === 'running'
+          ? 'migration_stage_entered'
+          : 'migration_cancelled_at_safe_boundary',
       requestId,
       correlationId: command.workflow.correlationId,
       organisationId: command.workflow.organisationId,
       migrationRunId: command.workflow.migrationRunId,
-      safeErrorCode: 'MIGRATION_STAGE_NOT_IMPLEMENTED',
+      outcome: status,
     });
-    return { status: 'failed' };
+    return { status };
+  }
+  if (command.operation === 'mark_migration_stage_unavailable') {
+    const status = await markMigrationFailed(
+      dependency.database,
+      command.workflow,
+      'MIGRATION_ACQUISITION_NOT_IMPLEMENTED',
+    );
+    writeLog(status === 'failed' ? 'info' : 'warn', {
+      event:
+        status === 'failed'
+          ? 'migration_stopped_before_acquisition'
+          : 'migration_cancelled_at_safe_boundary',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      ...(status === 'failed'
+        ? { safeErrorCode: 'MIGRATION_ACQUISITION_NOT_IMPLEMENTED' }
+        : {}),
+      outcome: status,
+    });
+    return { status };
   }
   if (command.operation === 'mark_migration_infrastructure_failed') {
-    await markMigrationFailed(
+    const status = await markMigrationFailed(
       dependency.database,
       command.workflow,
       'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
     );
-    writeLog('error', {
-      event: 'migration_control_failed',
+    writeLog(status === 'failed' ? 'error' : 'warn', {
+      event:
+        status === 'failed'
+          ? 'migration_control_failed'
+          : 'migration_cancelled_at_safe_boundary',
       requestId,
       correlationId: command.workflow.correlationId,
       organisationId: command.workflow.organisationId,
       migrationRunId: command.workflow.migrationRunId,
-      safeErrorCode: 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
+      ...(status === 'failed'
+        ? { safeErrorCode: 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED' }
+        : {}),
+      outcome: status,
     });
-    return { status: 'failed' };
+    return { status };
   }
   const { workflow } = command;
   if (command.operation === 'mark_started') {
@@ -293,7 +330,7 @@ export function isMigrationApprovalStale(
 async function validateMigrationApproval(
   database: AppDatabase,
   workflow: MigrationWorkflowInput,
-): Promise<'running' | 'stale'> {
+): Promise<'running' | 'stale' | 'cancelled'> {
   return database.transaction().execute(async transaction => {
     const run = await transaction
       .selectFrom('migrationRuns')
@@ -307,6 +344,7 @@ async function validateMigrationApproval(
         'currentStage',
         'attempt',
         'version',
+        'cancellationRequestedAt',
       ])
       .where('id', '=', workflow.migrationRunId)
       .where('organisationId', '=', workflow.organisationId)
@@ -320,15 +358,23 @@ async function validateMigrationApproval(
     ) {
       throw new Error('The migration workflow identity does not match its run.');
     }
+    if (run.status === 'cancelled') return 'cancelled';
     if (
+      run.cancellationRequestedAt !== null &&
+      ['queued', 'running'].includes(run.status)
+    ) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return 'cancelled';
+    }
+    const alreadyRunning =
       run.status === 'running' &&
       run.currentStage === 'revalidating' &&
-      run.version === workflow.expectedVersion + 1
-    ) {
-      return 'running';
-    }
+      run.version === workflow.expectedVersion + 1;
     if (run.status === 'stale') return 'stale';
-    if (run.status !== 'queued' || run.version !== workflow.expectedVersion) {
+    if (
+      !alreadyRunning &&
+      (run.status !== 'queued' || run.version !== workflow.expectedVersion)
+    ) {
       throw new Error('The migration run is not in the expected queued state.');
     }
 
@@ -417,8 +463,18 @@ async function validateMigrationApproval(
         .where('id', '=', run.id)
         .where('version', '=', run.version)
         .executeTakeFirstOrThrow();
+      await appendMigrationRunEvent(transaction, {
+        workflow,
+        eventKey: `run:${run.id}:stale`,
+        eventType: 'run_stale',
+        status: 'stale',
+        stage: 'stale',
+        safeErrorCode: 'MIGRATION_APPROVAL_STALE',
+        createdAt: now,
+      });
       return 'stale';
     }
+    if (alreadyRunning) return 'running';
     const updated = await transaction
       .updateTable('migrationRuns')
       .set({
@@ -435,6 +491,79 @@ async function validateMigrationApproval(
     if (updated.numUpdatedRows !== 1n) {
       throw new Error('The migration run changed during approval validation.');
     }
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${run.id}:approval-validated:${String(run.attempt)}`,
+      eventType: 'approval_validated',
+      status: 'running',
+      stage: 'revalidating',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    return 'running';
+  });
+}
+
+async function enterMigrationAcquisition(
+  database: AppDatabase,
+  workflow: MigrationWorkflowInput,
+): Promise<'running' | 'cancelled'> {
+  return database.transaction().execute(async transaction => {
+    const run = await transaction
+      .selectFrom('migrationRuns')
+      .select([
+        'candidateId',
+        'approvalId',
+        'repositoryId',
+        'status',
+        'currentStage',
+        'attempt',
+        'version',
+        'cancellationRequestedAt',
+      ])
+      .where('id', '=', workflow.migrationRunId)
+      .where('organisationId', '=', workflow.organisationId)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+    if (
+      run.candidateId !== workflow.candidateId ||
+      run.approvalId !== workflow.approvalId ||
+      run.repositoryId !== workflow.repositoryId ||
+      run.attempt !== workflow.expectedAttempt
+    ) {
+      throw new Error('The migration workflow identity does not match its run.');
+    }
+    if (run.status === 'cancelled') return 'cancelled';
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return 'cancelled';
+    }
+    if (run.status === 'running' && run.currentStage === 'acquiring') {
+      return 'running';
+    }
+    if (run.status !== 'running' || run.currentStage !== 'revalidating') {
+      throw new Error('The migration run cannot enter acquisition.');
+    }
+    const now = new Date();
+    await transaction
+      .updateTable('migrationRuns')
+      .set({
+        currentStage: 'acquiring',
+        updatedAt: now,
+        version: run.version + 1,
+      })
+      .where('id', '=', workflow.migrationRunId)
+      .where('version', '=', run.version)
+      .executeTakeFirstOrThrow();
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:stage:acquiring:${String(run.attempt)}`,
+      eventType: 'stage_entered',
+      status: 'running',
+      stage: 'acquiring',
+      safeErrorCode: null,
+      createdAt: now,
+    });
     return 'running';
   });
 }
@@ -443,12 +572,12 @@ async function markMigrationFailed(
   database: AppDatabase,
   workflow: MigrationWorkflowInput,
   safeErrorCode:
-    'MIGRATION_STAGE_NOT_IMPLEMENTED' | 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
-): Promise<void> {
-  await database.transaction().execute(async transaction => {
+    'MIGRATION_ACQUISITION_NOT_IMPLEMENTED' | 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
+): Promise<'failed' | 'cancelled'> {
+  return database.transaction().execute(async transaction => {
     const run = await transaction
       .selectFrom('migrationRuns')
-      .select(['status', 'safeErrorCode', 'version'])
+      .select(['status', 'safeErrorCode', 'version', 'cancellationRequestedAt'])
       .where('id', '=', workflow.migrationRunId)
       .where('organisationId', '=', workflow.organisationId)
       .where('candidateId', '=', workflow.candidateId)
@@ -456,8 +585,15 @@ async function markMigrationFailed(
       .where('repositoryId', '=', workflow.repositoryId)
       .forUpdate()
       .executeTakeFirstOrThrow();
-    if (run.status === 'failed' && run.safeErrorCode === safeErrorCode) return;
-    if (!['queued', 'running'].includes(run.status)) return;
+    if (run.status === 'failed' && run.safeErrorCode === safeErrorCode) {
+      return 'failed';
+    }
+    if (run.status === 'cancelled') return 'cancelled';
+    if (!['queued', 'running'].includes(run.status)) return 'failed';
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return 'cancelled';
+    }
     const now = new Date();
     await transaction
       .updateTable('migrationRuns')
@@ -473,7 +609,101 @@ async function markMigrationFailed(
       .where('id', '=', workflow.migrationRunId)
       .where('version', '=', run.version)
       .executeTakeFirstOrThrow();
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:failed:${safeErrorCode}`,
+      eventType: 'run_failed',
+      status: 'failed',
+      stage: 'failed',
+      safeErrorCode,
+      createdAt: now,
+    });
+    return 'failed';
   });
+}
+
+async function markMigrationCancelled(
+  transaction: Transaction<Database>,
+  workflow: MigrationWorkflowInput,
+  version: number,
+): Promise<void> {
+  const now = new Date();
+  await transaction
+    .updateTable('migrationRuns')
+    .set({
+      status: 'cancelled',
+      currentStage: 'cancelled',
+      terminalResult: 'cancelled',
+      safeErrorCode: null,
+      completedAt: now,
+      updatedAt: now,
+      version: version + 1,
+    })
+    .where('id', '=', workflow.migrationRunId)
+    .where('organisationId', '=', workflow.organisationId)
+    .where('version', '=', version)
+    .executeTakeFirstOrThrow();
+  await appendMigrationRunEvent(transaction, {
+    workflow,
+    eventKey: `run:${workflow.migrationRunId}:cancelled`,
+    eventType: 'run_cancelled',
+    status: 'cancelled',
+    stage: 'cancelled',
+    safeErrorCode: null,
+    createdAt: now,
+  });
+}
+
+interface SystemMigrationRunEvent {
+  readonly workflow: MigrationWorkflowInput;
+  readonly eventKey: string;
+  readonly eventType:
+    | 'approval_validated'
+    | 'stage_entered'
+    | 'run_cancelled'
+    | 'run_failed'
+    | 'run_stale';
+  readonly status: 'running' | 'failed' | 'cancelled' | 'stale';
+  readonly stage: 'revalidating' | 'acquiring' | 'failed' | 'cancelled' | 'stale';
+  readonly safeErrorCode: string | null;
+  readonly createdAt: Date;
+}
+
+async function appendMigrationRunEvent(
+  transaction: Transaction<Database>,
+  input: SystemMigrationRunEvent,
+): Promise<void> {
+  const existing = await transaction
+    .selectFrom('migrationRunEvents')
+    .select('id')
+    .where('migrationRunId', '=', input.workflow.migrationRunId)
+    .where('eventKey', '=', input.eventKey)
+    .executeTakeFirst();
+  if (existing) return;
+  const latest = await transaction
+    .selectFrom('migrationRunEvents')
+    .select('sequence')
+    .where('migrationRunId', '=', input.workflow.migrationRunId)
+    .orderBy('sequence', 'desc')
+    .executeTakeFirst();
+  await transaction
+    .insertInto('migrationRunEvents')
+    .values({
+      id: randomUUID(),
+      organisationId: input.workflow.organisationId,
+      migrationRunId: input.workflow.migrationRunId,
+      sequence: (latest?.sequence ?? 0) + 1,
+      eventKey: input.eventKey,
+      eventType: input.eventType,
+      status: input.status,
+      stage: input.stage,
+      safeErrorCode: input.safeErrorCode,
+      actorType: 'system',
+      actorUserId: null,
+      requestId: input.workflow.correlationId,
+      createdAt: input.createdAt,
+    })
+    .executeTakeFirstOrThrow();
 }
 
 async function readResult(

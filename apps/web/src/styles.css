@@ -523,6 +523,61 @@ input {
   color: var(--danger);
 }
 
+.status-cancelled,
+.status-stale {
+  color: #ffd18a;
+}
+
+.migration-run-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 1.25rem;
+  align-items: center;
+  margin: 2rem 0;
+}
+
+.migration-run-summary > div {
+  display: grid;
+  gap: 0.35rem;
+}
+
+.migration-run-summary span {
+  color: var(--muted);
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.migration-event-list {
+  margin: 1.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.migration-event-list li {
+  display: grid;
+  grid-template-columns: 2rem minmax(0, 1fr);
+  gap: 1rem;
+  margin: 0;
+  padding: 1rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.migration-event-list li > span {
+  display: grid;
+  width: 2rem;
+  height: 2rem;
+  place-items: center;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--mint);
+}
+
+.migration-event-list p {
+  margin: 0.35rem 0;
+  color: var(--muted);
+}
+
 .timeline {
   display: grid;
   grid-template-columns: repeat(3, 1fr);
@@ -1152,6 +1207,10 @@ input {
   }
 
   .approval-limits {
+    grid-template-columns: 1fr;
+  }
+
+  .migration-run-summary {
     grid-template-columns: 1fr;
   }
 

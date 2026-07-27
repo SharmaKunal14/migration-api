@@ -967,6 +967,13 @@ export const migrationWorkflowInputSchema = z
   })
   .strict();
 
+export const cancelMigrationRunRequestSchema = z
+  .object({
+    expectedVersion: z.number().int().positive(),
+    reasonCode: z.literal('USER_REQUESTED'),
+  })
+  .strict();
+
 export const impactAnalysisWorkflowInputSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -1200,6 +1207,7 @@ export type CreateMigrationApprovalRequest = z.infer<
   typeof createMigrationApprovalRequestSchema
 >;
 export type MigrationWorkflowInput = z.infer<typeof migrationWorkflowInputSchema>;
+export type CancelMigrationRunRequest = z.infer<typeof cancelMigrationRunRequestSchema>;
 export type ImpactAnalysisWorkflowInput = z.infer<
   typeof impactAnalysisWorkflowInputSchema
 >;
@@ -1463,6 +1471,49 @@ export interface PublicMigrationRun {
     | 'stale';
   readonly version: number;
   readonly createdAt: string;
+}
+
+export interface PublicMigrationRunEvent {
+  readonly sequence: number;
+  readonly eventType:
+    | 'run_requested'
+    | 'approval_validated'
+    | 'stage_entered'
+    | 'cancellation_requested'
+    | 'run_cancelled'
+    | 'run_failed'
+    | 'run_stale'
+    | 'run_completed';
+  readonly status:
+    'queued' | 'running' | 'succeeded' | 'failed' | 'cancelled' | 'stale';
+  readonly stage:
+    | 'queued'
+    | 'revalidating'
+    | 'acquiring'
+    | 'planning'
+    | 'patching'
+    | 'verifying'
+    | 'repairing'
+    | 'publishing'
+    | 'completed'
+    | 'failed'
+    | 'cancelled'
+    | 'stale';
+  readonly safeErrorCode: string | null;
+  readonly actorType: 'user' | 'system';
+  readonly createdAt: string;
+}
+
+export interface PublicMigrationRunDetail extends PublicMigrationRun {
+  readonly repositoryFullName: string;
+  readonly packageName: string;
+  readonly baseCommitSha: string;
+  readonly targetVersion: string;
+  readonly workflowExecutionArn: string | null;
+  readonly safeErrorCode: string | null;
+  readonly cancellationRequestedAt: string | null;
+  readonly completedAt: string | null;
+  readonly events: readonly PublicMigrationRunEvent[];
 }
 
 export interface PublicMigrationApprovalResult {

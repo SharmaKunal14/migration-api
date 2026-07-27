@@ -12,6 +12,7 @@ import {
 } from '@migration/authorization';
 import {
   agentResultEnvelopeSchema,
+  cancelMigrationRunRequestSchema,
   createMigrationApprovalRequestSchema,
   demoRunRequestSchema,
   githubInstallLinkRequestSchema,
@@ -177,6 +178,18 @@ export async function handleRequest(
               path,
             )
           : null;
+      const migrationRunMatch =
+        method === 'GET'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-runs\/([0-9a-f-]{36})$/u.exec(
+              path,
+            )
+          : null;
+      const cancelMigrationRunMatch =
+        method === 'POST'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-runs\/([0-9a-f-]{36})\/cancellation$/u.exec(
+              path,
+            )
+          : null;
       const reviewSpecificationMatch =
         method === 'POST'
           ? /^\/v1\/operator\/migration-specifications\/([0-9a-f-]{36})\/review$/u.exec(
@@ -300,6 +313,25 @@ export async function handleRequest(
             requestId,
           }),
         );
+      } else if (migrationRunMatch?.[1] && migrationRunMatch[2]) {
+        response = json(200, {
+          run: await repository.getMigrationRun(
+            userId,
+            z.uuid().parse(migrationRunMatch[1]),
+            z.uuid().parse(migrationRunMatch[2]),
+          ),
+        });
+      } else if (cancelMigrationRunMatch?.[1] && cancelMigrationRunMatch[2]) {
+        const input = cancelMigrationRunRequestSchema.parse(parseBody(event));
+        response = json(202, {
+          run: await repository.cancelMigrationRun(userId, {
+            ...input,
+            organisationId: z.uuid().parse(cancelMigrationRunMatch[1]),
+            migrationRunId: z.uuid().parse(cancelMigrationRunMatch[2]),
+            idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+            requestId,
+          }),
+        });
       } else if (createMatch?.[1]) {
         const input = demoRunRequestSchema.parse(parseBody(event));
         const run = await repository.createDemoRun(userId, {

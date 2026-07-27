@@ -1,5 +1,6 @@
 import type {
   CreateMigrationApprovalRequest,
+  CancelMigrationRunRequest,
   PublicAgentRun,
   PublicGithubInstallation,
   PublicGithubInstallLink,
@@ -7,6 +8,7 @@ import type {
   PublicMigrationCandidate,
   PublicMigrationCandidateDetail,
   PublicMigrationApprovalResult,
+  PublicMigrationRunDetail,
   PublicOrganisation,
   PublicDependencyObservation,
   PublicRepository,
@@ -164,6 +166,35 @@ export async function approveMigrationCandidate(
   return request(
     token,
     `/v1/organisations/${organisationId}/migration-candidates/${candidateId}/approvals`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function loadMigrationRun(
+  token: string,
+  organisationId: string,
+  migrationRunId: string,
+): Promise<{ run: PublicMigrationRunDetail }> {
+  return request(
+    token,
+    `/v1/organisations/${organisationId}/migration-runs/${migrationRunId}`,
+  );
+}
+
+export async function cancelMigrationRun(
+  token: string,
+  organisationId: string,
+  migrationRunId: string,
+  idempotencyKey: string,
+  input: CancelMigrationRunRequest,
+): Promise<{ run: PublicMigrationRunDetail }> {
+  return request(
+    token,
+    `/v1/organisations/${organisationId}/migration-runs/${migrationRunId}/cancellation`,
     {
       method: 'POST',
       headers: { 'idempotency-key': idempotencyKey },
