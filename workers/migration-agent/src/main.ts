@@ -8,6 +8,7 @@ import {
 } from '@aws-sdk/client-s3';
 
 import {
+  migrationAgentCheckpointSequence,
   migrationAgentInputArtifactSchema,
   migrationAgentResultSchema,
   type MigrationAgentInputArtifact,
@@ -150,7 +151,7 @@ async function main(): Promise<void> {
         schemaVersion: '1.0',
         binding: input.binding,
         attemptNumber: input.attemptNumber,
-        sequence: 1,
+        sequence: migrationAgentCheckpointSequence(input.attemptNumber, 1),
         phase: 'context',
         lastActionSequence: 0,
         remainingBudget: {
@@ -165,7 +166,7 @@ async function main(): Promise<void> {
         schemaVersion: '1.0',
         binding: input.binding,
         attemptNumber: input.attemptNumber,
-        sequence: 2,
+        sequence: migrationAgentCheckpointSequence(input.attemptNumber, 2),
         phase: 'planning',
         lastActionSequence,
         remainingBudget,
@@ -176,7 +177,7 @@ async function main(): Promise<void> {
         schemaVersion: '1.0',
         binding: input.binding,
         attemptNumber: input.attemptNumber,
-        sequence: 3,
+        sequence: migrationAgentCheckpointSequence(input.attemptNumber, 3),
         phase: 'patching',
         lastActionSequence,
         remainingBudget,

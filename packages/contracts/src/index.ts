@@ -1278,6 +1278,18 @@ export const migrationAgentCheckpointSchema = z
   })
   .strict()
   .superRefine((checkpoint, context) => {
+    const minimumSequence = (checkpoint.attemptNumber - 1) * 3 + 1;
+    const maximumSequence = checkpoint.attemptNumber * 3;
+    if (
+      checkpoint.sequence < minimumSequence ||
+      checkpoint.sequence > maximumSequence
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Checkpoint sequence must use its attempt global range.',
+        path: ['sequence'],
+      });
+    }
     if (
       checkpoint.phase === 'context' &&
       (checkpoint.planDigest !== null || checkpoint.patchDigest !== null)
@@ -1303,6 +1315,23 @@ export const migrationAgentCheckpointSchema = z
       });
     }
   });
+
+export function migrationAgentCheckpointSequence(
+  attemptNumber: number,
+  localSequence: number,
+): number {
+  if (
+    !Number.isSafeInteger(attemptNumber) ||
+    attemptNumber < 1 ||
+    attemptNumber > 10 ||
+    !Number.isSafeInteger(localSequence) ||
+    localSequence < 1 ||
+    localSequence > 3
+  ) {
+    throw new Error('The migration-agent checkpoint sequence is invalid.');
+  }
+  return (attemptNumber - 1) * 3 + localSequence;
+}
 
 const migrationAgentImpactFileSchema = z
   .object({
