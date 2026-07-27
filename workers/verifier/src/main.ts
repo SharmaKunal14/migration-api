@@ -2,6 +2,10 @@ export {
   downloadBoundedArtifact,
   materializeVerificationWorkspace,
 } from '@migration/verifier-workspace';
+export {
+  executeVerificationCommand,
+  runVerificationProfiles,
+} from '@migration/verification-runtime';
 
 const event = {
   timestamp: new Date().toISOString(),

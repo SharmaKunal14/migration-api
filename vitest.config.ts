@@ -59,6 +59,10 @@ export default defineConfig({
         './packages/verifier-workspace/src/index.ts',
         import.meta.url,
       ).pathname,
+      '@migration/verification-runtime': new URL(
+        './packages/verification-runtime/src/index.ts',
+        import.meta.url,
+      ).pathname,
     },
   },
   test: {
@@ -74,6 +78,7 @@ export default defineConfig({
         'packages/source-acquisition/src/**/*.ts',
         'packages/vendor-intelligence/src/**/*.ts',
         'packages/verifier-workspace/src/**/*.ts',
+        'packages/verification-runtime/src/**/*.ts',
       ],
       provider: 'v8',
       reporter: ['text', 'json-summary'],
