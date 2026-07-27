@@ -51,8 +51,7 @@ describe('Stage 3E impact-analysis boundary', () => {
     const archive = await repositoryArchive({
       'package.json': JSON.stringify({
         dependencies: {
-          '@orbitchat/sdk':
-            'git+https://github.com/SharmaKunal14/orbitchat-sdk.git#v1.0.0',
+          '@orbitchat/sdk': '1.0.0',
         },
         scripts: { test: 'vitest run', typecheck: 'tsc --noEmit' },
       }),
