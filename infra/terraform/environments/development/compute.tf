@@ -1569,13 +1569,14 @@ resource "aws_sfn_state_machine" "migration" {
   }
 
   definition = jsonencode({
-    Comment = "Stage 4D durable migration control skeleton; Stage 5 acquisition remains disabled"
+    Comment = "Stage 4E full fail-closed migration workflow skeleton"
     StartAt = "PrepareControlState"
     States = {
       PrepareControlState = {
         Type = "Pass"
         Parameters = {
-          "workflow.$" = "$"
+          repairAttempts = 0
+          "workflow.$"   = "$"
         }
         Next = "ValidateApproval"
       }
@@ -1646,15 +1647,15 @@ resource "aws_sfn_state_machine" "migration" {
           Next        = "MarkInfrastructureFailure"
           ResultPath  = null
         }]
-        Next = "EvaluateAcquisition"
+        Next = "EvaluateAcquisitionEntry"
       }
-      EvaluateAcquisition = {
+      EvaluateAcquisitionEntry = {
         Type = "Choice"
         Choices = [
           {
             Variable     = "$.acquisition.Payload.status"
             StringEquals = "running"
-            Next         = "StopBeforeAcquisition"
+            Next         = "AcquireExactSnapshot"
           },
           {
             Variable     = "$.acquisition.Payload.status"
@@ -1664,13 +1665,428 @@ resource "aws_sfn_state_machine" "migration" {
         ]
         Default = "MarkInfrastructureFailure"
       }
-      StopBeforeAcquisition = {
+      AcquireExactSnapshot = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "evaluate_migration_stage_capability"
+            stage        = "acquiring"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.boundary"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateAcquisition"
+      }
+      EvaluateAcquisition = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "unavailable"
+            Next         = "StopAtUnavailableBoundary"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "completed"
+            Next         = "RunMigrationAgent"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      RunMigrationAgent = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "evaluate_migration_stage_capability"
+            stage        = "planning"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.boundary"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluatePlanning"
+      }
+      EvaluatePlanning = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "unavailable"
+            Next         = "StopAtUnavailableBoundary"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "completed"
+            Next         = "ValidatePatch"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      ValidatePatch = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "evaluate_migration_stage_capability"
+            stage        = "patching"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.boundary"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluatePatch"
+      }
+      EvaluatePatch = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "unavailable"
+            Next         = "StopAtUnavailableBoundary"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "completed"
+            Next         = "RunVerifier"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      RunVerifier = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "evaluate_migration_stage_capability"
+            stage        = "verifying"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.boundary"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateVerification"
+      }
+      EvaluateVerification = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "unavailable"
+            Next         = "StopAtUnavailableBoundary"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "repair_required"
+            Next         = "CheckRepairBudget"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "completed"
+            Next         = "PublishDraftPR"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      CheckRepairBudget = {
+        Type = "Choice"
+        Choices = [{
+          Variable        = "$.repairAttempts"
+          NumericLessThan = 2
+          Next            = "IncrementRepairAttempt"
+        }]
+        Default = "RepairBudgetExhausted"
+      }
+      IncrementRepairAttempt = {
+        Type = "Pass"
+        Parameters = {
+          "repairAttempts.$" = "States.MathAdd($.repairAttempts, 1)"
+          "workflow.$"       = "$.workflow"
+        }
+        Next = "RunRepairAgent"
+      }
+      RunRepairAgent = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "evaluate_migration_stage_capability"
+            stage        = "repairing"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.boundary"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateRepair"
+      }
+      EvaluateRepair = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "unavailable"
+            Next         = "StopAtUnavailableBoundary"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "completed"
+            Next         = "RunVerifier"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      RepairBudgetExhausted = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "mark_migration_repair_budget_exhausted"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = null
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "SafeBoundaryReached"
+      }
+      PublishDraftPR = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "evaluate_migration_stage_capability"
+            stage        = "publishing"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.boundary"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluatePublication"
+      }
+      EvaluatePublication = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "unavailable"
+            Next         = "StopAtUnavailableBoundary"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "completed"
+            Next         = "ReconcilePublication"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      ReconcilePublication = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "evaluate_migration_stage_capability"
+            stage        = "publishing"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.boundary"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateReconciliation"
+      }
+      EvaluateReconciliation = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "unavailable"
+            Next         = "StopAtUnavailableBoundary"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "completed"
+            Next         = "RecordSuccess"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      RecordSuccess = {
+        Type     = "Task"
+        Resource = "arn:aws:states:::lambda:invoke"
+        Parameters = {
+          FunctionName = aws_lambda_function.workflow_control.arn
+          Payload = {
+            operation    = "evaluate_migration_stage_capability"
+            stage        = "publishing"
+            "workflow.$" = "$.workflow"
+          }
+        }
+        ResultPath = "$.boundary"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MarkInfrastructureFailure"
+          ResultPath  = null
+        }]
+        Next = "EvaluateCompletion"
+      }
+      EvaluateCompletion = {
+        Type = "Choice"
+        Choices = [
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "unavailable"
+            Next         = "StopAtUnavailableBoundary"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "cancelled"
+            Next         = "Cancelled"
+          },
+          {
+            Variable     = "$.boundary.Payload.status"
+            StringEquals = "completed"
+            Next         = "Complete"
+          }
+        ]
+        Default = "MarkInfrastructureFailure"
+      }
+      StopAtUnavailableBoundary = {
         Type     = "Task"
         Resource = "arn:aws:states:::lambda:invoke"
         Parameters = {
           FunctionName = aws_lambda_function.workflow_control.arn
           Payload = {
             operation    = "mark_migration_stage_unavailable"
+            "stage.$"    = "$.boundary.Payload.stage"
             "workflow.$" = "$.workflow"
           }
         }
@@ -1699,7 +2115,18 @@ resource "aws_sfn_state_machine" "migration" {
           }
         }
         ResultPath = "$.infrastructure"
-        Next       = "EvaluateInfrastructureFailure"
+        Retry = [{
+          ErrorEquals     = ["Lambda.ServiceException", "Lambda.AWSLambdaException", "Lambda.SdkClientException"]
+          IntervalSeconds = 2
+          BackoffRate     = 2
+          MaxAttempts     = 3
+        }]
+        Catch = [{
+          ErrorEquals = ["States.ALL"]
+          Next        = "MigrationInfrastructureFailed"
+          ResultPath  = null
+        }]
+        Next = "EvaluateInfrastructureFailure"
       }
       EvaluateInfrastructureFailure = {
         Type = "Choice"
@@ -1719,10 +2146,13 @@ resource "aws_sfn_state_machine" "migration" {
       SafeBoundaryReached = {
         Type = "Succeed"
       }
+      Complete = {
+        Type = "Succeed"
+      }
       MigrationInfrastructureFailed = {
         Type  = "Fail"
         Error = "MigrationInfrastructureFailed"
-        Cause = "The Stage 4D durable migration control workflow failed."
+        Cause = "The Stage 4E durable migration workflow failed."
       }
     }
   })

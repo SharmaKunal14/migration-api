@@ -9,6 +9,7 @@ export interface LogContext {
   readonly organisationId?: string;
   readonly agentRunId?: string;
   readonly migrationRunId?: string;
+  readonly stage?: string;
   readonly repositoryId?: string;
   readonly repositoryScanId?: string;
   readonly outcome?: string;

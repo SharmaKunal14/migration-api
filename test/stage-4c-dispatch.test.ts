@@ -190,7 +190,8 @@ describe('Stage 4C durable migration dispatch', () => {
     expect(compute).toContain('resource "aws_sfn_state_machine" "migration"');
     expect(compute).toContain('validate_migration_approval');
     expect(compute).toContain('EnterAcquisition');
-    expect(compute).toContain('StopBeforeAcquisition');
+    expect(compute).toContain('AcquireExactSnapshot');
+    expect(compute).toContain('StopAtUnavailableBoundary');
     expect(compute).toContain('mark_migration_stage_unavailable');
     expect(compute).toContain('aws_sfn_state_machine.migration.arn');
     expect(workflowControl).toContain('MIGRATION_APPROVAL_STALE');

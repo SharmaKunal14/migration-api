@@ -78,7 +78,7 @@ describe('Stage 4D durable migration orchestration', () => {
     expect(migrationStateMachine).toContain('EnterAcquisition');
     expect(migrationStateMachine).toContain('EvaluateAcquisition');
     expect(migrationStateMachine).toContain('Cancelled');
-    expect(migrationStateMachine).toContain('StopBeforeAcquisition');
+    expect(migrationStateMachine).toContain('StopAtUnavailableBoundary');
     expect(workflowControl).toContain('cancellationRequestedAt');
     expect(workflowControl).toContain('markMigrationCancelled');
     expect(workflowControl).toContain('migration_cancelled_at_safe_boundary');

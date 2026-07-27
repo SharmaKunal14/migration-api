@@ -23,6 +23,20 @@ import { writeLog } from '@migration/observability';
 
 const MAX_RESULT_BYTES = 1024 * 1024;
 
+export const migrationExecutionStageSchema = z.enum([
+  'acquiring',
+  'planning',
+  'patching',
+  'verifying',
+  'repairing',
+  'publishing',
+]);
+type MigrationExecutionStage = z.infer<typeof migrationExecutionStageSchema>;
+export const migrationStageCapabilityStatusSchema = z.enum([
+  'unavailable',
+  'cancelled',
+]);
+
 const workflowCommandSchema = z.discriminatedUnion('operation', [
   z
     .object({
@@ -65,6 +79,14 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
     .object({
       operation: z.literal('mark_migration_stage_unavailable'),
       workflow: migrationWorkflowInputSchema,
+      stage: migrationExecutionStageSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('evaluate_migration_stage_capability'),
+      workflow: migrationWorkflowInputSchema,
+      stage: migrationExecutionStageSchema,
     })
     .strict(),
   z
@@ -76,6 +98,12 @@ const workflowCommandSchema = z.discriminatedUnion('operation', [
   z
     .object({
       operation: z.literal('mark_migration_infrastructure_failed'),
+      workflow: migrationWorkflowInputSchema,
+    })
+    .strict(),
+  z
+    .object({
+      operation: z.literal('mark_migration_repair_budget_exhausted'),
       workflow: migrationWorkflowInputSchema,
     })
     .strict(),
@@ -110,7 +138,10 @@ export async function handleWorkflowCommand(
   event: unknown,
   requestId: string,
   dependency: WorkflowDependencies,
-): Promise<{ readonly status: string }> {
+): Promise<{
+  readonly status: string;
+  readonly stage?: MigrationExecutionStage;
+}> {
   const command = workflowCommandSchema.parse(event);
   if (command.operation === 'validate_migration_approval') {
     const status = await validateMigrationApproval(
@@ -145,25 +176,46 @@ export async function handleWorkflowCommand(
     });
     return { status };
   }
-  if (command.operation === 'mark_migration_stage_unavailable') {
-    const status = await markMigrationFailed(
+  if (command.operation === 'evaluate_migration_stage_capability') {
+    const status = await evaluateMigrationStageCapability(
       dependency.database,
       command.workflow,
-      'MIGRATION_ACQUISITION_NOT_IMPLEMENTED',
+      command.stage,
     );
-    writeLog(status === 'failed' ? 'info' : 'warn', {
+    writeLog(status === 'unavailable' ? 'info' : 'warn', {
       event:
-        status === 'failed'
-          ? 'migration_stopped_before_acquisition'
+        status === 'unavailable'
+          ? 'migration_stage_capability_unavailable'
           : 'migration_cancelled_at_safe_boundary',
       requestId,
       correlationId: command.workflow.correlationId,
       organisationId: command.workflow.organisationId,
       migrationRunId: command.workflow.migrationRunId,
-      ...(status === 'failed'
-        ? { safeErrorCode: 'MIGRATION_ACQUISITION_NOT_IMPLEMENTED' }
-        : {}),
       outcome: status,
+      stage: command.stage,
+    });
+    return { status, stage: command.stage };
+  }
+  if (command.operation === 'mark_migration_stage_unavailable') {
+    const safeErrorCode = stageUnavailableSafeErrorCode(command.stage);
+    const status = await markMigrationFailed(
+      dependency.database,
+      command.workflow,
+      safeErrorCode,
+      command.stage,
+    );
+    writeLog(status === 'failed' ? 'info' : 'warn', {
+      event:
+        status === 'failed'
+          ? 'migration_stopped_at_unavailable_stage'
+          : 'migration_cancelled_at_safe_boundary',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      ...(status === 'failed' ? { safeErrorCode } : {}),
+      outcome: status,
+      stage: command.stage,
     });
     return { status };
   }
@@ -186,6 +238,30 @@ export async function handleWorkflowCommand(
         ? { safeErrorCode: 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED' }
         : {}),
       outcome: status,
+    });
+    return { status };
+  }
+  if (command.operation === 'mark_migration_repair_budget_exhausted') {
+    const status = await markMigrationFailed(
+      dependency.database,
+      command.workflow,
+      'MIGRATION_REPAIR_BUDGET_EXHAUSTED',
+      'verifying',
+    );
+    writeLog(status === 'failed' ? 'warn' : 'info', {
+      event:
+        status === 'failed'
+          ? 'migration_repair_budget_exhausted'
+          : 'migration_cancelled_at_safe_boundary',
+      requestId,
+      correlationId: command.workflow.correlationId,
+      organisationId: command.workflow.organisationId,
+      migrationRunId: command.workflow.migrationRunId,
+      ...(status === 'failed'
+        ? { safeErrorCode: 'MIGRATION_REPAIR_BUDGET_EXHAUSTED' }
+        : {}),
+      outcome: status,
+      stage: 'verifying',
     });
     return { status };
   }
@@ -568,16 +644,86 @@ async function enterMigrationAcquisition(
   });
 }
 
+async function evaluateMigrationStageCapability(
+  database: AppDatabase,
+  workflow: MigrationWorkflowInput,
+  stage: MigrationExecutionStage,
+): Promise<z.infer<typeof migrationStageCapabilityStatusSchema>> {
+  return database.transaction().execute(async transaction => {
+    const run = await transaction
+      .selectFrom('migrationRuns')
+      .select([
+        'candidateId',
+        'approvalId',
+        'repositoryId',
+        'status',
+        'currentStage',
+        'attempt',
+        'version',
+        'cancellationRequestedAt',
+      ])
+      .where('id', '=', workflow.migrationRunId)
+      .where('organisationId', '=', workflow.organisationId)
+      .forUpdate()
+      .executeTakeFirstOrThrow();
+    if (
+      run.candidateId !== workflow.candidateId ||
+      run.approvalId !== workflow.approvalId ||
+      run.repositoryId !== workflow.repositoryId ||
+      run.attempt !== workflow.expectedAttempt
+    ) {
+      throw new Error('The migration workflow identity does not match its run.');
+    }
+    if (run.status === 'cancelled') return 'cancelled';
+    if (run.cancellationRequestedAt !== null) {
+      await markMigrationCancelled(transaction, workflow, run.version);
+      return 'cancelled';
+    }
+    if (run.status !== 'running' || run.currentStage !== stage) {
+      throw new Error('The migration stage capability check is out of sequence.');
+    }
+    return 'unavailable';
+  });
+}
+
+type StageUnavailableSafeErrorCode =
+  | 'MIGRATION_ACQUISITION_NOT_IMPLEMENTED'
+  | 'MIGRATION_AGENT_NOT_IMPLEMENTED'
+  | 'MIGRATION_VERIFICATION_NOT_IMPLEMENTED'
+  | 'MIGRATION_PUBLICATION_NOT_IMPLEMENTED';
+
+export function stageUnavailableSafeErrorCode(
+  stage: MigrationExecutionStage,
+): StageUnavailableSafeErrorCode {
+  if (stage === 'acquiring') return 'MIGRATION_ACQUISITION_NOT_IMPLEMENTED';
+  if (stage === 'planning' || stage === 'patching') {
+    return 'MIGRATION_AGENT_NOT_IMPLEMENTED';
+  }
+  if (stage === 'verifying' || stage === 'repairing') {
+    return 'MIGRATION_VERIFICATION_NOT_IMPLEMENTED';
+  }
+  return 'MIGRATION_PUBLICATION_NOT_IMPLEMENTED';
+}
+
 async function markMigrationFailed(
   database: AppDatabase,
   workflow: MigrationWorkflowInput,
   safeErrorCode:
-    'MIGRATION_ACQUISITION_NOT_IMPLEMENTED' | 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
+    | StageUnavailableSafeErrorCode
+    | 'MIGRATION_REPAIR_BUDGET_EXHAUSTED'
+    | 'MIGRATION_CONTROL_INFRASTRUCTURE_FAILED',
+  expectedStage?: MigrationExecutionStage,
 ): Promise<'failed' | 'cancelled'> {
   return database.transaction().execute(async transaction => {
     const run = await transaction
       .selectFrom('migrationRuns')
-      .select(['status', 'safeErrorCode', 'version', 'cancellationRequestedAt'])
+      .select([
+        'status',
+        'currentStage',
+        'safeErrorCode',
+        'version',
+        'cancellationRequestedAt',
+      ])
       .where('id', '=', workflow.migrationRunId)
       .where('organisationId', '=', workflow.organisationId)
       .where('candidateId', '=', workflow.candidateId)
@@ -593,6 +739,9 @@ async function markMigrationFailed(
     if (run.cancellationRequestedAt !== null) {
       await markMigrationCancelled(transaction, workflow, run.version);
       return 'cancelled';
+    }
+    if (expectedStage !== undefined && run.currentStage !== expectedStage) {
+      throw new Error('The migration stage failure is out of sequence.');
     }
     const now = new Date();
     await transaction
