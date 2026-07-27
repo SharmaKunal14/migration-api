@@ -1762,23 +1762,6 @@ async function putImmutableObject(
   migrationRunId: string,
 ): Promise<void> {
   try {
-    const existing = await dependency.s3.send(
-      new HeadObjectCommand({
-        Bucket: dependency.config.ARTIFACT_BUCKET,
-        Key: key,
-      }),
-    );
-    assertImmutableObject(existing, body, contentType, digest, migrationRunId);
-    return;
-  } catch (error) {
-    if (!(
-      error instanceof S3ServiceException &&
-      (error.name === 'NotFound' || error.$metadata.httpStatusCode === 404)
-    )) {
-      throw error;
-    }
-  }
-  try {
     await dependency.s3.send(
       new PutObjectCommand({
         Bucket: dependency.config.ARTIFACT_BUCKET,
@@ -1794,20 +1777,21 @@ async function putImmutableObject(
         IfNoneMatch: '*',
       }),
     );
+    return;
   } catch (error) {
     if (!(
       error instanceof S3ServiceException && error.$metadata.httpStatusCode === 412
     )) {
       throw error;
     }
-    const existing = await dependency.s3.send(
-      new HeadObjectCommand({
-        Bucket: dependency.config.ARTIFACT_BUCKET,
-        Key: key,
-      }),
-    );
-    assertImmutableObject(existing, body, contentType, digest, migrationRunId);
   }
+  const existing = await dependency.s3.send(
+    new HeadObjectCommand({
+      Bucket: dependency.config.ARTIFACT_BUCKET,
+      Key: key,
+    }),
+  );
+  assertImmutableObject(existing, body, contentType, digest, migrationRunId);
 }
 
 function assertImmutableObject(

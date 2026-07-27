@@ -466,6 +466,24 @@ describe('Stage 5C and 5D bounded migration planning and patching', () => {
     expect(migration).toContain("'plan_created'");
     expect(migration).toContain("'patch_validated'");
   });
+
+  it('creates immutable agent artifacts without requiring bucket-list permission', () => {
+    const workflowControl = read('services/workflow-control/src/handler.ts');
+    const helperStart = workflowControl.indexOf('async function putImmutableObject(');
+    const helperEnd = workflowControl.indexOf(
+      '\nfunction assertImmutableObject(',
+      helperStart,
+    );
+    const helper = workflowControl.slice(helperStart, helperEnd);
+
+    expect(helperStart).toBeGreaterThanOrEqual(0);
+    expect(helperEnd).toBeGreaterThan(helperStart);
+    expect(helper).toContain("IfNoneMatch: '*'");
+    expect(helper.indexOf('new PutObjectCommand(')).toBeLessThan(
+      helper.indexOf('new HeadObjectCommand('),
+    );
+    expect(helper).not.toContain("error.name === 'NotFound'");
+  });
 });
 
 function build(
