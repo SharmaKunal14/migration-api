@@ -97,12 +97,7 @@ function ProtectedLayout(): React.JSX.Element {
   return (
     <div className="app-shell">
       <header className="topbar">
-        <a className="brand" href="/onboarding">
-          <span className="brand-mark" aria-hidden="true">
-            M
-          </span>
-          Migration API
-        </a>
+        <ProductBrand href="/onboarding" />
         <button
           className="text-button"
           type="button"
@@ -115,6 +110,37 @@ function ProtectedLayout(): React.JSX.Element {
         <Outlet />
       </main>
     </div>
+  );
+}
+
+interface ProductBrandProps {
+  readonly href?: string;
+  readonly showTagline?: boolean;
+}
+
+function ProductBrand({
+  href,
+  showTagline = false,
+}: ProductBrandProps): React.JSX.Element {
+  const lockup = (
+    <>
+      <span className="brand-mark" aria-hidden="true">
+        <span>U</span>
+        <span className="brand-arrow">↗</span>
+      </span>
+      <span className="brand-copy">
+        <span className="brand-name">Upversion</span>
+        {showTagline && <span className="brand-tagline">Migration intelligence</span>}
+      </span>
+    </>
+  );
+
+  return href ? (
+    <a className="brand" href={href} aria-label="Upversion home">
+      {lockup}
+    </a>
+  ) : (
+    <div className="brand">{lockup}</div>
   );
 }
 
@@ -146,6 +172,9 @@ function LoginPage(): React.JSX.Element {
   return (
     <main className="login-page">
       <section className="login-card">
+        <div className="login-brand">
+          <ProductBrand showTagline />
+        </div>
         <p className="eyebrow">Production-shaped migration intelligence</p>
         <h1>Understand the change before touching the code.</h1>
         <p className="lede">
@@ -391,8 +420,8 @@ function GithubSettingsPage(): React.JSX.Element {
       <p className="eyebrow">GitHub connection</p>
       <h1>Connect repository access</h1>
       <p className="lede">
-        Install the Migration API GitHub App on an organisation or account. Choose only
-        the repositories you want this workspace to see.
+        Install the Upversion GitHub App on an organisation or account. Choose only the
+        repositories you want this workspace to see.
       </p>
       <section className="panel">
         <h2>What you are authorising</h2>
