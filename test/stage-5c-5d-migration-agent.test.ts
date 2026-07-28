@@ -327,6 +327,178 @@ describe('Stage 5C, 5D, and 5E bounded migration planning and patch validation',
     expect(wrongBinding.validation.safeErrorCode).toBe('PATCH_BASE_BINDING_MISMATCH');
   });
 
+  it('requires an existing npm lockfile when dependency declarations change', () => {
+    const manifestPath = 'package.json';
+    const lockfilePath = 'package-lock.json';
+    const npmInput = {
+      ...input,
+      authority: {
+        ...input.authority,
+        patchPolicy: {
+          ...input.authority.patchPolicy,
+          allowedPaths: [manifestPath, lockfilePath],
+          allowedChangeCategories: ['dependency_manifest', 'lockfile'],
+          maxChangedFiles: 2,
+          maxAddedLines: 100,
+          maxDeletedLines: 100,
+        },
+      },
+    } as MigrationAgentInputArtifact;
+    const manifestBefore = JSON.stringify(
+      { dependencies: { '@orbitchat/sdk': '1.0.0' } },
+      null,
+      2,
+    );
+    const manifestAfter = JSON.stringify(
+      { dependencies: { '@orbitchat/sdk': '2.0.0' } },
+      null,
+      2,
+    );
+    const lockfileBefore = JSON.stringify(
+      {
+        lockfileVersion: 3,
+        packages: {
+          '': { dependencies: { '@orbitchat/sdk': '1.0.0' } },
+          'node_modules/@orbitchat/sdk': { version: '1.0.0' },
+        },
+      },
+      null,
+      2,
+    );
+    const lockfileAfter = lockfileBefore.replaceAll('1.0.0', '2.0.0');
+    const manifestPlanFile = {
+      ...plan.files[0],
+      path: manifestPath,
+      changeCategory: 'dependency_manifest' as const,
+    };
+    const manifestPlan = migrationExecutionPlanSchema.parse({
+      ...plan,
+      files: [manifestPlanFile],
+    });
+    const missingLockfile = buildAndValidatePatch({
+      migration: npmInput,
+      plan: manifestPlan,
+      edits: [
+        migrationAgentProposedEditSchema.parse({
+          path: manifestPath,
+          operation: 'modify',
+          changeCategory: 'dependency_manifest',
+          content: manifestAfter,
+        }),
+      ],
+      readFile: path =>
+        new Map([
+          [manifestPath, manifestBefore],
+          [lockfilePath, lockfileBefore],
+        ]).get(path),
+    });
+    expect(missingLockfile.validation.status).toBe('rejected');
+    expect(missingLockfile.validation.safeErrorCode).toBe('PATCH_LOCKFILE_REQUIRED');
+
+    const repositoryWithoutLockfile = buildAndValidatePatch({
+      migration: npmInput,
+      plan: manifestPlan,
+      edits: [
+        migrationAgentProposedEditSchema.parse({
+          path: manifestPath,
+          operation: 'modify',
+          changeCategory: 'dependency_manifest',
+          content: manifestAfter,
+        }),
+      ],
+      readFile: path => (path === manifestPath ? manifestBefore : undefined),
+    });
+    expect(repositoryWithoutLockfile.validation.status).toBe('accepted');
+
+    const consistentPlan = migrationExecutionPlanSchema.parse({
+      ...plan,
+      files: [
+        manifestPlanFile,
+        {
+          ...plan.files[0],
+          path: lockfilePath,
+          changeCategory: 'lockfile',
+        },
+      ],
+    });
+    const consistent = buildAndValidatePatch({
+      migration: npmInput,
+      plan: consistentPlan,
+      edits: [
+        migrationAgentProposedEditSchema.parse({
+          path: manifestPath,
+          operation: 'modify',
+          changeCategory: 'dependency_manifest',
+          content: manifestAfter,
+        }),
+        migrationAgentProposedEditSchema.parse({
+          path: lockfilePath,
+          operation: 'modify',
+          changeCategory: 'lockfile',
+          content: lockfileAfter,
+        }),
+      ],
+      readFile: path =>
+        new Map([
+          [manifestPath, manifestBefore],
+          [lockfilePath, lockfileBefore],
+        ]).get(path),
+    });
+    expect(consistent.validation.status).toBe('accepted');
+  });
+
+  it('does not require a lockfile for non-dependency manifest changes', () => {
+    const manifestPath = 'package.json';
+    const lockfilePath = 'package-lock.json';
+    const manifestBefore = JSON.stringify({
+      scripts: { test: 'vitest run' },
+      dependencies: { '@orbitchat/sdk': '1.0.0' },
+    });
+    const manifestAfter = JSON.stringify({
+      scripts: { test: 'vitest run --coverage' },
+      dependencies: { '@orbitchat/sdk': '1.0.0' },
+    });
+    const npmInput = {
+      ...input,
+      authority: {
+        ...input.authority,
+        patchPolicy: {
+          ...input.authority.patchPolicy,
+          allowedPaths: [manifestPath],
+          allowedChangeCategories: ['dependency_manifest'],
+        },
+      },
+    } as MigrationAgentInputArtifact;
+    const manifestPlan = migrationExecutionPlanSchema.parse({
+      ...plan,
+      files: [
+        {
+          ...plan.files[0],
+          path: manifestPath,
+          changeCategory: 'dependency_manifest',
+        },
+      ],
+    });
+    const result = buildAndValidatePatch({
+      migration: npmInput,
+      plan: manifestPlan,
+      edits: [
+        migrationAgentProposedEditSchema.parse({
+          path: manifestPath,
+          operation: 'modify',
+          changeCategory: 'dependency_manifest',
+          content: manifestAfter,
+        }),
+      ],
+      readFile: path =>
+        new Map([
+          [manifestPath, manifestBefore],
+          [lockfilePath, '{"lockfileVersion":3}'],
+        ]).get(path),
+    });
+    expect(result.validation.status).toBe('accepted');
+  });
+
   it('rejects traversal and binary model output at the contract boundary', () => {
     expect(() =>
       migrationAgentProposedEditSchema.parse({

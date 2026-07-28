@@ -161,20 +161,34 @@ const gitObjectResponseSchema = z
   .object({ sha: z.string().regex(/^[a-f0-9]{40}$/u) })
   .loose();
 
+const gitTreeEntrySchema = z.discriminatedUnion('type', [
+  z
+    .object({
+      path: z.string().min(1).max(1_024),
+      mode: z.enum(['100644', '100755', '120000']),
+      type: z.literal('blob'),
+    })
+    .loose(),
+  z
+    .object({
+      path: z.string().min(1).max(1_024),
+      mode: z.literal('040000'),
+      type: z.literal('tree'),
+    })
+    .loose(),
+  z
+    .object({
+      path: z.string().min(1).max(1_024),
+      mode: z.literal('160000'),
+      type: z.literal('commit'),
+    })
+    .loose(),
+]);
+
 const gitTreeResponseSchema = z
   .object({
     truncated: z.literal(false),
-    tree: z
-      .array(
-        z
-          .object({
-            path: z.string().min(1).max(1_024),
-            mode: z.enum(['100644', '100755']),
-            type: z.literal('blob'),
-          })
-          .loose(),
-      )
-      .max(20_000),
+    tree: z.array(gitTreeEntrySchema).max(20_000),
   })
   .loose();
 
@@ -930,7 +944,20 @@ async function publishDraftPullRequest(
       { method: 'GET' },
       gitTreeResponseSchema,
     );
-    const modes = new Map(baseTree.tree.map(entry => [entry.path, entry.mode]));
+    const modes = new Map(
+      baseTree.tree
+        .filter(
+          (
+            entry,
+          ): entry is Extract<
+            (typeof baseTree.tree)[number],
+            { readonly type: 'blob' }
+          > =>
+            entry.type === 'blob' &&
+            (entry.mode === '100644' || entry.mode === '100755'),
+        )
+        .map(entry => [entry.path, entry.mode]),
+    );
     const tree = [];
     for (const file of changedFiles) {
       const mode = modes.get(file.path);

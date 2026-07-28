@@ -394,7 +394,20 @@ describe('GitHub token broker', () => {
           new Response(
             JSON.stringify({
               truncated: false,
-              tree: [{ path: 'package.json', mode: '100644', type: 'blob' }],
+              tree: [
+                { path: 'src', mode: '040000', type: 'tree' },
+                {
+                  path: 'vendor-link',
+                  mode: '120000',
+                  type: 'blob',
+                },
+                {
+                  path: 'vendor-submodule',
+                  mode: '160000',
+                  type: 'commit',
+                },
+                { path: 'package.json', mode: '100644', type: 'blob' },
+              ],
             }),
           ),
         );

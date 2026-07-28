@@ -129,6 +129,7 @@ export class MigrationAgentGateway {
           'Preserve unresolved notification-default behavior instead of inventing equivalence.',
           'Every edit must correspond exactly to one plan file with the same operation and change category.',
           'Use exact migration changeId values such as C-01 for evidenceChangeIds and transformationIds; never invent transformation identifiers.',
+          'When changing dependency declarations in package.json, include a consistent update to its existing nearest governing package-lock.json in the same plan and edits.',
           'For modify and create operations, return the complete final UTF-8 file content. For delete, return null.',
           'Never return null content for a modify or create operation.',
           'Keep changes minimal, idiomatic, and directly supported by reviewed evidence.',

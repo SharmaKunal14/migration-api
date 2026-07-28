@@ -30,6 +30,12 @@ const forbiddenPaths = [
   /(?:^|\/)\.env(?:\.|$)/u,
   /(?:^|\/)(?:secrets?|credentials?)(?:\.|\/|$)/iu,
 ];
+const npmDependencyFields = [
+  'dependencies',
+  'devDependencies',
+  'optionalDependencies',
+  'peerDependencies',
+] as const;
 
 export interface PatchBuildInput {
   readonly migration: MigrationAgentInputArtifact;
@@ -162,6 +168,23 @@ export function buildAndValidatePatch(input: PatchBuildInput): PatchBuildResult 
     if (edit.operation === 'modify' && before === edit.content) {
       checks.set('diff_structure', 'PATCH_EMPTY_CHANGE');
       continue;
+    }
+    if (
+      edit.operation === 'modify' &&
+      before !== undefined &&
+      edit.content !== null &&
+      isPackageManifestPath(edit.path)
+    ) {
+      const beforeDependencies = parseNpmDependencyDeclarations(before);
+      const afterDependencies = parseNpmDependencyDeclarations(edit.content);
+      if (beforeDependencies === null || afterDependencies === null) {
+        checks.set('diff_structure', 'PATCH_DEPENDENCY_MANIFEST_INVALID');
+      } else if (beforeDependencies !== afterDependencies) {
+        const lockfilePath = nearestPackageLockPath(edit.path, input.readFile);
+        if (lockfilePath !== null && !editsByPath.has(lockfilePath)) {
+          checks.set('diff_structure', 'PATCH_LOCKFILE_REQUIRED');
+        }
+      }
     }
     built.push(buildFilePatch(edit, before));
   }
@@ -354,6 +377,51 @@ function digestJson(value: unknown): string {
 
 function isTypeScriptPath(path: string): boolean {
   return /\.[cm]?[jt]sx?$/u.test(path);
+}
+
+function isPackageManifestPath(path: string): boolean {
+  return path === 'package.json' || path.endsWith('/package.json');
+}
+
+function nearestPackageLockPath(
+  manifestPath: string,
+  readFile: PatchBuildInput['readFile'],
+): string | null {
+  const directories = manifestPath.split('/').slice(0, -1);
+  for (let depth = directories.length; depth >= 0; depth -= 1) {
+    const prefix = directories.slice(0, depth).join('/');
+    const candidate = prefix ? `${prefix}/package-lock.json` : 'package-lock.json';
+    if (readFile(candidate) !== undefined) return candidate;
+  }
+  return null;
+}
+
+function parseNpmDependencyDeclarations(source: string): string | null {
+  let manifest: unknown;
+  try {
+    manifest = JSON.parse(source);
+  } catch {
+    return null;
+  }
+  if (!isRecord(manifest)) return null;
+  const declarations: Record<string, Record<string, string>> = {};
+  for (const field of npmDependencyFields) {
+    const section = manifest[field];
+    if (section === undefined) continue;
+    if (!isRecord(section)) return null;
+    const entries = Object.entries(section);
+    if (entries.some(([, version]) => typeof version !== 'string')) return null;
+    declarations[field] = Object.fromEntries(
+      (entries as [string, string][]).sort(([left], [right]) =>
+        left.localeCompare(right),
+      ),
+    );
+  }
+  return JSON.stringify(declarations);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
 function hasTypeScriptSyntaxErrors(path: string, source: string): boolean {

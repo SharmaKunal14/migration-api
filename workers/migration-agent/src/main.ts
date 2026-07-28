@@ -111,9 +111,16 @@ async function main(): Promise<void> {
     const allowedPaths = new Set(input.authority.patchPolicy.allowedPaths);
     const preloadReadPaths = [
       ...new Set(
-        input.impact.affectedFiles
-          .map(file => file.path)
-          .filter(path => allowedPaths.has(path)),
+        [
+          ...input.impact.affectedFiles.map(file => file.path),
+          ...input.authority.patchPolicy.allowedPaths.filter(
+            path =>
+              path === 'package.json' ||
+              path.endsWith('/package.json') ||
+              path === 'package-lock.json' ||
+              path.endsWith('/package-lock.json'),
+          ),
+        ].filter(path => allowedPaths.has(path)),
       ),
     ].sort();
     if (preloadReadPaths.some(path => tools.fileKind(path) === 'binary')) {
