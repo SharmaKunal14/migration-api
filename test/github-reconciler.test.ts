@@ -54,6 +54,9 @@ class FakeRepository implements GithubReconciliationRepository {
   public readonly completeLifecycleMock = vi.fn<
     GithubReconciliationRepository['completeLifecycle']
   >(() => Promise.resolve());
+  public readonly completePullRequestMock = vi.fn<
+    GithubReconciliationRepository['completePullRequest']
+  >(() => Promise.resolve('reconciled'));
   public readonly completeWithoutReconciliationMock = vi.fn<
     GithubReconciliationRepository['completeWithoutReconciliation']
   >(() => Promise.resolve());
@@ -95,6 +98,14 @@ class FakeRepository implements GithubReconciliationRepository {
       githubInstallationId,
       status,
     );
+  }
+
+  public completePullRequest(
+    requestedDeliveryId: string,
+    installation: Parameters<GithubReconciliationRepository['completePullRequest']>[1],
+    lifecycle: Parameters<GithubReconciliationRepository['completePullRequest']>[2],
+  ): ReturnType<GithubReconciliationRepository['completePullRequest']> {
+    return this.completePullRequestMock(requestedDeliveryId, installation, lifecycle);
   }
 
   public completeWithoutReconciliation(
@@ -206,6 +217,75 @@ describe('GitHub reconciliation boundary', () => {
 
     expect(result).toEqual({ batchItemFailures: [] });
     expect(provider.getInventory).not.toHaveBeenCalled();
+  });
+
+  it('reconciles only the immutable identity of a published pull request', async () => {
+    const repository = new FakeRepository();
+    const result = await handleReconciliationBatch(
+      sqsEvent('pull_request', {
+        action: 'closed',
+        installation: { id: 12345 },
+        repository: { id: 67890 },
+        pull_request: {
+          number: 42,
+          node_id: 'PR_kwDOExample',
+          html_url: 'https://github.com/acme/widget/pull/42',
+          state: 'closed',
+          merged: true,
+          draft: false,
+          head: { ref: 'migration-api/run-e4e2d9db-bd1c-4eef-b685-231128724583' },
+          base: { ref: 'main' },
+        },
+      }),
+      dependencies(repository),
+    );
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(repository.completePullRequestMock).toHaveBeenCalledWith(
+      deliveryId,
+      { id: linkedInstallationId, organisationId },
+      {
+        githubRepositoryId: '67890',
+        pullRequestNumber: 42,
+        pullRequestNodeId: 'PR_kwDOExample',
+        pullRequestUrl: 'https://github.com/acme/widget/pull/42',
+        headBranch: 'migration-api/run-e4e2d9db-bd1c-4eef-b685-231128724583',
+        baseBranch: 'main',
+        state: 'merged',
+        isDraft: false,
+      },
+    );
+    expect(repository.completeInventoryMock).not.toHaveBeenCalled();
+  });
+
+  it('ignores pull requests from an installation that is not linked', async () => {
+    const repository = new FakeRepository();
+    repository.resolveInstallationMock.mockResolvedValueOnce(undefined);
+
+    const result = await handleReconciliationBatch(
+      sqsEvent('pull_request', {
+        action: 'opened',
+        installation: { id: 99999 },
+        repository: { id: 67890 },
+        pull_request: {
+          number: 42,
+          node_id: 'PR_kwDOExample',
+          html_url: 'https://github.com/acme/widget/pull/42',
+          state: 'open',
+          merged: false,
+          draft: true,
+          head: { ref: 'migration-api/run-e4e2d9db-bd1c-4eef-b685-231128724583' },
+          base: { ref: 'main' },
+        },
+      }),
+      dependencies(repository),
+    );
+
+    expect(result).toEqual({ batchItemFailures: [] });
+    expect(repository.completeWithoutReconciliationMock).toHaveBeenCalledWith(
+      deliveryId,
+    );
+    expect(repository.completePullRequestMock).not.toHaveBeenCalled();
   });
 
   it.each([

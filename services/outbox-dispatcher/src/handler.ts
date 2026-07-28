@@ -55,6 +55,14 @@ export type ClaimedEvent =
       readonly id: string;
       readonly payload: MigrationWorkflowInput;
       readonly attempts: number;
+    }
+  | {
+      readonly kind: 'publication_notification';
+      readonly id: string;
+      readonly organisationId: string;
+      readonly migrationRunId: string;
+      readonly publicationId: string;
+      readonly attempts: number;
     };
 
 let cachedDependencies: DispatcherDependencies | undefined;
@@ -83,6 +91,16 @@ export async function dispatchOutbox(
   const claimed = await claimEvents(dependency.database, leaseOwner);
   for (const event of claimed) {
     try {
+      if (event.kind === 'publication_notification') {
+        await markDelivered(dependency.database, event, leaseOwner);
+        writeLog('info', {
+          event: 'publication_notification_delivered',
+          organisationId: event.organisationId,
+          migrationRunId: event.migrationRunId,
+          outcome: 'in_app',
+        });
+        continue;
+      }
       const executionArn = await startWorkflowExecution(
         dependency.stepFunctions,
         event,
@@ -105,13 +123,20 @@ export async function dispatchOutbox(
       await markRetry(dependency.database, event, leaseOwner, backoffSeconds, terminal);
       writeLog(terminal ? 'error' : 'warn', {
         event: terminal ? 'outbox_event_failed' : 'outbox_event_retry_scheduled',
-        correlationId: event.payload.correlationId,
-        organisationId: event.payload.organisationId,
-        ...(event.kind === 'agent'
-          ? { agentRunId: event.payload.agentRunId }
-          : event.kind === 'repository_scan'
-            ? { repositoryScanId: event.payload.repositoryScanId }
-            : { migrationRunId: event.payload.migrationRunId }),
+        ...(event.kind === 'publication_notification'
+          ? {
+              organisationId: event.organisationId,
+              migrationRunId: event.migrationRunId,
+            }
+          : {
+              correlationId: event.payload.correlationId,
+              organisationId: event.payload.organisationId,
+              ...(event.kind === 'agent'
+                ? { agentRunId: event.payload.agentRunId }
+                : event.kind === 'repository_scan'
+                  ? { repositoryScanId: event.payload.repositoryScanId }
+                  : { migrationRunId: event.payload.migrationRunId }),
+            }),
         safeErrorCode: terminal ? 'OUTBOX_DELIVERY_FAILED' : 'OUTBOX_RETRY_PENDING',
       });
     }
@@ -123,6 +148,9 @@ export async function startWorkflowExecution(
   event: ClaimedEvent,
   config: DispatcherConfig,
 ): Promise<string> {
+  if (event.kind === 'publication_notification') {
+    throw new Error('In-app notifications do not start workflow executions.');
+  }
   const executionName = workflowExecutionName(event);
   const stateMachineArn = workflowStateMachineArn(event, config);
   const executionArn = deterministicExecutionArn(stateMachineArn, executionName);
@@ -146,6 +174,9 @@ export function retryBackoffSeconds(attempt: number, random = Math.random()): nu
 }
 
 export function workflowExecutionName(event: ClaimedEvent): string {
+  if (event.kind === 'publication_notification') {
+    throw new Error('In-app notifications do not have workflow execution names.');
+  }
   if (event.kind === 'agent') return `agent-${event.payload.agentRunId}`;
   if (event.kind === 'repository_scan') {
     return `repository-scan-${event.payload.repositoryScanId}`;
@@ -157,6 +188,9 @@ function workflowStateMachineArn(
   event: ClaimedEvent,
   config: DispatcherConfig,
 ): string {
+  if (event.kind === 'publication_notification') {
+    throw new Error('In-app notifications do not use a state machine.');
+  }
   if (event.kind === 'agent') return config.STATE_MACHINE_ARN;
   if (event.kind === 'repository_scan') {
     return config.REPOSITORY_SCAN_STATE_MACHINE_ARN;
@@ -299,14 +333,56 @@ async function claimEvents(
     }
     return claimed;
   });
-  return [...migrationEvents, ...agentEvents, ...scanEvents];
+  const notificationEvents = await database.transaction().execute(async transaction => {
+    const candidates = await transaction
+      .selectFrom('publicationNotificationOutbox')
+      .select(['id', 'organisationId', 'migrationRunId', 'publicationId', 'attempts'])
+      .where('channel', '=', 'in_app')
+      .where('deliveredAt', 'is', null)
+      .where('availableAt', '<=', new Date())
+      .where(builder =>
+        builder.or([
+          builder('leaseExpiresAt', 'is', null),
+          builder('leaseExpiresAt', '<', new Date()),
+        ]),
+      )
+      .where('attempts', '<', MAX_ATTEMPTS)
+      .orderBy('createdAt', 'asc')
+      .limit(PER_KIND_BATCH_SIZE)
+      .forUpdate()
+      .skipLocked()
+      .execute();
+    const claimed: ClaimedEvent[] = [];
+    for (const candidate of candidates) {
+      await transaction
+        .updateTable('publicationNotificationOutbox')
+        .set({
+          leaseOwner,
+          leaseExpiresAt: new Date(Date.now() + LEASE_MILLISECONDS),
+          attempts: candidate.attempts + 1,
+          safeErrorCode: null,
+        })
+        .where('id', '=', candidate.id)
+        .executeTakeFirstOrThrow();
+      claimed.push({
+        kind: 'publication_notification',
+        id: candidate.id,
+        organisationId: candidate.organisationId,
+        migrationRunId: candidate.migrationRunId,
+        publicationId: candidate.publicationId,
+        attempts: candidate.attempts + 1,
+      });
+    }
+    return claimed;
+  });
+  return [...migrationEvents, ...agentEvents, ...scanEvents, ...notificationEvents];
 }
 
 async function markDelivered(
   database: AppDatabase,
   event: ClaimedEvent,
   leaseOwner: string,
-  executionArn: string,
+  executionArn?: string,
 ): Promise<void> {
   const values = {
     deliveredAt: new Date(),
@@ -314,6 +390,19 @@ async function markDelivered(
     leaseExpiresAt: null,
     safeErrorCode: null,
   };
+  if (event.kind === 'publication_notification') {
+    await database
+      .updateTable('publicationNotificationOutbox')
+      .set(values)
+      .where('id', '=', event.id)
+      .where('organisationId', '=', event.organisationId)
+      .where('migrationRunId', '=', event.migrationRunId)
+      .where('publicationId', '=', event.publicationId)
+      .where('leaseOwner', '=', leaseOwner)
+      .where('deliveredAt', 'is', null)
+      .executeTakeFirstOrThrow();
+    return;
+  }
   if (event.kind === 'agent') {
     await database
       .updateTable('workflowOutbox')
@@ -333,6 +422,9 @@ async function markDelivered(
     return;
   }
   await database.transaction().execute(async transaction => {
+    if (!executionArn) {
+      throw new Error('Migration delivery requires a workflow execution ARN.');
+    }
     const outbox = await transaction
       .updateTable('migrationRunOutbox')
       .set(values)
@@ -382,6 +474,18 @@ async function markRetry(
     leaseExpiresAt: null,
     safeErrorCode: terminal ? 'OUTBOX_DELIVERY_FAILED' : 'OUTBOX_RETRY_PENDING',
   };
+  if (event.kind === 'publication_notification') {
+    await database
+      .updateTable('publicationNotificationOutbox')
+      .set(values)
+      .where('id', '=', event.id)
+      .where('organisationId', '=', event.organisationId)
+      .where('migrationRunId', '=', event.migrationRunId)
+      .where('leaseOwner', '=', leaseOwner)
+      .where('deliveredAt', 'is', null)
+      .executeTakeFirstOrThrow();
+    return;
+  }
   if (event.kind === 'agent') {
     await database
       .updateTable('workflowOutbox')

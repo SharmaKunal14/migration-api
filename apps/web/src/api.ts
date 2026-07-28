@@ -12,6 +12,7 @@ import type {
   PublicMigrationPatchReview,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
+  PublicPublicationNotification,
   PublicOrganisation,
   PublicDependencyObservation,
   PublicRepository,
@@ -211,6 +212,13 @@ export async function loadMigrationRuns(
   organisationId: string,
 ): Promise<{ runs: PublicMigrationRunSummary[] }> {
   return request(token, `/v1/organisations/${organisationId}/migration-runs`);
+}
+
+export async function loadPublicationNotifications(
+  token: string,
+  organisationId: string,
+): Promise<{ notifications: PublicPublicationNotification[] }> {
+  return request(token, `/v1/organisations/${organisationId}/notifications`);
 }
 
 export async function loadMigrationPatchReview(

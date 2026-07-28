@@ -20,6 +20,7 @@ import type {
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
   PublicOrganisation,
+  PublicPublicationNotification,
   PublicRepository,
 } from '@migration/contracts';
 
@@ -39,6 +40,7 @@ import {
   loadMigrationRun,
   loadMigrationPatchReview,
   loadMigrationRuns,
+  loadPublicationNotifications,
   loadRepositories,
   loadRun,
   requestImpactAnalysis,
@@ -657,15 +659,24 @@ function MigrationInboxPage(): React.JSX.Element {
   const { session } = useAuth();
   const { orgId } = useParams();
   const [candidates, setCandidates] = useState<PublicMigrationCandidate[]>([]);
+  const [notifications, setNotifications] = useState<PublicPublicationNotification[]>(
+    [],
+  );
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     if (!session || !orgId) return;
     let active = true;
-    void loadMigrationCandidates(session.access_token, orgId)
-      .then(data => {
-        if (active) setCandidates(data.candidates);
+    void Promise.all([
+      loadMigrationCandidates(session.access_token, orgId),
+      loadPublicationNotifications(session.access_token, orgId),
+    ])
+      .then(([candidateData, notificationData]) => {
+        if (active) {
+          setCandidates(candidateData.candidates);
+          setNotifications(notificationData.notifications);
+        }
       })
       .catch((caught: unknown) => {
         if (active) setError(errorText(caught));
@@ -706,6 +717,53 @@ function MigrationInboxPage(): React.JSX.Element {
           </div>
         )}
       </div>
+      {notifications.length > 0 && (
+        <section className="panel publication-notifications">
+          <div className="patch-review-heading">
+            <div>
+              <p className="section-kicker">Ready for human review</p>
+              <h2>Published draft pull requests</h2>
+              <p>
+                These notifications are visible only to the reviewer who approved the
+                migration.
+              </p>
+            </div>
+            <span className="dependency-count">
+              {notifications.length}{' '}
+              {notifications.length === 1 ? 'notification' : 'notifications'}
+            </span>
+          </div>
+          <ul>
+            {notifications.map(notification => (
+              <li key={notification.id}>
+                <div>
+                  <strong>{notification.repositoryFullName}</strong>
+                  <p>
+                    Pull request #{String(notification.pullRequestNumber)} ·{' '}
+                    {notification.pullRequestState === 'open' && notification.isDraft
+                      ? 'draft'
+                      : notification.pullRequestState}
+                  </p>
+                </div>
+                <div className="publication-notification-actions">
+                  <Link
+                    to={`/organisations/${orgId ?? ''}/migration-runs/${notification.migrationRunId}`}
+                  >
+                    View evidence
+                  </Link>
+                  <a
+                    href={notification.pullRequestUrl}
+                    target="_blank"
+                    rel="noreferrer"
+                  >
+                    Open on GitHub
+                  </a>
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
       {loading ? (
         <section className="panel empty-state">Loading migration candidates…</section>
       ) : error ? (
@@ -733,8 +791,9 @@ function MigrationInboxPage(): React.JSX.Element {
         </div>
       )}
       <p className="fine-print stage-boundary">
-        Stage 3 is read-only. Approval, repository edits, test execution, branches, and
-        pull requests are not available from this inbox.
+        Candidates remain read-only until a reviewer grants the explicit migration
+        authority shown in their approval contract. Published pull requests always
+        require human review; the platform cannot merge them.
       </p>
     </div>
   );
@@ -1428,7 +1487,11 @@ function MigrationRunPage(): React.JSX.Element {
         if (!active) return;
         setRun(response.run);
         setError(null);
-        if (response.run.status === 'queued' || response.run.status === 'running') {
+        if (
+          response.run.status === 'queued' ||
+          response.run.status === 'running' ||
+          response.run.publication?.notification?.status === 'queued'
+        ) {
           timer = window.setTimeout(() => void poll(), 2_000);
         }
       } catch (caught) {
@@ -1661,6 +1724,7 @@ function MigrationRunPage(): React.JSX.Element {
       {run.verificationAttempts.length > 0 && (
         <VerificationEvidencePanel attempts={run.verificationAttempts} />
       )}
+      {run.publication && <PublicationPanel publication={run.publication} />}
       <section className="panel">
         <p className="section-kicker">Persisted workflow evidence</p>
         <h2>Run timeline</h2>
@@ -1701,6 +1765,98 @@ function MigrationRunPage(): React.JSX.Element {
       )}
     </div>
   );
+}
+
+function PublicationPanel({
+  publication,
+}: {
+  readonly publication: NonNullable<PublicMigrationRunDetail['publication']>;
+}): React.JSX.Element {
+  const pullRequest = publication.pullRequest;
+  return (
+    <section className="panel publication-panel">
+      <div className="patch-review-heading">
+        <div>
+          <p className="section-kicker">Stage 7 publication</p>
+          <h2>
+            {pullRequest
+              ? `Draft pull request #${String(pullRequest.number)}`
+              : 'Draft pull request publication'}
+          </h2>
+          <p>
+            The platform created one deterministic branch for this run. It has no
+            permission to merge the pull request.
+          </p>
+        </div>
+        <span className={`status status-${publicationStatus(publication)}`}>
+          {pullRequest
+            ? pullRequest.state === 'open' && pullRequest.isDraft
+              ? 'draft'
+              : pullRequest.state
+            : publication.status.replaceAll('_', ' ')}
+        </span>
+      </div>
+
+      <div className="publication-grid">
+        <div>
+          <span>Base</span>
+          <strong>{publication.baseBranch}</strong>
+          <code>{shortSha(publication.baseCommitSha)}</code>
+        </div>
+        <div>
+          <span>Migration branch</span>
+          <strong title={publication.headBranch}>{publication.headBranch}</strong>
+          {pullRequest && <code>{shortSha(pullRequest.commitSha)}</code>}
+        </div>
+        <div>
+          <span>Reviewer notification</span>
+          <strong>
+            {publication.notification?.status.replaceAll('_', ' ') ?? 'not queued'}
+          </strong>
+          <small>
+            {publication.notification?.deliveredAt
+              ? new Date(publication.notification.deliveredAt).toLocaleString()
+              : 'In-app delivery'}
+          </small>
+        </div>
+      </div>
+
+      {pullRequest && (
+        <div className="publication-action">
+          <a
+            className="primary-button"
+            href={pullRequest.url}
+            target="_blank"
+            rel="noreferrer"
+          >
+            Open draft pull request
+          </a>
+          <small>
+            GitHub state reconciled{' '}
+            {new Date(pullRequest.lastReconciledAt).toLocaleString()}
+          </small>
+        </div>
+      )}
+      {publication.safeErrorCode && <code>{publication.safeErrorCode}</code>}
+      {publication.notification?.safeErrorCode === 'OUTBOX_DELIVERY_FAILED' && (
+        <p className="error-message">
+          The reviewer notification could not be delivered. The pull request state above
+          is unaffected.
+        </p>
+      )}
+    </section>
+  );
+}
+
+function publicationStatus(
+  publication: NonNullable<PublicMigrationRunDetail['publication']>,
+): 'running' | 'succeeded' | 'failed' | 'stale' {
+  if (publication.status === 'stale') return 'stale';
+  if (publication.status === 'failed' || publication.status === 'cancelled') {
+    return 'failed';
+  }
+  if (publication.status !== 'succeeded') return 'running';
+  return publication.pullRequest?.state === 'closed' ? 'failed' : 'succeeded';
 }
 
 function VerificationEvidencePanel({

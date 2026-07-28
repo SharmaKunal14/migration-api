@@ -214,6 +214,10 @@ export async function handleRequest(
         method === 'GET'
           ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-runs$/u.exec(path)
           : null;
+      const publicationNotificationsMatch =
+        method === 'GET'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/notifications$/u.exec(path)
+          : null;
       const cancelMigrationRunMatch =
         method === 'POST'
           ? /^\/v1\/organisations\/([0-9a-f-]{36})\/migration-runs\/([0-9a-f-]{36})\/cancellation$/u.exec(
@@ -393,6 +397,13 @@ export async function handleRequest(
           runs: await repository.listMigrationRuns(
             userId,
             z.uuid().parse(migrationRunsMatch[1]),
+          ),
+        });
+      } else if (publicationNotificationsMatch?.[1]) {
+        response = json(200, {
+          notifications: await repository.listPublicationNotifications(
+            userId,
+            z.uuid().parse(publicationNotificationsMatch[1]),
           ),
         });
       } else if (cancelMigrationRunMatch?.[1] && cancelMigrationRunMatch[2]) {

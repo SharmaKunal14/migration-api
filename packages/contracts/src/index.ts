@@ -2845,6 +2845,46 @@ export interface PublicMigrationRunDetail extends PublicMigrationRunSummary {
   readonly cancellationRequestedAt: string | null;
   readonly events: readonly PublicMigrationRunEvent[];
   readonly verificationAttempts: readonly PublicMigrationVerificationAttempt[];
+  readonly publication: PublicMigrationPublication | null;
+}
+
+export interface PublicMigrationPublication {
+  readonly attemptId: string;
+  readonly status: PublicationAttemptStatus;
+  readonly attemptCount: number;
+  readonly safeErrorCode: string | null;
+  readonly headBranch: string;
+  readonly baseBranch: string;
+  readonly baseCommitSha: string;
+  readonly createdAt: string;
+  readonly completedAt: string | null;
+  readonly pullRequest: {
+    readonly number: number;
+    readonly url: string;
+    readonly state: 'open' | 'closed' | 'merged';
+    readonly isDraft: boolean;
+    readonly commitSha: string;
+    readonly createdAt: string;
+    readonly lastReconciledAt: string;
+  } | null;
+  readonly notification: {
+    readonly channel: 'in_app';
+    readonly status: 'queued' | 'delivered' | 'failed';
+    readonly attempts: number;
+    readonly deliveredAt: string | null;
+    readonly safeErrorCode: string | null;
+  } | null;
+}
+
+export interface PublicPublicationNotification {
+  readonly id: string;
+  readonly migrationRunId: string;
+  readonly repositoryFullName: string;
+  readonly pullRequestNumber: number;
+  readonly pullRequestUrl: string;
+  readonly pullRequestState: 'open' | 'closed' | 'merged';
+  readonly isDraft: boolean;
+  readonly deliveredAt: string;
 }
 
 export interface PublicMigrationVerificationAttempt {

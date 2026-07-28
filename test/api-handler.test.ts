@@ -15,6 +15,7 @@ import type {
   PublicImpactAnalysisRequest,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
+  PublicPublicationNotification,
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
@@ -118,6 +119,7 @@ class FakeRepository implements ApiRepositoryPort {
     },
     events: [],
     verificationAttempts: [],
+    publication: null,
   };
   public readonly createMigrationApprovalMock = vi.fn<
     (
@@ -277,6 +279,13 @@ class FakeRepository implements ApiRepositoryPort {
     _organisationId: string,
   ): Promise<PublicMigrationRunSummary[]> {
     return Promise.resolve([this.migrationRun]);
+  }
+
+  public listPublicationNotifications(
+    _userId: string,
+    _organisationId: string,
+  ): Promise<PublicPublicationNotification[]> {
+    return Promise.resolve([]);
   }
 
   public cancelMigrationRun(
@@ -924,6 +933,15 @@ describe('API handler trust boundary', () => {
         },
       ],
     });
+  });
+
+  it('returns only the current reviewer in-app publication notifications', async () => {
+    const response = await handleRequest(
+      event('GET', `/api/v1/organisations/${organisationId}/notifications`),
+      dependencies(),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(parsedBody(response)).toEqual({ notifications: [] });
   });
 
   it('requires strict input and an idempotency key to cancel a migration', async () => {

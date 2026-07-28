@@ -3196,11 +3196,12 @@ async function persistPublishedDraftPullRequest(
     ) {
       throw new Error('The reconciled GitHub publication identity changed.');
     }
+    const publicationId = existing?.id ?? randomUUID();
     if (existing === undefined) {
       await transaction
         .insertInto('githubPublications')
         .values({
-          id: randomUUID(),
+          id: publicationId,
           organisationId: workflow.organisationId,
           migrationRunId: workflow.migrationRunId,
           publicationAttemptId: attempt.id,
@@ -3220,6 +3221,33 @@ async function persistPublishedDraftPullRequest(
         })
         .executeTakeFirstOrThrow();
     }
+    const approval = await transaction
+      .selectFrom('migrationApprovals')
+      .select('approvedByUserId')
+      .where('id', '=', attempt.approvalId)
+      .where('organisationId', '=', workflow.organisationId)
+      .executeTakeFirstOrThrow();
+    await transaction
+      .insertInto('publicationNotificationOutbox')
+      .values({
+        id: randomUUID(),
+        organisationId: workflow.organisationId,
+        migrationRunId: workflow.migrationRunId,
+        publicationId,
+        recipientUserId: approval.approvedByUserId,
+        eventType: 'draft_pr_created',
+        channel: 'in_app',
+        idempotencyKey: `draft-pr:${publicationId}:${approval.approvedByUserId}:in-app`,
+        availableAt: now,
+        leaseOwner: null,
+        leaseExpiresAt: null,
+        attempts: 0,
+        deliveredAt: null,
+        safeErrorCode: null,
+        createdAt: now,
+      })
+      .onConflict(conflict => conflict.column('idempotencyKey').doNothing())
+      .execute();
     if (!['succeeded'].includes(attempt.status)) {
       await transaction
         .updateTable('publicationAttempts')
@@ -3252,6 +3280,15 @@ async function persistPublishedDraftPullRequest(
       workflow,
       eventKey: `run:${workflow.migrationRunId}:publication-reconciled`,
       eventType: 'publication_reconciled',
+      status: 'running',
+      stage: 'publishing',
+      safeErrorCode: null,
+      createdAt: now,
+    });
+    await appendMigrationRunEvent(transaction, {
+      workflow,
+      eventKey: `run:${workflow.migrationRunId}:notification-queued`,
+      eventType: 'notification_queued',
       status: 'running',
       stage: 'publishing',
       safeErrorCode: null,

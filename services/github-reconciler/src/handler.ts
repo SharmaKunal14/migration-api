@@ -31,6 +31,29 @@ const webhookPayloadSchema = z
       })
       .loose()
       .optional(),
+    repository: z
+      .object({
+        id: githubNumberSchema,
+      })
+      .loose()
+      .optional(),
+    pull_request: z
+      .object({
+        number: githubNumberSchema,
+        node_id: z.string().min(1).max(255),
+        html_url: z
+          .url()
+          .regex(
+            /^https:\/\/github\.com\/[A-Za-z0-9_.-]+\/[A-Za-z0-9_.-]+\/pull\/[1-9][0-9]*$/u,
+          ),
+        state: z.enum(['open', 'closed']),
+        merged: z.boolean(),
+        draft: z.boolean(),
+        head: z.object({ ref: z.string().min(1).max(255) }).loose(),
+        base: z.object({ ref: z.string().min(1).max(255) }).loose(),
+      })
+      .loose()
+      .optional(),
   })
   .loose();
 
@@ -45,6 +68,17 @@ interface BeginDeliveryInput {
   readonly eventName: string;
   readonly payloadDigest: string;
   readonly receivedAt: Date;
+}
+
+interface PullRequestLifecycle {
+  readonly githubRepositoryId: string;
+  readonly pullRequestNumber: number;
+  readonly pullRequestNodeId: string;
+  readonly pullRequestUrl: string;
+  readonly headBranch: string;
+  readonly baseBranch: string;
+  readonly state: 'open' | 'closed' | 'merged';
+  readonly isDraft: boolean;
 }
 
 export interface GithubReconciliationRepository {
@@ -62,6 +96,11 @@ export interface GithubReconciliationRepository {
     githubInstallationId: string,
     status: 'removed' | 'suspended',
   ): Promise<void>;
+  completePullRequest(
+    deliveryId: string,
+    linkedInstallation: LinkedInstallation,
+    lifecycle: PullRequestLifecycle,
+  ): Promise<'reconciled' | 'ignored'>;
   completeWithoutReconciliation(deliveryId: string): Promise<void>;
   markDeliveryFailed(deliveryId: string, code: string): Promise<void>;
 }
@@ -143,7 +182,7 @@ async function processRecord(
   }
 
   try {
-    if (envelope.eventName === 'push' || envelope.eventName === 'pull_request') {
+    if (envelope.eventName === 'push') {
       await dependency.repository.completeWithoutReconciliation(envelope.deliveryId);
       return;
     }
@@ -151,6 +190,25 @@ async function processRecord(
     const installationId = requiredInstallationId(payload);
     const linkedInstallation =
       await dependency.repository.resolveInstallation(installationId);
+    if (envelope.eventName === 'pull_request') {
+      if (!linkedInstallation) {
+        await dependency.repository.completeWithoutReconciliation(envelope.deliveryId);
+        return;
+      }
+      const outcome = await dependency.repository.completePullRequest(
+        envelope.deliveryId,
+        linkedInstallation,
+        requiredPullRequestLifecycle(payload),
+      );
+      writeLog('info', {
+        event: 'github_pull_request_reconciled',
+        requestId: record.messageId,
+        upstreamRequestId: envelope.deliveryId,
+        organisationId: linkedInstallation.organisationId,
+        outcome,
+      });
+      return;
+    }
     if (!linkedInstallation) {
       throw new ReconciliationError('GITHUB_INSTALLATION_NOT_LINKED');
     }
@@ -230,6 +288,28 @@ function requiredInstallationId(payload: z.infer<typeof webhookPayloadSchema>): 
     throw new ReconciliationError('GITHUB_WEBHOOK_PAYLOAD_INVALID');
   }
   return String(payload.installation.id);
+}
+
+function requiredPullRequestLifecycle(
+  payload: z.infer<typeof webhookPayloadSchema>,
+): PullRequestLifecycle {
+  if (!payload.repository || !payload.pull_request) {
+    throw new ReconciliationError('GITHUB_PULL_REQUEST_PAYLOAD_INVALID');
+  }
+  const pullRequest = payload.pull_request;
+  if (pullRequest.merged && pullRequest.state !== 'closed') {
+    throw new ReconciliationError('GITHUB_PULL_REQUEST_PAYLOAD_INVALID');
+  }
+  return {
+    githubRepositoryId: String(payload.repository.id),
+    pullRequestNumber: pullRequest.number,
+    pullRequestNodeId: pullRequest.node_id,
+    pullRequestUrl: pullRequest.html_url,
+    headBranch: pullRequest.head.ref,
+    baseBranch: pullRequest.base.ref,
+    state: pullRequest.merged ? 'merged' : pullRequest.state,
+    isDraft: pullRequest.merged ? false : pullRequest.draft,
+  };
 }
 
 interface LambdaInvoker {
@@ -473,6 +553,61 @@ export class ReconciliationRepository implements GithubReconciliationRepository 
           .execute();
       }
       await completeDelivery(transaction, deliveryId, now);
+    });
+  }
+
+  public async completePullRequest(
+    deliveryId: string,
+    linkedInstallation: LinkedInstallation,
+    lifecycle: PullRequestLifecycle,
+  ): Promise<'reconciled' | 'ignored'> {
+    return this.database.transaction().execute(async transaction => {
+      const publication = await transaction
+        .selectFrom('githubPublications as publication')
+        .innerJoin('repositories as repository', join =>
+          join
+            .onRef('repository.id', '=', 'publication.repositoryId')
+            .onRef('repository.organisationId', '=', 'publication.organisationId'),
+        )
+        .select([
+          'publication.id',
+          'publication.pullRequestNodeId',
+          'publication.pullRequestUrl',
+          'publication.headBranch',
+          'publication.baseBranch',
+          'publication.state',
+          'repository.installationId',
+        ])
+        .where('publication.organisationId', '=', linkedInstallation.organisationId)
+        .where('publication.githubRepositoryId', '=', lifecycle.githubRepositoryId)
+        .where('publication.pullRequestNumber', '=', lifecycle.pullRequestNumber)
+        .forUpdate('publication')
+        .executeTakeFirst();
+      if (!publication) {
+        await completeDelivery(transaction, deliveryId, new Date());
+        return 'ignored';
+      }
+      if (
+        publication.installationId !== linkedInstallation.id ||
+        publication.pullRequestNodeId !== lifecycle.pullRequestNodeId ||
+        publication.pullRequestUrl !== lifecycle.pullRequestUrl ||
+        publication.headBranch !== lifecycle.headBranch ||
+        publication.baseBranch !== lifecycle.baseBranch
+      ) {
+        throw new ReconciliationError('GITHUB_PULL_REQUEST_IDENTITY_MISMATCH');
+      }
+      const now = new Date();
+      await transaction
+        .updateTable('githubPublications')
+        .set({
+          state: publication.state === 'merged' ? 'merged' : lifecycle.state,
+          isDraft: publication.state === 'merged' ? false : lifecycle.isDraft,
+          lastReconciledAt: now,
+        })
+        .where('id', '=', publication.id)
+        .executeTakeFirstOrThrow();
+      await completeDelivery(transaction, deliveryId, now);
+      return 'reconciled';
     });
   }
 

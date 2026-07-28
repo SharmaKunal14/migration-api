@@ -652,6 +652,94 @@ input {
   overflow: hidden;
 }
 
+.publication-panel {
+  display: grid;
+  gap: 1.5rem;
+  margin-bottom: 2rem;
+}
+
+.publication-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  overflow: hidden;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+}
+
+.publication-grid > div {
+  display: grid;
+  min-width: 0;
+  gap: 0.35rem;
+  padding: 1rem;
+  border-right: 1px solid var(--line);
+}
+
+.publication-grid > div:last-child {
+  border-right: 0;
+}
+
+.publication-grid span,
+.publication-grid small,
+.publication-action small {
+  color: var(--muted);
+}
+
+.publication-grid span {
+  font-size: 0.68rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.publication-grid strong,
+.publication-grid code {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.publication-action {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: center;
+}
+
+.publication-action .primary-button {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  text-decoration: none;
+}
+
+.publication-notifications {
+  margin-bottom: 2rem;
+}
+
+.publication-notifications > ul {
+  margin: 1.5rem 0 0;
+  padding: 0;
+  list-style: none;
+}
+
+.publication-notifications > ul > li {
+  display: flex;
+  gap: 1.5rem;
+  align-items: center;
+  justify-content: space-between;
+  padding: 1rem 0;
+  border-top: 1px solid var(--line);
+}
+
+.publication-notifications p {
+  margin: 0.35rem 0 0;
+  color: var(--muted);
+}
+
+.publication-notification-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
 .patch-review-heading,
 .patch-diff-heading {
   display: flex;
@@ -1583,7 +1671,8 @@ input {
   }
 
   .patch-review-metrics,
-  .patch-review-grid {
+  .patch-review-grid,
+  .publication-grid {
     grid-template-columns: 1fr;
   }
 
@@ -1593,6 +1682,15 @@ input {
   }
 
   .patch-review-metrics > div:last-child {
+    border-bottom: 0;
+  }
+
+  .publication-grid > div {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .publication-grid > div:last-child {
     border-bottom: 0;
   }
 
@@ -1608,6 +1706,11 @@ input {
 
   .revocation-confirmation {
     align-items: stretch;
+    flex-direction: column;
+  }
+
+  .publication-notifications > ul > li {
+    align-items: flex-start;
     flex-direction: column;
   }
 

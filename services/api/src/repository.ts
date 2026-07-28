@@ -30,6 +30,7 @@ import type {
   PublicMigrationPatchAttempt,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
+  PublicPublicationNotification,
   PublicImpactReportSummary,
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
@@ -257,6 +258,10 @@ export interface ApiRepositoryPort {
     userId: string,
     organisationId: string,
   ): Promise<PublicMigrationRunSummary[]>;
+  listPublicationNotifications(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicPublicationNotification[]>;
   cancelMigrationRun(
     userId: string,
     input: CancelMigrationRunInput,
@@ -2103,6 +2108,57 @@ export class ApiRepository implements ApiRepositoryPort {
     return loadMigrationRuns(this.database, organisationId);
   }
 
+  public async listPublicationNotifications(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicPublicationNotification[]> {
+    requireAction(await this.membership(organisationId, userId), 'migration:read');
+    const notifications = await this.database
+      .selectFrom('publicationNotificationOutbox as notification')
+      .innerJoin('githubPublications as publication', join =>
+        join
+          .onRef('publication.id', '=', 'notification.publicationId')
+          .onRef('publication.organisationId', '=', 'notification.organisationId'),
+      )
+      .innerJoin('repositories as repository', join =>
+        join
+          .onRef('repository.id', '=', 'publication.repositoryId')
+          .onRef('repository.organisationId', '=', 'publication.organisationId'),
+      )
+      .select([
+        'notification.id',
+        'notification.migrationRunId',
+        'notification.deliveredAt',
+        'repository.fullName as repositoryFullName',
+        'publication.pullRequestNumber',
+        'publication.pullRequestUrl',
+        'publication.state as pullRequestState',
+        'publication.isDraft',
+      ])
+      .where('notification.organisationId', '=', organisationId)
+      .where('notification.recipientUserId', '=', userId)
+      .where('notification.channel', '=', 'in_app')
+      .where('notification.deliveredAt', 'is not', null)
+      .orderBy('notification.deliveredAt', 'desc')
+      .limit(20)
+      .execute();
+    return notifications.map(notification => {
+      if (notification.deliveredAt === null) {
+        throw new Error('A listed publication notification is not delivered.');
+      }
+      return {
+        id: notification.id,
+        migrationRunId: notification.migrationRunId,
+        repositoryFullName: notification.repositoryFullName,
+        pullRequestNumber: notification.pullRequestNumber,
+        pullRequestUrl: notification.pullRequestUrl,
+        pullRequestState: notification.pullRequestState,
+        isDraft: notification.isDraft,
+        deliveredAt: notification.deliveredAt.toISOString(),
+      };
+    });
+  }
+
   public async cancelMigrationRun(
     userId: string,
     input: CancelMigrationRunInput,
@@ -2765,7 +2821,7 @@ async function loadMigrationRun(
       404,
     );
   }
-  const [workflow, events, verificationAttempts] = await Promise.all([
+  const [workflow, events, verificationAttempts, publication] = await Promise.all([
     database
       .selectFrom('migrationRuns')
       .select(['workflowExecutionArn', 'cancellationRequestedAt'])
@@ -2815,6 +2871,45 @@ async function loadMigrationRun(
       .where('attempt.migrationRunId', '=', migrationRunId)
       .orderBy('attempt.attemptNumber')
       .execute(),
+    database
+      .selectFrom('publicationAttempts as attempt')
+      .leftJoin(
+        'githubPublications as publication',
+        'publication.publicationAttemptId',
+        'attempt.id',
+      )
+      .leftJoin('publicationNotificationOutbox as notification', join =>
+        join
+          .onRef('notification.publicationId', '=', 'publication.id')
+          .on('notification.channel', '=', 'in_app'),
+      )
+      .select([
+        'attempt.id as attemptId',
+        'attempt.status',
+        'attempt.attemptCount',
+        'attempt.safeErrorCode',
+        'attempt.headBranch',
+        'attempt.baseBranch',
+        'attempt.baseCommitSha',
+        'attempt.createdAt',
+        'attempt.completedAt',
+        'publication.pullRequestNumber',
+        'publication.pullRequestUrl',
+        'publication.state as pullRequestState',
+        'publication.isDraft',
+        'publication.commitSha',
+        'publication.createdAt as pullRequestCreatedAt',
+        'publication.lastReconciledAt',
+        'notification.attempts as notificationAttempts',
+        'notification.deliveredAt as notificationDeliveredAt',
+        'notification.safeErrorCode as notificationSafeErrorCode',
+        'notification.id as notificationId',
+      ])
+      .where('attempt.organisationId', '=', organisationId)
+      .where('attempt.migrationRunId', '=', migrationRunId)
+      .orderBy('attempt.createdAt', 'desc')
+      .limit(1)
+      .executeTakeFirst(),
   ]);
   return {
     ...migrationRunSummary(run),
@@ -2844,6 +2939,55 @@ async function loadMigrationRun(
       startedAt: attempt.startedAt?.toISOString() ?? null,
       completedAt: attempt.completedAt?.toISOString() ?? null,
     })),
+    publication:
+      publication === undefined
+        ? null
+        : {
+            attemptId: publication.attemptId,
+            status: publication.status,
+            attemptCount: publication.attemptCount,
+            safeErrorCode: publication.safeErrorCode,
+            headBranch: publication.headBranch,
+            baseBranch: publication.baseBranch,
+            baseCommitSha: publication.baseCommitSha,
+            createdAt: publication.createdAt.toISOString(),
+            completedAt: publication.completedAt?.toISOString() ?? null,
+            pullRequest:
+              publication.pullRequestNumber === null ||
+              publication.pullRequestUrl === null ||
+              publication.pullRequestState === null ||
+              publication.isDraft === null ||
+              publication.commitSha === null ||
+              publication.pullRequestCreatedAt === null ||
+              publication.lastReconciledAt === null
+                ? null
+                : {
+                    number: publication.pullRequestNumber,
+                    url: publication.pullRequestUrl,
+                    state: publication.pullRequestState,
+                    isDraft: publication.isDraft,
+                    commitSha: publication.commitSha,
+                    createdAt: publication.pullRequestCreatedAt.toISOString(),
+                    lastReconciledAt: publication.lastReconciledAt.toISOString(),
+                  },
+            notification:
+              publication.notificationId === null
+                ? null
+                : {
+                    channel: 'in_app',
+                    status:
+                      publication.notificationDeliveredAt !== null
+                        ? 'delivered'
+                        : publication.notificationSafeErrorCode ===
+                            'OUTBOX_DELIVERY_FAILED'
+                          ? 'failed'
+                          : 'queued',
+                    attempts: publication.notificationAttempts ?? 0,
+                    deliveredAt:
+                      publication.notificationDeliveredAt?.toISOString() ?? null,
+                    safeErrorCode: publication.notificationSafeErrorCode,
+                  },
+          },
   };
 }
 
