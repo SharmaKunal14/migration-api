@@ -148,11 +148,8 @@ output "state_machine_arn" {
 }
 
 output "control_nat_egress_cidrs" {
-  description = "NAT-instance and rollback NAT Gateway addresses to retain during the migration."
-  value = concat(
-    [var.development_nat_egress_cidr],
-    [for address in aws_eip.nat : "${address.public_ip}/32"]
-  )
+  description = "Backward-compatible development egress allowlist."
+  value       = [var.development_nat_egress_cidr]
 }
 
 output "development_egress_cidrs" {

@@ -70,13 +70,12 @@ describe('Stage 6B verifier trust zone', () => {
     expect(policy).not.toContain('sts:GetWebIdentityToken');
   });
 
-  it('routes external TLS through the firewall and permits only the approved registry', () => {
-    expect(network).toContain('resource "aws_route_table" "verifier"');
-    expect(network).toContain('resource "aws_route" "verifier_default"');
+  it('routes external TLS through the shared NAT path while retaining private endpoints', () => {
+    expect(network).toContain('resource "aws_route_table_association" "verifier"');
     expect(network).toContain(
-      '[for route_table in aws_route_table.verifier : route_table.id]',
+      'route_table_id = data.aws_route_table.development_nat.id',
     );
-    expect(network).toContain('content:"registry.npmjs.org"');
+    expect(network).not.toContain('aws_networkfirewall_');
 
     const securityGroup = resourceBody(
       network,
@@ -92,7 +91,7 @@ describe('Stage 6B verifier trust zone', () => {
       'prefix_list_ids = [aws_vpc_endpoint.s3.prefix_list_id]',
     );
     expect(securityGroup).toContain(
-      'description = "TLS through Network Firewall to the approved npm registry"',
+      'description = "TLS through the development NAT instance to the application-approved registry"',
     );
   });
 

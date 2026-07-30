@@ -5,7 +5,7 @@ import { resolve } from 'node:path';
 const applicationAssociation =
   /^aws_route_table_association\.(?:control|agent|source_fetcher|verifier)\[/u;
 
-const rollbackResource = [
+const obsoleteEgressResource = [
   /^aws_eip\.nat\[/u,
   /^aws_nat_gateway\.main\[/u,
   /^aws_networkfirewall_/u,
@@ -18,6 +18,17 @@ const rollbackResource = [
   /^aws_route_table\.(?:agent|control|firewall|source_fetcher|verifier)\[/u,
   /^aws_route_table_association\.firewall\[/u,
   /^aws_subnet\.firewall\[/u,
+];
+
+const protectedNetworkResource = [
+  /^aws_internet_gateway\.main$/u,
+  /^aws_route\.development_nat_default$/u,
+  /^aws_route\.public_default\[/u,
+  /^aws_route_table\.public\[/u,
+  /^aws_route_table_association\.public\[/u,
+  /^aws_subnet\.(?:agent|control|public|source_fetcher|verifier)\[/u,
+  /^aws_vpc\.main$/u,
+  /^aws_vpc_endpoint\.(?:interface\[|s3$)/u,
 ];
 
 function flattenResources(module) {
@@ -48,6 +59,17 @@ export function validateDevelopmentNetworkPlan(
   }
 
   const plannedResources = flattenResources(plan.planned_values?.root_module);
+  const obsoleteResources = plannedResources.filter(resource =>
+    obsoleteEgressResource.some(pattern => pattern.test(resource.address)),
+  );
+  if (obsoleteResources.length > 0) {
+    throw new Error(
+      `Terraform still declares obsolete egress resources: ${obsoleteResources
+        .map(resource => resource.address)
+        .join(', ')}.`,
+    );
+  }
+
   const associations = plannedResources.filter(resource =>
     applicationAssociation.test(resource.address),
   );
@@ -97,10 +119,10 @@ export function validateDevelopmentNetworkPlan(
     }
     if (
       actions.includes('delete') &&
-      rollbackResource.some(pattern => pattern.test(resource.address))
+      protectedNetworkResource.some(pattern => pattern.test(resource.address))
     ) {
       throw new Error(
-        `${resource.address} would delete rollback infrastructure during NAT adoption.`,
+        `${resource.address} would delete protected NAT-path infrastructure.`,
       );
     }
   }
@@ -128,7 +150,7 @@ function main() {
     expectedNetworkInterfaceId,
   );
   process.stdout.write(
-    'Validated development NAT route, eight workload associations, S3 endpoint, and rollback preservation.\n',
+    'Validated development NAT route, eight workload associations, S3 endpoint, and obsolete-egress cleanup.\n',
   );
 }
 

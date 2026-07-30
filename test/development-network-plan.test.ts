@@ -48,7 +48,7 @@ function validPlan(): Record<string, unknown> {
 }
 
 describe('development NAT Terraform plan validation', () => {
-  it('accepts the approved NAT adoption topology', () => {
+  it('accepts the approved NAT-only topology', () => {
     expect(() =>
       validateDevelopmentNetworkPlan(validPlan(), routeTableId, networkInterfaceId),
     ).not.toThrow();
@@ -67,7 +67,7 @@ describe('development NAT Terraform plan validation', () => {
     ).toThrow(/unsafe planned actions/u);
   });
 
-  it('rejects firewall deletion during the adoption deployment', () => {
+  it('allows deletion of the obsolete firewall', () => {
     const plan = validPlan();
     const changes = plan.resource_changes as unknown[];
     changes.push({
@@ -77,7 +77,37 @@ describe('development NAT Terraform plan validation', () => {
 
     expect(() =>
       validateDevelopmentNetworkPlan(plan, routeTableId, networkInterfaceId),
-    ).toThrow(/delete rollback infrastructure/u);
+    ).not.toThrow();
+  });
+
+  it('rejects a firewall resource remaining in the desired topology', () => {
+    const plan = validPlan();
+    const resources = (
+      plan.planned_values as {
+        root_module: { resources: { address: string; values: object }[] };
+      }
+    ).root_module.resources;
+    resources.push({
+      address: 'aws_networkfirewall_firewall.agent',
+      values: {},
+    });
+
+    expect(() =>
+      validateDevelopmentNetworkPlan(plan, routeTableId, networkInterfaceId),
+    ).toThrow(/still declares obsolete egress resources/u);
+  });
+
+  it('rejects deletion of the active NAT default route', () => {
+    const plan = validPlan();
+    const changes = plan.resource_changes as unknown[];
+    changes.push({
+      address: 'aws_route.development_nat_default',
+      change: { actions: ['delete'] },
+    });
+
+    expect(() =>
+      validateDevelopmentNetworkPlan(plan, routeTableId, networkInterfaceId),
+    ).toThrow(/delete protected NAT-path infrastructure/u);
   });
 
   it('rejects a missing S3 route-table association', () => {

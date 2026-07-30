@@ -29,15 +29,6 @@ resource "aws_subnet" "public" {
   tags                    = { Name = "${local.name_prefix}-public-${each.value + 1}" }
 }
 
-resource "aws_subnet" "firewall" {
-  for_each = { for index, az in local.azs : az => index }
-
-  vpc_id            = aws_vpc.main.id
-  availability_zone = each.key
-  cidr_block        = cidrsubnet(aws_vpc.main.cidr_block, 8, 16 + each.value)
-  tags              = { Name = "${local.name_prefix}-firewall-${each.value + 1}" }
-}
-
 resource "aws_subnet" "control" {
   for_each = { for index, az in local.azs : az => index }
 
@@ -74,22 +65,6 @@ resource "aws_subnet" "verifier" {
   tags              = { Name = "${local.name_prefix}-verifier-${each.value + 1}" }
 }
 
-resource "aws_eip" "nat" {
-  for_each = aws_subnet.public
-  domain   = "vpc"
-
-  depends_on = [aws_internet_gateway.main]
-  tags       = { Name = "${local.name_prefix}-nat-${each.value.availability_zone}" }
-}
-
-resource "aws_nat_gateway" "main" {
-  for_each = aws_subnet.public
-
-  allocation_id = aws_eip.nat[each.key].id
-  subnet_id     = each.value.id
-  tags          = { Name = "${local.name_prefix}-nat-${each.key}" }
-}
-
 resource "aws_route_table" "public" {
   for_each = aws_subnet.public
   vpc_id   = aws_vpc.main.id
@@ -109,31 +84,6 @@ resource "aws_route_table_association" "public" {
   route_table_id = aws_route_table.public[each.key].id
 }
 
-resource "aws_route_table" "firewall" {
-  for_each = aws_subnet.firewall
-  vpc_id   = aws_vpc.main.id
-  tags     = { Name = "${local.name_prefix}-firewall-${each.key}" }
-}
-
-resource "aws_route" "firewall_default" {
-  for_each               = aws_route_table.firewall
-  route_table_id         = each.value.id
-  destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.main[each.key].id
-}
-
-resource "aws_route_table_association" "firewall" {
-  for_each       = aws_subnet.firewall
-  subnet_id      = each.value.id
-  route_table_id = aws_route_table.firewall[each.key].id
-}
-
-resource "aws_route_table" "control" {
-  for_each = aws_subnet.control
-  vpc_id   = aws_vpc.main.id
-  tags     = { Name = "${local.name_prefix}-control-${each.key}" }
-}
-
 resource "aws_route" "development_nat_default" {
   route_table_id         = data.aws_route_table.development_nat.id
   destination_cidr_block = "0.0.0.0/0"
@@ -145,13 +95,6 @@ resource "aws_route" "development_nat_default" {
       error_message = "The development NAT network interface must belong to the development VPC."
     }
   }
-}
-
-resource "aws_route" "control_default" {
-  for_each               = aws_route_table.control
-  route_table_id         = each.value.id
-  destination_cidr_block = "0.0.0.0/0"
-  nat_gateway_id         = aws_nat_gateway.main[each.key].id
 }
 
 resource "aws_route_table_association" "control" {
@@ -167,105 +110,6 @@ resource "aws_route_table_association" "control" {
   }
 }
 
-resource "aws_networkfirewall_rule_group" "openai_egress" {
-  capacity = 100
-  name     = "${local.name_prefix}-openai-egress"
-  type     = "STATEFUL"
-
-  rule_group {
-    stateful_rule_options {
-      rule_order = "STRICT_ORDER"
-    }
-
-    rules_source {
-      rules_string = <<-RULES
-        pass tls [${join(",", [for subnet in aws_subnet.agent : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"api.openai.com"; nocase; startswith; endswith; sid:1; rev:1;)
-        pass tls [${join(",", [for subnet in aws_subnet.agent : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"auth.openai.com"; nocase; startswith; endswith; sid:2; rev:1;)
-        pass tls [${join(",", [for subnet in aws_subnet.source_fetcher : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"api.github.com"; nocase; startswith; endswith; sid:3; rev:1;)
-        pass tls [${join(",", [for subnet in aws_subnet.source_fetcher : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"codeload.github.com"; nocase; startswith; endswith; sid:4; rev:1;)
-        pass tls [${join(",", [for subnet in aws_subnet.verifier : subnet.cidr_block])}] any -> $EXTERNAL_NET 443 (flow:to_server,established; tls.sni; content:"registry.npmjs.org"; nocase; startswith; endswith; sid:5; rev:1;)
-      RULES
-    }
-  }
-
-  tags = { Name = "${local.name_prefix}-openai-egress" }
-}
-
-resource "aws_networkfirewall_firewall_policy" "agent" {
-  name = "${local.name_prefix}-agent"
-
-  firewall_policy {
-    stateless_default_actions          = ["aws:forward_to_sfe"]
-    stateless_fragment_default_actions = ["aws:forward_to_sfe"]
-    stateful_default_actions           = ["aws:drop_established", "aws:alert_established"]
-
-    stateful_engine_options {
-      rule_order = "STRICT_ORDER"
-    }
-
-    stateful_rule_group_reference {
-      priority     = 1
-      resource_arn = aws_networkfirewall_rule_group.openai_egress.arn
-    }
-  }
-}
-
-resource "aws_networkfirewall_firewall" "agent" {
-  name                = "${local.name_prefix}-agent"
-  firewall_policy_arn = aws_networkfirewall_firewall_policy.agent.arn
-  vpc_id              = aws_vpc.main.id
-
-  dynamic "subnet_mapping" {
-    for_each = aws_subnet.firewall
-    content {
-      subnet_id = subnet_mapping.value.id
-    }
-  }
-
-  tags = { Name = "${local.name_prefix}-agent" }
-}
-
-locals {
-  firewall_endpoints = {
-    for state in aws_networkfirewall_firewall.agent.firewall_status[0].sync_states :
-    state.availability_zone => state.attachment[0].endpoint_id
-  }
-}
-
-resource "aws_route" "public_agent_return" {
-  for_each               = aws_route_table.public
-  route_table_id         = each.value.id
-  destination_cidr_block = aws_subnet.agent[each.key].cidr_block
-  vpc_endpoint_id        = local.firewall_endpoints[each.key]
-}
-
-resource "aws_route" "public_source_fetcher_return" {
-  for_each               = aws_route_table.public
-  route_table_id         = each.value.id
-  destination_cidr_block = aws_subnet.source_fetcher[each.key].cidr_block
-  vpc_endpoint_id        = local.firewall_endpoints[each.key]
-}
-
-resource "aws_route" "public_verifier_return" {
-  for_each               = aws_route_table.public
-  route_table_id         = each.value.id
-  destination_cidr_block = aws_subnet.verifier[each.key].cidr_block
-  vpc_endpoint_id        = local.firewall_endpoints[each.key]
-}
-
-resource "aws_route_table" "agent" {
-  for_each = aws_subnet.agent
-  vpc_id   = aws_vpc.main.id
-  tags     = { Name = "${local.name_prefix}-agent-${each.key}" }
-}
-
-resource "aws_route" "agent_default" {
-  for_each               = aws_route_table.agent
-  route_table_id         = each.value.id
-  destination_cidr_block = "0.0.0.0/0"
-  vpc_endpoint_id        = local.firewall_endpoints[each.key]
-}
-
 resource "aws_route_table_association" "agent" {
   for_each       = aws_subnet.agent
   subnet_id      = each.value.id
@@ -279,19 +123,6 @@ resource "aws_route_table_association" "agent" {
   }
 }
 
-resource "aws_route_table" "source_fetcher" {
-  for_each = aws_subnet.source_fetcher
-  vpc_id   = aws_vpc.main.id
-  tags     = { Name = "${local.name_prefix}-source-fetcher-${each.key}" }
-}
-
-resource "aws_route" "source_fetcher_default" {
-  for_each               = aws_route_table.source_fetcher
-  route_table_id         = each.value.id
-  destination_cidr_block = "0.0.0.0/0"
-  vpc_endpoint_id        = local.firewall_endpoints[each.key]
-}
-
 resource "aws_route_table_association" "source_fetcher" {
   for_each       = aws_subnet.source_fetcher
   subnet_id      = each.value.id
@@ -303,19 +134,6 @@ resource "aws_route_table_association" "source_fetcher" {
       error_message = "The development NAT route table must belong to the development VPC."
     }
   }
-}
-
-resource "aws_route_table" "verifier" {
-  for_each = aws_subnet.verifier
-  vpc_id   = aws_vpc.main.id
-  tags     = { Name = "${local.name_prefix}-verifier-${each.key}" }
-}
-
-resource "aws_route" "verifier_default" {
-  for_each               = aws_route_table.verifier
-  route_table_id         = each.value.id
-  destination_cidr_block = "0.0.0.0/0"
-  vpc_endpoint_id        = local.firewall_endpoints[each.key]
 }
 
 resource "aws_route_table_association" "verifier" {
@@ -335,20 +153,6 @@ resource "aws_cloudwatch_log_group" "network_firewall" {
   name              = "/migration-api/development/network-firewall"
   retention_in_days = 30
   kms_key_id        = aws_kms_key.logs.arn
-}
-
-resource "aws_networkfirewall_logging_configuration" "agent" {
-  firewall_arn = aws_networkfirewall_firewall.agent.arn
-
-  logging_configuration {
-    log_destination_config {
-      log_destination = {
-        logGroup = aws_cloudwatch_log_group.network_firewall.name
-      }
-      log_destination_type = "CloudWatchLogs"
-      log_type             = "ALERT"
-    }
-  }
 }
 
 resource "aws_security_group" "vpc_endpoints" {
@@ -410,11 +214,11 @@ resource "aws_security_group" "control" {
 
 resource "aws_security_group" "agent" {
   name        = "${local.name_prefix}-agent"
-  description = "Agent egress through private endpoints and inspected route"
+  description = "Agent TLS egress through private endpoints and the development NAT instance"
   vpc_id      = aws_vpc.main.id
 
   egress {
-    description = "TLS only; Network Firewall restricts public destination"
+    description = "TLS through private endpoints or the development NAT instance"
     protocol    = "tcp"
     from_port   = 443
     to_port     = 443
@@ -424,11 +228,11 @@ resource "aws_security_group" "agent" {
 
 resource "aws_security_group" "source_fetcher" {
   name        = "${local.name_prefix}-source-fetcher"
-  description = "Source-fetcher TLS egress through inspected routes"
+  description = "Source-fetcher TLS egress through private endpoints and the development NAT instance"
   vpc_id      = aws_vpc.main.id
 
   egress {
-    description = "TLS only; Network Firewall restricts GitHub and AWS destinations"
+    description = "TLS through private endpoints or the development NAT instance"
     protocol    = "tcp"
     from_port   = 443
     to_port     = 443
@@ -488,7 +292,7 @@ resource "aws_security_group" "verifier" {
   }
 
   egress {
-    description = "TLS through Network Firewall to the approved npm registry"
+    description = "TLS through the development NAT instance to the application-approved registry"
     protocol    = "tcp"
     from_port   = 443
     to_port     = 443
@@ -500,13 +304,7 @@ resource "aws_vpc_endpoint" "s3" {
   vpc_id            = aws_vpc.main.id
   service_name      = "com.amazonaws.${var.aws_region}.s3"
   vpc_endpoint_type = "Gateway"
-  route_table_ids = concat(
-    [data.aws_route_table.development_nat.id],
-    [for route_table in aws_route_table.control : route_table.id],
-    [for route_table in aws_route_table.agent : route_table.id],
-    [for route_table in aws_route_table.source_fetcher : route_table.id],
-    [for route_table in aws_route_table.verifier : route_table.id]
-  )
+  route_table_ids   = [data.aws_route_table.development_nat.id]
 }
 
 locals {

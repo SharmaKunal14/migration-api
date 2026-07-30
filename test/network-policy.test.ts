@@ -30,42 +30,15 @@ describe('workload outbound network policy', () => {
     ).toHaveLength(8);
   });
 
-  it('separates agent, source-fetcher, and verifier domain allowlists', () => {
-    const rules = /rules_string = <<-RULES(?<rules>[\s\S]*?)\n\s*RULES/u.exec(
-      networkConfiguration,
-    )?.groups?.rules;
-
-    expect(rules).toBeDefined();
-    expect(
-      [...rules!.matchAll(/content:"(?<hostname>[^"]+)"/gu)].map(
-        match => match.groups?.hostname,
-      ),
-    ).toEqual([
-      'api.openai.com',
-      'auth.openai.com',
-      'api.github.com',
-      'codeload.github.com',
-      'registry.npmjs.org',
-    ]);
-    const ruleLines = rules!.split('\n');
-    expect(
-      ruleLines
-        .filter(line => line.includes('openai.com'))
-        .every(line => line.includes('aws_subnet.agent')),
-    ).toBe(true);
-    expect(
-      ruleLines
-        .filter(line => line.includes('github.com'))
-        .every(line => line.includes('aws_subnet.source_fetcher')),
-    ).toBe(true);
-    expect(
-      ruleLines
-        .filter(line => line.includes('registry.npmjs.org'))
-        .every(line => line.includes('aws_subnet.verifier')),
-    ).toBe(true);
-    expect(rules).not.toContain('drop ip $HOME_NET');
-    expect(networkConfiguration).toContain(
-      'stateful_default_actions           = ["aws:drop_established", "aws:alert_established"]',
-    );
+  it('removes managed firewall and NAT Gateway resources after cutover', () => {
+    expect(networkConfiguration).not.toContain('aws_networkfirewall_');
+    expect(networkConfiguration).not.toContain('resource "aws_nat_gateway"');
+    expect(networkConfiguration).not.toContain('resource "aws_eip" "nat"');
+    expect(networkConfiguration).not.toContain('resource "aws_subnet" "firewall"');
+    expect(networkConfiguration).not.toContain('firewall_endpoints');
+    expect(networkConfiguration).not.toContain('aws_route_table.control');
+    expect(networkConfiguration).not.toContain('aws_route_table.agent');
+    expect(networkConfiguration).not.toContain('aws_route_table.source_fetcher');
+    expect(networkConfiguration).not.toContain('aws_route_table.verifier');
   });
 });

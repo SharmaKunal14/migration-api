@@ -267,7 +267,7 @@ variable "verifier_registry_url" {
 
   validation {
     condition     = var.verifier_registry_url == "https://registry.npmjs.org/"
-    error_message = "verifier_registry_url must match the registry.npmjs.org Network Firewall allowlist."
+    error_message = "verifier_registry_url must remain the application-approved npm registry."
   }
 }
 
