@@ -1164,13 +1164,13 @@ function ImpactAnalysisAction({
   const report = detail.impactReport;
   const isCurrent = report?.freshness === 'current';
   const roleBlocked = detail.approval.blockers.includes('APPROVAL_ROLE_REQUIRED');
+  const isBusy = status === 'submitting' || status === 'queued';
   const canRequest =
     Boolean(token) &&
     detail.candidate.status === 'open' &&
     !isCurrent &&
     !roleBlocked &&
-    status !== 'submitting' &&
-    status !== 'queued';
+    !isBusy;
 
   useEffect(() => {
     if (status !== 'queued') return;
@@ -1275,6 +1275,7 @@ function ImpactAnalysisAction({
       </div>
       <div className="impact-analysis-actions">
         <button
+          aria-busy={isBusy}
           className="secondary-button"
           disabled={!canRequest}
           type="button"
