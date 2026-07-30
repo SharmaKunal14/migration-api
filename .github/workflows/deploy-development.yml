@@ -564,12 +564,15 @@ jobs:
       - name: Create and inspect the complete deployment plan
         working-directory: infra/terraform/environments/development
         run: |
+          set -o pipefail
           terraform plan -input=false -out=stage-1.tfplan
           terraform show -no-color stage-1.tfplan > ../../../../deployment-evidence/terraform-plan.txt
           if grep -Eq 'replace-with|sha256:0{64}' ../../../../deployment-evidence/terraform-plan.txt; then
             echo "Terraform plan contains placeholder values." >&2
             exit 1
           fi
+          terraform show -json stage-1.tfplan |
+            node ../../../../scripts/deploy/validate-development-network-plan.mjs -
 
       - name: Package the exact saved-plan inputs
         run: |
