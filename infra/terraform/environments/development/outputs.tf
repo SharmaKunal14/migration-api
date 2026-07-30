@@ -148,6 +148,14 @@ output "state_machine_arn" {
 }
 
 output "control_nat_egress_cidrs" {
+  description = "NAT-instance and rollback NAT Gateway addresses to retain during the migration."
+  value = concat(
+    [var.development_nat_egress_cidr],
+    [for address in aws_eip.nat : "${address.public_ip}/32"]
+  )
+}
+
+output "development_egress_cidrs" {
   description = "Allowlist these fixed addresses in Supabase PostgreSQL network restrictions."
-  value       = [for address in aws_eip.nat : "${address.public_ip}/32"]
+  value       = [var.development_nat_egress_cidr]
 }

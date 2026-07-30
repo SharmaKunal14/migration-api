@@ -29,6 +29,9 @@ const validEnvironment: NodeJS.ProcessEnv = {
     'arn:aws:secretsmanager:ap-southeast-2:393209814365:secret:runtime',
   TF_VAR_database_secret_kms_key_arn:
     'arn:aws:kms:ap-southeast-2:393209814365:key/00000000-0000-0000-0000-000000000001',
+  TF_VAR_development_nat_egress_cidr: '13.55.45.250/32',
+  TF_VAR_development_nat_network_interface_id: 'eni-0dd6f17bc574a317a',
+  TF_VAR_development_nat_route_table_id: 'rtb-0d877aa0f73f6ee09',
   TF_VAR_github_webhook_secret_arn:
     'arn:aws:secretsmanager:ap-southeast-2:393209814365:secret:github-webhook',
   TF_VAR_github_webhook_secret_kms_key_arn:
@@ -74,7 +77,7 @@ describe('deployment environment validation', () => {
     const result = validate(validEnvironment);
 
     expect(result.status).toBe(0);
-    expect(result.stdout).toContain('Validated 33 deployment variables.');
+    expect(result.stdout).toContain('Validated 36 deployment variables.');
   });
 
   it('rejects a product URL instead of a hostname', () => {
@@ -86,6 +89,42 @@ describe('deployment environment validation', () => {
     expect(result.status).not.toBe(0);
     expect(result.stderr).toContain(
       'TF_VAR_product_domain must be a hostname without a scheme or path.',
+    );
+  });
+
+  it('rejects an invalid development NAT route-table ID', () => {
+    const result = validate({
+      ...validEnvironment,
+      TF_VAR_development_nat_route_table_id: 'not-a-route-table',
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'TF_VAR_development_nat_route_table_id must be a route-table ID.',
+    );
+  });
+
+  it('rejects an invalid development NAT network-interface ID', () => {
+    const result = validate({
+      ...validEnvironment,
+      TF_VAR_development_nat_network_interface_id: 'not-an-eni',
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'TF_VAR_development_nat_network_interface_id must be a network-interface ID.',
+    );
+  });
+
+  it('rejects an invalid development NAT egress CIDR', () => {
+    const result = validate({
+      ...validEnvironment,
+      TF_VAR_development_nat_egress_cidr: '999.55.45.250/32',
+    });
+
+    expect(result.status).not.toBe(0);
+    expect(result.stderr).toContain(
+      'TF_VAR_development_nat_egress_cidr must be an IPv4 /32.',
     );
   });
 });

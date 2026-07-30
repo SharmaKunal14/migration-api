@@ -9,8 +9,25 @@ const networkConfiguration = readFileSync(
   ),
   'utf8',
 );
+const importConfiguration = readFileSync(
+  fileURLToPath(
+    new URL('../infra/terraform/environments/development/imports.tf', import.meta.url),
+  ),
+  'utf8',
+);
 
 describe('workload outbound network policy', () => {
+  it('adopts the manual NAT route and keeps every workload on the green table', () => {
+    expect(
+      networkConfiguration.match(/data\.aws_route_table\.development_nat\.id/gu),
+    ).toHaveLength(6);
+    expect(networkConfiguration).toContain(
+      'network_interface_id   = data.aws_network_interface.development_nat.id',
+    );
+    expect(importConfiguration).toContain('id = "rtb-0d877aa0f73f6ee09_0.0.0.0/0"');
+    expect(importConfiguration.match(/id = "rtbassoc-[0-9a-f]+"/gu)).toHaveLength(8);
+  });
+
   it('separates agent, source-fetcher, and verifier domain allowlists', () => {
     const rules = /rules_string = <<-RULES(?<rules>[\s\S]*?)\n\s*RULES/u.exec(
       networkConfiguration,

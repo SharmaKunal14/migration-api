@@ -3,6 +3,40 @@ variable "aws_region" {
   type        = string
 }
 
+variable "development_nat_route_table_id" {
+  description = "Existing shared development route table whose default route targets the manually managed NAT-instance ENI."
+  type        = string
+
+  validation {
+    condition     = can(regex("^rtb-[0-9a-f]+$", var.development_nat_route_table_id))
+    error_message = "development_nat_route_table_id must be an EC2 route-table ID."
+  }
+}
+
+variable "development_nat_network_interface_id" {
+  description = "Primary ENI of the manually managed development NAT instance."
+  type        = string
+
+  validation {
+    condition     = can(regex("^eni-[0-9a-f]+$", var.development_nat_network_interface_id))
+    error_message = "development_nat_network_interface_id must be an EC2 network-interface ID."
+  }
+}
+
+variable "development_nat_egress_cidr" {
+  description = "Stable public /32 used by the manually managed development NAT instance."
+  type        = string
+
+  validation {
+    condition = (
+      can(regex("^(?:[0-9]{1,3}\\.){3}[0-9]{1,3}/32$", var.development_nat_egress_cidr)) &&
+      can(cidrhost(var.development_nat_egress_cidr, 0)) &&
+      endswith(var.development_nat_egress_cidr, "/32")
+    )
+    error_message = "development_nat_egress_cidr must be a valid IPv4 /32."
+  }
+}
+
 variable "owner" {
   description = "Resource owner tag."
   type        = string

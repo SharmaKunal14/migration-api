@@ -67,6 +67,9 @@ configuration, not secret credential values:
 | `DATABASE_SECRET_KMS_KEY_ARN` | Runtime secret KMS-key ARN |
 | `DATABASE_MIGRATION_SECRET_ARN` | Migration database secret ARN only |
 | `DATABASE_MIGRATION_SECRET_KMS_KEY_ARN` | Migration secret KMS-key ARN |
+| `DEVELOPMENT_NAT_EGRESS_CIDR` | Stable NAT-instance egress address (`13.55.45.250/32`) |
+| `DEVELOPMENT_NAT_NETWORK_INTERFACE_ID` | Primary NAT-instance ENI (`eni-0dd6f17bc574a317a`) |
+| `DEVELOPMENT_NAT_ROUTE_TABLE_ID` | Existing shared NAT-instance route table (`rtb-0d877aa0f73f6ee09`) |
 | `MIGRATION_GITHUB_WEBHOOK_SECRET_ARN` | GitHub webhook secret ARN only |
 | `MIGRATION_GITHUB_WEBHOOK_SECRET_KMS_KEY_ARN` | GitHub webhook secret KMS-key ARN |
 | `MIGRATION_GITHUB_APP_SECRET_ARN` | GitHub App ID/private-key secret ARN only |
@@ -137,7 +140,11 @@ From GitHub Actions:
 
 Failure before the complete Terraform apply leaves the currently deployed
 application unchanged, although a new immutable image or migrator task revision
-may exist. A migration failure blocks the application apply.
+may exist. A migration failure blocks the application apply. Failure during the
+complete Terraform apply can leave successfully applied resources in place;
+Terraform apply is not transactional. Inspect the apply evidence and live AWS
+state, then create a fresh plan after correcting the failure. Never reuse the
+failed saved plan.
 
 ## Rollback
 

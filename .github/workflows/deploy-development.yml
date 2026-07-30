@@ -65,6 +65,10 @@ jobs:
       TF_VAR_database_migration_secret_arn: ${{ vars.DATABASE_MIGRATION_SECRET_ARN }}
       TF_VAR_database_migration_secret_kms_key_arn:
         ${{ vars.DATABASE_MIGRATION_SECRET_KMS_KEY_ARN }}
+      TF_VAR_development_nat_egress_cidr: ${{ vars.DEVELOPMENT_NAT_EGRESS_CIDR }}
+      TF_VAR_development_nat_network_interface_id:
+        ${{ vars.DEVELOPMENT_NAT_NETWORK_INTERFACE_ID }}
+      TF_VAR_development_nat_route_table_id: ${{ vars.DEVELOPMENT_NAT_ROUTE_TABLE_ID }}
       TF_VAR_github_webhook_secret_arn: ${{ vars.MIGRATION_GITHUB_WEBHOOK_SECRET_ARN }}
       TF_VAR_github_webhook_secret_kms_key_arn:
         ${{ vars.MIGRATION_GITHUB_WEBHOOK_SECRET_KMS_KEY_ARN }}
@@ -631,6 +635,10 @@ jobs:
       TF_VAR_database_migration_secret_arn: ${{ vars.DATABASE_MIGRATION_SECRET_ARN }}
       TF_VAR_database_migration_secret_kms_key_arn:
         ${{ vars.DATABASE_MIGRATION_SECRET_KMS_KEY_ARN }}
+      TF_VAR_development_nat_egress_cidr: ${{ vars.DEVELOPMENT_NAT_EGRESS_CIDR }}
+      TF_VAR_development_nat_network_interface_id:
+        ${{ vars.DEVELOPMENT_NAT_NETWORK_INTERFACE_ID }}
+      TF_VAR_development_nat_route_table_id: ${{ vars.DEVELOPMENT_NAT_ROUTE_TABLE_ID }}
       TF_VAR_github_webhook_secret_arn: ${{ vars.MIGRATION_GITHUB_WEBHOOK_SECRET_ARN }}
       TF_VAR_github_webhook_secret_kms_key_arn:
         ${{ vars.MIGRATION_GITHUB_WEBHOOK_SECRET_KMS_KEY_ARN }}

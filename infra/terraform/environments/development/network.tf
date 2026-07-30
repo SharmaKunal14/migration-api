@@ -6,6 +6,14 @@ resource "aws_vpc" "main" {
   tags = { Name = "${local.name_prefix}-vpc" }
 }
 
+data "aws_route_table" "development_nat" {
+  route_table_id = var.development_nat_route_table_id
+}
+
+data "aws_network_interface" "development_nat" {
+  id = var.development_nat_network_interface_id
+}
+
 resource "aws_internet_gateway" "main" {
   vpc_id = aws_vpc.main.id
   tags   = { Name = "${local.name_prefix}-igw" }
@@ -126,6 +134,19 @@ resource "aws_route_table" "control" {
   tags     = { Name = "${local.name_prefix}-control-${each.key}" }
 }
 
+resource "aws_route" "development_nat_default" {
+  route_table_id         = data.aws_route_table.development_nat.id
+  destination_cidr_block = "0.0.0.0/0"
+  network_interface_id   = data.aws_network_interface.development_nat.id
+
+  lifecycle {
+    precondition {
+      condition     = data.aws_network_interface.development_nat.vpc_id == aws_vpc.main.id
+      error_message = "The development NAT network interface must belong to the development VPC."
+    }
+  }
+}
+
 resource "aws_route" "control_default" {
   for_each               = aws_route_table.control
   route_table_id         = each.value.id
@@ -136,7 +157,14 @@ resource "aws_route" "control_default" {
 resource "aws_route_table_association" "control" {
   for_each       = aws_subnet.control
   subnet_id      = each.value.id
-  route_table_id = aws_route_table.control[each.key].id
+  route_table_id = data.aws_route_table.development_nat.id
+
+  lifecycle {
+    precondition {
+      condition     = data.aws_route_table.development_nat.vpc_id == aws_vpc.main.id
+      error_message = "The development NAT route table must belong to the development VPC."
+    }
+  }
 }
 
 resource "aws_networkfirewall_rule_group" "openai_egress" {
@@ -241,7 +269,14 @@ resource "aws_route" "agent_default" {
 resource "aws_route_table_association" "agent" {
   for_each       = aws_subnet.agent
   subnet_id      = each.value.id
-  route_table_id = aws_route_table.agent[each.key].id
+  route_table_id = data.aws_route_table.development_nat.id
+
+  lifecycle {
+    precondition {
+      condition     = data.aws_route_table.development_nat.vpc_id == aws_vpc.main.id
+      error_message = "The development NAT route table must belong to the development VPC."
+    }
+  }
 }
 
 resource "aws_route_table" "source_fetcher" {
@@ -260,7 +295,14 @@ resource "aws_route" "source_fetcher_default" {
 resource "aws_route_table_association" "source_fetcher" {
   for_each       = aws_subnet.source_fetcher
   subnet_id      = each.value.id
-  route_table_id = aws_route_table.source_fetcher[each.key].id
+  route_table_id = data.aws_route_table.development_nat.id
+
+  lifecycle {
+    precondition {
+      condition     = data.aws_route_table.development_nat.vpc_id == aws_vpc.main.id
+      error_message = "The development NAT route table must belong to the development VPC."
+    }
+  }
 }
 
 resource "aws_route_table" "verifier" {
@@ -279,7 +321,14 @@ resource "aws_route" "verifier_default" {
 resource "aws_route_table_association" "verifier" {
   for_each       = aws_subnet.verifier
   subnet_id      = each.value.id
-  route_table_id = aws_route_table.verifier[each.key].id
+  route_table_id = data.aws_route_table.development_nat.id
+
+  lifecycle {
+    precondition {
+      condition     = data.aws_route_table.development_nat.vpc_id == aws_vpc.main.id
+      error_message = "The development NAT route table must belong to the development VPC."
+    }
+  }
 }
 
 resource "aws_cloudwatch_log_group" "network_firewall" {
@@ -452,6 +501,7 @@ resource "aws_vpc_endpoint" "s3" {
   service_name      = "com.amazonaws.${var.aws_region}.s3"
   vpc_endpoint_type = "Gateway"
   route_table_ids = concat(
+    [data.aws_route_table.development_nat.id],
     [for route_table in aws_route_table.control : route_table.id],
     [for route_table in aws_route_table.agent : route_table.id],
     [for route_table in aws_route_table.source_fetcher : route_table.id],

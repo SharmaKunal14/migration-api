@@ -10,6 +10,9 @@ const requiredVariables = [
   'TF_VAR_database_migration_secret_kms_key_arn',
   'TF_VAR_database_secret_arn',
   'TF_VAR_database_secret_kms_key_arn',
+  'TF_VAR_development_nat_egress_cidr',
+  'TF_VAR_development_nat_network_interface_id',
+  'TF_VAR_development_nat_route_table_id',
   'TF_VAR_github_webhook_secret_arn',
   'TF_VAR_github_webhook_secret_kms_key_arn',
   'TF_VAR_github_app_secret_arn',
@@ -39,6 +42,18 @@ if (missing.length > 0) {
   throw new Error(`Missing deployment variables: ${missing.join(', ')}`);
 }
 
+function isIpv4Cidr32(value) {
+  const [address, prefix, ...remainder] = value.split('/');
+  if (prefix !== '32' || remainder.length > 0) return false;
+  const octets = address.split('.');
+  return (
+    octets.length === 4 &&
+    octets.every(
+      octet => /^(?:0|[1-9]\d{0,2})$/u.test(octet) && Number.parseInt(octet, 10) <= 255,
+    )
+  );
+}
+
 if (process.env.GITHUB_REF !== 'refs/heads/main') {
   throw new Error('Development deployments must run from refs/heads/main.');
 }
@@ -60,6 +75,17 @@ if (
 }
 if (process.env.TF_VAR_aws_region !== process.env.AWS_REGION) {
   throw new Error('TF_VAR_aws_region must match AWS_REGION.');
+}
+if (!isIpv4Cidr32(process.env.TF_VAR_development_nat_egress_cidr)) {
+  throw new Error('TF_VAR_development_nat_egress_cidr must be an IPv4 /32.');
+}
+if (!/^eni-[0-9a-f]+$/u.test(process.env.TF_VAR_development_nat_network_interface_id)) {
+  throw new Error(
+    'TF_VAR_development_nat_network_interface_id must be a network-interface ID.',
+  );
+}
+if (!/^rtb-[0-9a-f]+$/u.test(process.env.TF_VAR_development_nat_route_table_id)) {
+  throw new Error('TF_VAR_development_nat_route_table_id must be a route-table ID.');
 }
 if (!/^https:\/\//u.test(process.env.TF_VAR_supabase_url)) {
   throw new Error('TF_VAR_supabase_url must use HTTPS.');
