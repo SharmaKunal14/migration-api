@@ -25,7 +25,9 @@ describe('workload outbound network policy', () => {
       'network_interface_id   = data.aws_network_interface.development_nat.id',
     );
     expect(importConfiguration).toContain('id = "rtb-0d877aa0f73f6ee09_0.0.0.0/0"');
-    expect(importConfiguration.match(/id = "rtbassoc-[0-9a-f]+"/gu)).toHaveLength(8);
+    expect(
+      importConfiguration.match(/id = "subnet-[0-9a-f]+\/rtb-0d877aa0f73f6ee09"/gu),
+    ).toHaveLength(8);
   });
 
   it('separates agent, source-fetcher, and verifier domain allowlists', () => {

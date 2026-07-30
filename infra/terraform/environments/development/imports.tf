@@ -10,40 +10,40 @@ import {
 
 import {
   to = aws_route_table_association.control["ap-southeast-2a"]
-  id = "rtbassoc-0e68e1d5921d08756"
+  id = "subnet-0a6c08eed20b6d95e/rtb-0d877aa0f73f6ee09"
 }
 
 import {
   to = aws_route_table_association.control["ap-southeast-2b"]
-  id = "rtbassoc-0e460304dc4a0f705"
+  id = "subnet-090f98329b2c48dca/rtb-0d877aa0f73f6ee09"
 }
 
 import {
   to = aws_route_table_association.agent["ap-southeast-2a"]
-  id = "rtbassoc-0b67b141fa9e85a46"
+  id = "subnet-01c52028b2073177a/rtb-0d877aa0f73f6ee09"
 }
 
 import {
   to = aws_route_table_association.agent["ap-southeast-2b"]
-  id = "rtbassoc-07455be0fde7a6897"
+  id = "subnet-097cbbf3fae0f7b27/rtb-0d877aa0f73f6ee09"
 }
 
 import {
   to = aws_route_table_association.source_fetcher["ap-southeast-2a"]
-  id = "rtbassoc-07b775117a7943b18"
+  id = "subnet-01c0670238fd6c434/rtb-0d877aa0f73f6ee09"
 }
 
 import {
   to = aws_route_table_association.source_fetcher["ap-southeast-2b"]
-  id = "rtbassoc-09794ca184fcfe227"
+  id = "subnet-0792ee3a8153e417a/rtb-0d877aa0f73f6ee09"
 }
 
 import {
   to = aws_route_table_association.verifier["ap-southeast-2a"]
-  id = "rtbassoc-0b86a3a74f897922b"
+  id = "subnet-0e8024cc1b09e91dd/rtb-0d877aa0f73f6ee09"
 }
 
 import {
   to = aws_route_table_association.verifier["ap-southeast-2b"]
-  id = "rtbassoc-002cc2df237bdf382"
+  id = "subnet-0d5dcfcbb5190d06f/rtb-0d877aa0f73f6ee09"
 }
