@@ -9,6 +9,13 @@ const migration = readFileSync(
   ),
   'utf8',
 );
+const claimAmbiguityFix = readFileSync(
+  new URL(
+    '../supabase/migrations/0023_fix_package_source_claim_ambiguity.sql',
+    import.meta.url,
+  ),
+  'utf8',
+);
 const handler = readFileSync(
   new URL('../services/package-source-resolver/src/handler.ts', import.meta.url),
   'utf8',
@@ -30,6 +37,15 @@ describe('Stage 8B npm source resolution boundary', () => {
     expect(migration).toContain('mapping.attempt_count < 5');
     expect(migration).toContain("resolver_now - interval '1 hour'");
     expect(migration).toContain('clock_timestamp()');
+  });
+
+  it('qualifies claim columns that conflict with PL/pgSQL output variables', () => {
+    expect(claimAmbiguityFix).toContain(
+      'update package_source_resolution_runs as resolution_run',
+    );
+    expect(claimAmbiguityFix).toContain('where resolution_run.mapping_id = claimed.id');
+    expect(claimAmbiguityFix).toContain("and resolution_run.status = 'running'");
+    expect(claimAmbiguityFix).not.toContain('where mapping_id = claimed.id');
   });
 
   it('stores candidates as untrusted pending review records', () => {
