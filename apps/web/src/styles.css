@@ -66,6 +66,33 @@ a:focus-visible {
   flex-wrap: wrap;
 }
 
+.review-decision-button {
+  min-height: 48px;
+  padding: 0.8rem 1.35rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  color: var(--ink);
+  background: transparent;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.review-decision-button:hover:not(:disabled),
+.review-decision-button:focus-visible:not(:disabled) {
+  border-color: var(--mint);
+  color: var(--mint);
+  background: rgb(137 247 194 / 6%);
+}
+
+.review-decision-button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.review-decision-button[aria-busy='true'] {
+  cursor: progress;
+}
+
 .queue-filters {
   margin-bottom: 2rem;
 }
@@ -327,11 +354,16 @@ h2 {
   color: #08110f;
   background: var(--lime);
   font-weight: 700;
+  cursor: pointer;
 }
 
 .primary-button:disabled {
-  cursor: progress;
+  cursor: not-allowed;
   opacity: 0.6;
+}
+
+.primary-button[aria-busy='true'] {
+  cursor: progress;
 }
 
 .secondary-button {

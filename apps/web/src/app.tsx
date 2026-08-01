@@ -438,7 +438,10 @@ function PackageSourceMappingCard({
   const [rejectionReasonCode, setRejectionReasonCode] = useState<
     'NOT_OFFICIAL' | 'DUPLICATE' | 'UNSUPPORTED_SOURCE'
   >('NOT_OFFICIAL');
-  const [busyCandidate, setBusyCandidate] = useState<string | null>(null);
+  const [busyOperation, setBusyOperation] = useState<{
+    readonly targetId: string;
+    readonly action: 'approve' | 'reject' | 'replace' | 'mapping';
+  } | null>(null);
   const [replacementKind, setReplacementKind] = useState<
     'sdk_repository_release' | 'changelog' | 'release_feed' | 'migration_guide'
   >('sdk_repository_release');
@@ -461,7 +464,7 @@ function PackageSourceMappingCard({
     candidate: PublicPackageSourceCandidate,
     decision: 'approve' | 'reject',
   ): Promise<void> {
-    setBusyCandidate(candidate.id);
+    setBusyOperation({ targetId: candidate.id, action: decision });
     setError(null);
     try {
       await reviewPackageSourceCandidate(
@@ -504,12 +507,12 @@ function PackageSourceMappingCard({
     } catch (caught) {
       setError(errorText(caught));
     } finally {
-      setBusyCandidate(null);
+      setBusyOperation(null);
     }
   }
 
   async function replace(candidate: PublicPackageSourceCandidate): Promise<void> {
-    setBusyCandidate(candidate.id);
+    setBusyOperation({ targetId: candidate.id, action: 'replace' });
     setError(null);
     try {
       await replacePackageSourceCandidate(token, candidate.id, crypto.randomUUID(), {
@@ -523,12 +526,12 @@ function PackageSourceMappingCard({
     } catch (caught) {
       setError(errorText(caught));
     } finally {
-      setBusyCandidate(null);
+      setBusyOperation(null);
     }
   }
 
   async function changeMappingState(): Promise<void> {
-    setBusyCandidate(mapping.id);
+    setBusyOperation({ targetId: mapping.id, action: 'mapping' });
     setError(null);
     try {
       await setPackageSourceMappingState(
@@ -547,7 +550,7 @@ function PackageSourceMappingCard({
     } catch (caught) {
       setError(errorText(caught));
     } finally {
-      setBusyCandidate(null);
+      setBusyOperation(null);
     }
   }
 
@@ -576,10 +579,19 @@ function PackageSourceMappingCard({
           <button
             className="secondary-button"
             type="button"
-            disabled={busyCandidate !== null}
+            disabled={busyOperation !== null}
+            aria-busy={
+              busyOperation?.targetId === mapping.id &&
+              busyOperation.action === 'mapping'
+            }
             onClick={() => void changeMappingState()}
           >
-            {mapping.status === 'disabled' ? 'Enable mapping' : 'Disable mapping'}
+            {busyOperation?.targetId === mapping.id &&
+            busyOperation.action === 'mapping'
+              ? 'Updating mapping…'
+              : mapping.status === 'disabled'
+                ? 'Enable mapping'
+                : 'Disable mapping'}
           </button>
         </div>
       </header>
@@ -815,28 +827,41 @@ function PackageSourceMappingCard({
               mapping.status !== 'disabled' && (
                 <div className="review-actions">
                   <button
-                    className="primary-button"
+                    className="review-decision-button"
                     type="button"
                     disabled={
                       !candidate.canPromote ||
-                      busyCandidate !== null ||
+                      busyOperation !== null ||
                       (catalogMode === 'existing_product' && !selectedProductId) ||
                       (catalogMode === 'existing_vendor' && !selectedVendorId) ||
                       (catalogMode === 'new_vendor' &&
                         (!vendorSlug || !vendorName || !officialDomains.trim()))
                     }
-                    aria-busy={busyCandidate === candidate.id}
+                    aria-busy={
+                      busyOperation?.targetId === candidate.id &&
+                      busyOperation.action === 'approve'
+                    }
                     onClick={() => void review(candidate, 'approve')}
                   >
-                    Approve exact source
+                    {busyOperation?.targetId === candidate.id &&
+                    busyOperation.action === 'approve'
+                      ? 'Approving…'
+                      : 'Approve exact source'}
                   </button>
                   <button
-                    className="secondary-button"
+                    className="review-decision-button"
                     type="button"
-                    disabled={busyCandidate !== null}
+                    disabled={busyOperation !== null}
+                    aria-busy={
+                      busyOperation?.targetId === candidate.id &&
+                      busyOperation.action === 'reject'
+                    }
                     onClick={() => void review(candidate, 'reject')}
                   >
-                    Reject
+                    {busyOperation?.targetId === candidate.id &&
+                    busyOperation.action === 'reject'
+                      ? 'Rejecting…'
+                      : 'Reject'}
                   </button>
                   {candidate.sourceKind !== 'package_registry_release' && (
                     <div className="replacement-controls">
@@ -872,13 +897,20 @@ function PackageSourceMappingCard({
                         className="secondary-button"
                         type="button"
                         disabled={
-                          busyCandidate !== null ||
+                          busyOperation !== null ||
                           !replacementUrl ||
                           !replacementNote.trim()
                         }
+                        aria-busy={
+                          busyOperation?.targetId === candidate.id &&
+                          busyOperation.action === 'replace'
+                        }
                         onClick={() => void replace(candidate)}
                       >
-                        Replace candidate
+                        {busyOperation?.targetId === candidate.id &&
+                        busyOperation.action === 'replace'
+                          ? 'Replacing…'
+                          : 'Replace candidate'}
                       </button>
                     </div>
                   )}

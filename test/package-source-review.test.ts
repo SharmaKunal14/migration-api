@@ -27,6 +27,10 @@ const operatorUi = readFileSync(
   new URL('../apps/web/src/app.tsx', import.meta.url),
   'utf8',
 );
+const operatorStyles = readFileSync(
+  new URL('../apps/web/src/styles.css', import.meta.url),
+  'utf8',
+);
 
 describe('stage 8C package source review', () => {
   it('accepts bounded approvals and rejects source URL substitution', () => {
@@ -147,5 +151,14 @@ describe('stage 8C package source review', () => {
     expect(operatorUi).toContain('Proposed because:');
     expect(operatorUi).toContain('Release feed');
     expect(operatorUi).toContain('Migration documentation');
+  });
+
+  it('renders review decisions as neutral controls and shows progress only while active', () => {
+    expect(operatorUi).toContain('className="review-decision-button"');
+    expect(operatorUi).toContain("busyOperation.action === 'approve'");
+    expect(operatorUi).toContain("busyOperation.action === 'reject'");
+    expect(operatorStyles).toContain('.review-decision-button:disabled');
+    expect(operatorStyles).toContain('cursor: not-allowed');
+    expect(operatorStyles).toContain(".review-decision-button[aria-busy='true']");
   });
 });
