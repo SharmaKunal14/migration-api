@@ -584,6 +584,7 @@ jobs:
             infra/terraform/environments/development/.terraform/github-webhook.zip \
             infra/terraform/environments/development/.terraform/outbox.zip \
             infra/terraform/environments/development/.terraform/repository-scan-control.zip \
+            infra/terraform/environments/development/.terraform/package-source-resolver.zip \
             infra/terraform/environments/development/.terraform/vendor-intelligence-control.zip \
             infra/terraform/environments/development/.terraform/impact-analysis-control.zip \
             infra/terraform/environments/development/.terraform/workflow-control.zip \
@@ -738,6 +739,7 @@ jobs:
           test -s infra/terraform/environments/development/.terraform/github-webhook.zip
           test -s infra/terraform/environments/development/.terraform/outbox.zip
           test -s infra/terraform/environments/development/.terraform/repository-scan-control.zip
+          test -s infra/terraform/environments/development/.terraform/package-source-resolver.zip
           test -s infra/terraform/environments/development/.terraform/vendor-intelligence-control.zip
           test -s infra/terraform/environments/development/.terraform/impact-analysis-control.zip
           test -s infra/terraform/environments/development/.terraform/workflow-control.zip

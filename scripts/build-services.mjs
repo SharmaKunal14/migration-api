@@ -64,6 +64,11 @@ await Promise.all([
   }),
   build({
     ...common,
+    entryPoints: ['services/package-source-resolver/src/handler.ts'],
+    outfile: 'dist/services/package-source-resolver.js',
+  }),
+  build({
+    ...common,
     entryPoints: ['services/vendor-intelligence-control/src/handler.ts'],
     outfile: 'dist/services/vendor-intelligence-control.js',
   }),

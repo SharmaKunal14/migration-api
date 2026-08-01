@@ -332,9 +332,50 @@ export interface PackageSourceMappingTable {
   firstObservedAt: Timestamp;
   lastObservedAt: Timestamp;
   lastCheckedAt: Timestamp | null;
+  leaseOwner: string | null;
+  leaseExpiresAt: Timestamp | null;
+  registryEtag: string | null;
+  registryMetadataObjectKey: string | null;
+  registryMetadataDigest: string | null;
+  latestVersion: string | null;
+  latestDeprecated: boolean | null;
+  resolvedAt: Timestamp | null;
   createdAt: Timestamp;
   updatedAt: Timestamp;
   version: number;
+}
+
+export interface PackageSourceResolutionRunTable {
+  id: string;
+  mappingId: string;
+  attempt: number;
+  status: 'running' | 'succeeded' | 'failed';
+  correlationId: string;
+  evidenceObjectKey: string | null;
+  evidenceDigest: string | null;
+  resolvedVersion: string | null;
+  registryEtag: string | null;
+  safeErrorCode: string | null;
+  startedAt: Timestamp;
+  completedAt: Timestamp | null;
+}
+
+export interface PackageSourceCandidateTable {
+  id: string;
+  mappingId: string;
+  resolutionRunId: string;
+  sourceKind:
+    | 'package_registry_release'
+    | 'sdk_repository_release'
+    | 'homepage'
+    | 'issue_tracker';
+  canonicalUrl: string;
+  canonicalDomain: string;
+  evidenceDigest: string;
+  reviewState: 'pending_review' | 'approved' | 'rejected';
+  reviewedByUserId: string | null;
+  reviewedAt: Timestamp | null;
+  createdAt: Timestamp;
 }
 
 export interface MigrationSpecificationTable {
@@ -847,6 +888,8 @@ export interface Database {
   vendorSources: VendorSourceTable;
   vendorReleases: VendorReleaseTable;
   packageSourceMappings: PackageSourceMappingTable;
+  packageSourceResolutionRuns: PackageSourceResolutionRunTable;
+  packageSourceCandidates: PackageSourceCandidateTable;
   migrationSpecifications: MigrationSpecificationTable;
   migrationCandidates: MigrationCandidateTable;
   impactReports: ImpactReportTable;

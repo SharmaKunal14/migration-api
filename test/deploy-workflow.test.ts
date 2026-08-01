@@ -49,6 +49,7 @@ describe('development deployment artifact contract', () => {
       'github-token-broker.zip',
       'github-webhook.zip',
       'repository-scan-control.zip',
+      'package-source-resolver.zip',
     ]) {
       expect(deploymentWorkflow.split(archive)).toHaveLength(3);
     }

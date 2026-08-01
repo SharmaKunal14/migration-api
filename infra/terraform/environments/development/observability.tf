@@ -46,6 +46,18 @@ resource "aws_cloudwatch_log_metric_filter" "repository_acquisition_failure" {
   }
 }
 
+resource "aws_cloudwatch_log_metric_filter" "package_source_resolution_failure" {
+  name           = "migration-api-development-package-source-resolution-failure"
+  log_group_name = aws_cloudwatch_log_group.package_source_resolver.name
+  pattern        = "{ $.event = \"npm_package_resolution_failed\" }"
+
+  metric_transformation {
+    name      = "PackageSourceResolutionFailed"
+    namespace = "MigrationApi/Development"
+    value     = "1"
+  }
+}
+
 resource "aws_cloudwatch_log_metric_filter" "vendor_ingestion_failure" {
   name           = "migration-api-development-vendor-ingestion-failure"
   log_group_name = aws_cloudwatch_log_group.vendor_fetcher.name
@@ -263,6 +275,33 @@ resource "aws_cloudwatch_metric_alarm" "repository_scan_control_errors" {
   namespace           = "AWS/Lambda"
   metric_name         = "Errors"
   dimensions          = { FunctionName = aws_lambda_function.repository_scan_control.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "package_source_resolver_errors" {
+  alarm_name          = "migration-api-development-package-source-resolver-errors"
+  alarm_description   = "Package-source resolver returned an unhandled Lambda error."
+  namespace           = "AWS/Lambda"
+  metric_name         = "Errors"
+  dimensions          = { FunctionName = aws_lambda_function.package_source_resolver.function_name }
+  statistic           = "Sum"
+  period              = 300
+  evaluation_periods  = 1
+  threshold           = 1
+  comparison_operator = "GreaterThanOrEqualToThreshold"
+  treat_missing_data  = "notBreaching"
+}
+
+resource "aws_cloudwatch_metric_alarm" "package_source_resolution_failure" {
+  alarm_name          = "migration-api-development-package-source-resolution-failure"
+  alarm_description   = "An npm package-source lookup failed and was safely recorded."
+  namespace           = "MigrationApi/Development"
+  metric_name         = "PackageSourceResolutionFailed"
   statistic           = "Sum"
   period              = 300
   evaluation_periods  = 1

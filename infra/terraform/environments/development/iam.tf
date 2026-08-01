@@ -53,6 +53,11 @@ resource "aws_iam_role" "repository_scan_control" {
   assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
 }
 
+resource "aws_iam_role" "package_source_resolver" {
+  name               = "migration-api-development-package-source-resolver"
+  assume_role_policy = data.aws_iam_policy_document.lambda_trust.json
+}
+
 resource "aws_iam_role" "agent_execution" {
   name               = "migration-api-development-agent-execution"
   assume_role_policy = data.aws_iam_policy_document.ecs_task_trust.json
@@ -146,6 +151,7 @@ locals {
     github_token_broker         = aws_iam_role.github_token_broker.id
     github_reconciler           = aws_iam_role.github_reconciler.id
     repository_scan_control     = aws_iam_role.repository_scan_control.id
+    package_source_resolver     = aws_iam_role.package_source_resolver.id
     vendor_intelligence_control = aws_iam_role.vendor_intelligence_control.id
     impact_analysis_control     = aws_iam_role.impact_analysis_control.id
   }
@@ -225,6 +231,12 @@ resource "aws_iam_role_policy" "github_reconciler_database" {
 resource "aws_iam_role_policy" "repository_scan_control_database" {
   name   = "runtime-database"
   role   = aws_iam_role.repository_scan_control.id
+  policy = data.aws_iam_policy_document.database_secret.json
+}
+
+resource "aws_iam_role_policy" "package_source_resolver_database" {
+  name   = "runtime-database"
+  role   = aws_iam_role.package_source_resolver.id
   policy = data.aws_iam_policy_document.database_secret.json
 }
 
@@ -885,6 +897,29 @@ resource "aws_iam_role_policy" "repository_scan_control_artifacts" {
   name   = "read-repository-scan-evidence"
   role   = aws_iam_role.repository_scan_control.id
   policy = data.aws_iam_policy_document.repository_scan_control_artifacts.json
+}
+
+data "aws_iam_policy_document" "package_source_resolver_artifacts" {
+  statement {
+    sid       = "WriteNpmRegistryEvidence"
+    actions   = ["s3:PutObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/package-source/npm/*"]
+  }
+
+  statement {
+    sid = "EncryptNpmRegistryEvidence"
+    actions = [
+      "kms:Encrypt",
+      "kms:GenerateDataKey"
+    ]
+    resources = [aws_kms_key.artifacts.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "package_source_resolver_artifacts" {
+  name   = "write-npm-registry-evidence"
+  role   = aws_iam_role.package_source_resolver.id
+  policy = data.aws_iam_policy_document.package_source_resolver_artifacts.json
 }
 
 data "aws_iam_policy_document" "migrator_execution" {

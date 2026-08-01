@@ -40,6 +40,12 @@ resource "aws_cloudwatch_log_group" "repository_scan_control" {
   kms_key_id        = aws_kms_key.logs.arn
 }
 
+resource "aws_cloudwatch_log_group" "package_source_resolver" {
+  name              = "/aws/lambda/migration-api-development-package-source-resolver"
+  retention_in_days = 30
+  kms_key_id        = aws_kms_key.logs.arn
+}
+
 resource "aws_cloudwatch_log_group" "agent" {
   name              = "/migration-api/development/agent"
   retention_in_days = 30
@@ -136,6 +142,10 @@ locals {
       role = aws_iam_role.repository_scan_control.id
       arn  = aws_cloudwatch_log_group.repository_scan_control.arn
     }
+    package_source_resolver = {
+      role = aws_iam_role.package_source_resolver.id
+      arn  = aws_cloudwatch_log_group.package_source_resolver.arn
+    }
     vendor_intelligence_control = {
       role = aws_iam_role.vendor_intelligence_control.id
       arn  = aws_cloudwatch_log_group.vendor_intelligence_control.arn
@@ -229,6 +239,16 @@ data "archive_file" "repository_scan_control" {
 
   source {
     content  = file("${var.service_build_directory}/repository-scan-control.js")
+    filename = "index.mjs"
+  }
+}
+
+data "archive_file" "package_source_resolver" {
+  type        = "zip"
+  output_path = "${path.module}/.terraform/package-source-resolver.zip"
+
+  source {
+    content  = file("${var.service_build_directory}/package-source-resolver.js")
     filename = "index.mjs"
   }
 }
@@ -441,6 +461,46 @@ resource "aws_lambda_function" "repository_scan_control" {
     aws_iam_role_policy.repository_scan_control_database,
     aws_iam_role_policy.repository_scan_control_artifacts,
     aws_iam_role_policy.lambda_vpc["repository_scan_control"]
+  ]
+}
+
+resource "aws_lambda_function" "package_source_resolver" {
+  function_name                  = "migration-api-development-package-source-resolver"
+  role                           = aws_iam_role.package_source_resolver.arn
+  handler                        = "index.handler"
+  runtime                        = "nodejs22.x"
+  architectures                  = ["arm64"]
+  filename                       = data.archive_file.package_source_resolver.output_path
+  source_code_hash               = data.archive_file.package_source_resolver.output_base64sha256
+  memory_size                    = 512
+  timeout                        = 60
+  reserved_concurrent_executions = 1
+
+  environment {
+    variables = {
+      APP_ENVIRONMENT      = "development"
+      ARTIFACT_BUCKET      = aws_s3_bucket.artifacts.bucket
+      ARTIFACT_KMS_KEY_ARN = aws_kms_key.artifacts.arn
+      DATABASE_SECRET_ARN  = var.database_secret_arn
+      NPM_REGISTRY_ORIGIN  = "https://registry.npmjs.org"
+      NODE_OPTIONS         = "--enable-source-maps"
+    }
+  }
+
+  vpc_config {
+    security_group_ids = [aws_security_group.control.id]
+    subnet_ids         = [for subnet in aws_subnet.control : subnet.id]
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+
+  depends_on = [
+    aws_cloudwatch_log_group.package_source_resolver,
+    aws_iam_role_policy.package_source_resolver_database,
+    aws_iam_role_policy.package_source_resolver_artifacts,
+    aws_iam_role_policy.lambda_vpc["package_source_resolver"]
   ]
 }
 
@@ -2687,6 +2747,24 @@ resource "aws_iam_role_policy" "scheduler" {
   policy = data.aws_iam_policy_document.scheduler.json
 }
 
+resource "aws_iam_role" "package_source_resolver_scheduler" {
+  name               = "migration-api-development-package-source-resolver-scheduler"
+  assume_role_policy = data.aws_iam_policy_document.scheduler_trust.json
+}
+
+data "aws_iam_policy_document" "package_source_resolver_scheduler" {
+  statement {
+    actions   = ["lambda:InvokeFunction"]
+    resources = [aws_lambda_function.package_source_resolver.arn]
+  }
+}
+
+resource "aws_iam_role_policy" "package_source_resolver_scheduler" {
+  name   = "invoke-package-source-resolver"
+  role   = aws_iam_role.package_source_resolver_scheduler.id
+  policy = data.aws_iam_policy_document.package_source_resolver_scheduler.json
+}
+
 resource "aws_scheduler_schedule" "outbox" {
   name                         = "migration-api-development-outbox"
   schedule_expression          = "rate(1 minute)"
@@ -2703,6 +2781,28 @@ resource "aws_scheduler_schedule" "outbox" {
 
     retry_policy {
       maximum_event_age_in_seconds = 120
+      maximum_retry_attempts       = 2
+    }
+  }
+}
+
+resource "aws_scheduler_schedule" "package_source_resolver" {
+  name                         = "migration-api-development-package-source-resolver"
+  schedule_expression          = "rate(5 minutes)"
+  schedule_expression_timezone = "UTC"
+  state                        = "ENABLED"
+
+  flexible_time_window {
+    mode = "OFF"
+  }
+
+  target {
+    arn      = aws_lambda_function.package_source_resolver.arn
+    role_arn = aws_iam_role.package_source_resolver_scheduler.arn
+    input    = jsonencode({ operation = "resolve_due" })
+
+    retry_policy {
+      maximum_event_age_in_seconds = 300
       maximum_retry_attempts       = 2
     }
   }

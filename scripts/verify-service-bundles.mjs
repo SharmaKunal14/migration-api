@@ -9,6 +9,7 @@ const serviceBundles = [
   'dist/services/github-token-broker.js',
   'dist/services/github-reconciler.js',
   'dist/services/repository-scan-control.js',
+  'dist/services/package-source-resolver.js',
   'dist/services/vendor-intelligence-control.js',
   'dist/services/impact-analysis-control.js',
 ];

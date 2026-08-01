@@ -39,6 +39,10 @@ export default defineConfig({
         './packages/package-source-discovery/src/index.ts',
         import.meta.url,
       ).pathname,
+      '@migration/npm-registry': new URL(
+        './packages/npm-registry/src/index.ts',
+        import.meta.url,
+      ).pathname,
       '@migration/patch-format': new URL(
         './packages/patch-format/src/index.ts',
         import.meta.url,

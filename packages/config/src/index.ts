@@ -138,6 +138,15 @@ export const repositoryScanControlConfigSchema = commonSchema.extend({
   DATABASE_SECRET_ARN: awsArn,
 });
 
+export const packageSourceResolverConfigSchema = commonSchema.extend({
+  ARTIFACT_BUCKET: nonEmpty,
+  ARTIFACT_KMS_KEY_ARN: awsArn,
+  DATABASE_SECRET_ARN: awsArn,
+  NPM_REGISTRY_ORIGIN: z
+    .literal('https://registry.npmjs.org')
+    .default('https://registry.npmjs.org'),
+});
+
 export const sourceFetcherConfigSchema = commonSchema.extend({
   ACQUISITION_MODE: z.literal('repository_scan'),
   ARTIFACT_BUCKET: nonEmpty,
@@ -216,6 +225,9 @@ export const impactAnalysisControlConfigSchema = commonSchema.extend({
 export type ApiConfig = z.infer<typeof apiConfigSchema>;
 export type DispatcherConfig = z.infer<typeof dispatcherConfigSchema>;
 export type WorkflowControlConfig = z.infer<typeof workflowControlConfigSchema>;
+export type PackageSourceResolverConfig = z.infer<
+  typeof packageSourceResolverConfigSchema
+>;
 export type AgentConfig = z.infer<typeof agentConfigSchema>;
 export type MigrationAgentConfig = z.infer<typeof migrationAgentConfigSchema>;
 export type MigratorConfig = z.infer<typeof migratorConfigSchema>;
