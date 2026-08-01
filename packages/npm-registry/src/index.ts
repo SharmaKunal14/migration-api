@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto';
 import { isIP } from 'node:net';
 
 import { prerelease, valid } from 'semver';
@@ -5,6 +6,9 @@ import { z } from 'zod';
 
 const DEFAULT_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 const MAX_RESPONSE_BYTES = 1024 * 1024;
+// Full npm metadata includes authoritative per-version publication timestamps.
+// npm documents that some packuments exceed 10 MiB, so keep a higher but finite cap.
+const MAX_PACKUMENT_RESPONSE_BYTES = 32 * 1024 * 1024;
 const REQUEST_TIMEOUT_MS = 8_000;
 const npmPackageNamePattern =
   /^(?:@[A-Za-z0-9][A-Za-z0-9._~-]*\/)?[A-Za-z0-9][A-Za-z0-9._~-]*$/u;
@@ -26,6 +30,17 @@ const packageMetadataSchema = z
   })
   .loose();
 
+const packageDocumentSchema = z
+  .object({
+    name: z.string().min(1).max(214),
+    'dist-tags': z.object({ latest: z.string().min(1).max(100) }).loose(),
+    time: z.record(z.string(), z.string()).optional(),
+    versions: z.record(z.string(), z.unknown()),
+  })
+  .loose();
+
+const packageVersionSchema = z.object({ deprecated: z.string().optional() }).loose();
+
 export type PackageSourceKind =
   'package_registry_release' | 'sdk_repository_release' | 'homepage' | 'issue_tracker';
 
@@ -43,6 +58,22 @@ export interface NpmPackageResolution {
   registryUrl: string;
   candidates: PackageSourceCandidate[];
 }
+
+export type NpmPackageReleasePoll =
+  | {
+      status: 'not_modified';
+      registryEtag: string;
+    }
+  | {
+      status: 'modified';
+      packageName: string;
+      latestVersion: string;
+      latestDeprecated: boolean;
+      publishedAt: string | null;
+      registryEtag: string | null;
+      responseDigest: string;
+      responseBody: Uint8Array;
+    };
 
 export type NpmRegistrySafeErrorCode =
   | 'NPM_PACKAGE_NAME_INVALID'
@@ -77,6 +108,14 @@ function assertPackageName(packageName: string): void {
 
 function packagePath(packageName: string): string {
   return encodeURIComponent(packageName);
+}
+
+export function npmRegistryPackageUrl(
+  packageName: string,
+  registryOrigin: typeof DEFAULT_REGISTRY_ORIGIN = DEFAULT_REGISTRY_ORIGIN,
+): string {
+  assertPackageName(packageName);
+  return `${registryOrigin}/${packagePath(packageName)}`;
 }
 
 function isUnsafeHostname(hostname: string): boolean {
@@ -144,14 +183,17 @@ function addCandidate(
   candidates.push({ sourceKind, canonicalUrl, canonicalDomain: url.hostname });
 }
 
-async function readBoundedBody(response: Response): Promise<Uint8Array> {
+async function readBoundedBody(
+  response: Response,
+  maximumBytes = MAX_RESPONSE_BYTES,
+): Promise<Uint8Array> {
   const contentLength = response.headers.get('content-length');
   if (contentLength !== null) {
     const parsedLength = Number(contentLength);
     if (
       !Number.isSafeInteger(parsedLength) ||
       parsedLength < 0 ||
-      parsedLength > MAX_RESPONSE_BYTES
+      parsedLength > maximumBytes
     ) {
       throw new NpmRegistryError('NPM_REGISTRY_RESPONSE_TOO_LARGE');
     }
@@ -167,7 +209,7 @@ async function readBoundedBody(response: Response): Promise<Uint8Array> {
   let result = await reader.read();
   while (!result.done) {
     bytes += result.value.byteLength;
-    if (bytes > MAX_RESPONSE_BYTES) {
+    if (bytes > maximumBytes) {
       await reader.cancel();
       throw new NpmRegistryError('NPM_REGISTRY_RESPONSE_TOO_LARGE');
     }
@@ -182,6 +224,68 @@ async function readBoundedBody(response: Response): Promise<Uint8Array> {
     offset += chunk.byteLength;
   }
   return body;
+}
+
+function assertRegistryResponseUrl(
+  response: Response,
+  registryOrigin: typeof DEFAULT_REGISTRY_ORIGIN,
+  expectedPath: string,
+): void {
+  if (response.url === '') return;
+  const finalUrl = new URL(response.url);
+  if (finalUrl.origin !== registryOrigin || finalUrl.pathname !== expectedPath) {
+    throw new NpmRegistryError('NPM_REGISTRY_REDIRECT_REJECTED');
+  }
+}
+
+function assertJsonResponse(response: Response): void {
+  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
+  if (!contentType.startsWith('application/json')) {
+    throw new NpmRegistryError('NPM_REGISTRY_MEDIA_TYPE_INVALID');
+  }
+}
+
+function parseJsonBody(body: Uint8Array): unknown {
+  try {
+    return JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body));
+  } catch {
+    throw new NpmRegistryError('NPM_REGISTRY_RESPONSE_INVALID');
+  }
+}
+
+function boundedEtag(response: Response): string | null {
+  return response.headers.get('etag')?.slice(0, 512) ?? null;
+}
+
+async function fixedRegistryRequest(
+  requestUrl: string,
+  options: {
+    fetch: Fetch;
+    timeoutMs: number;
+    userAgent: string;
+    etag?: string;
+  },
+): Promise<Response> {
+  try {
+    return await options.fetch(requestUrl, {
+      method: 'GET',
+      headers: {
+        accept: 'application/json',
+        ...(options.etag === undefined ? {} : { 'if-none-match': options.etag }),
+        'user-agent': options.userAgent,
+      },
+      redirect: 'manual',
+      signal: AbortSignal.timeout(options.timeoutMs),
+    });
+  } catch (error) {
+    if (
+      error instanceof Error &&
+      (error.name === 'AbortError' || error.name === 'TimeoutError')
+    ) {
+      throw new NpmRegistryError('NPM_REGISTRY_TIMEOUT');
+    }
+    throw new NpmRegistryError('NPM_REGISTRY_REQUEST_FAILED');
+  }
 }
 
 function metadataValue(
@@ -204,26 +308,11 @@ export async function resolveNpmPackageMetadata(
   const requestUrl = `${registryOrigin}/${encodedName}/latest`;
   const fetchImplementation = options.fetch ?? globalThis.fetch;
 
-  let response: Response;
-  try {
-    response = await fetchImplementation(requestUrl, {
-      method: 'GET',
-      headers: {
-        accept: 'application/json',
-        'user-agent': 'migration-api-package-source-resolver/1.0',
-      },
-      redirect: 'manual',
-      signal: AbortSignal.timeout(options.timeoutMs ?? REQUEST_TIMEOUT_MS),
-    });
-  } catch (error) {
-    if (
-      error instanceof Error &&
-      (error.name === 'AbortError' || error.name === 'TimeoutError')
-    ) {
-      throw new NpmRegistryError('NPM_REGISTRY_TIMEOUT');
-    }
-    throw new NpmRegistryError('NPM_REGISTRY_REQUEST_FAILED');
-  }
+  const response = await fixedRegistryRequest(requestUrl, {
+    fetch: fetchImplementation,
+    timeoutMs: options.timeoutMs ?? REQUEST_TIMEOUT_MS,
+    userAgent: 'migration-api-package-source-resolver/1.0',
+  });
 
   if (response.status >= 300 && response.status < 400) {
     throw new NpmRegistryError('NPM_REGISTRY_REDIRECT_REJECTED');
@@ -231,28 +320,11 @@ export async function resolveNpmPackageMetadata(
   if (response.status === 404) throw new NpmRegistryError('NPM_PACKAGE_NOT_FOUND');
   if (!response.ok) throw new NpmRegistryError('NPM_REGISTRY_REQUEST_FAILED');
 
-  if (response.url !== '') {
-    const finalUrl = new URL(response.url);
-    if (
-      finalUrl.origin !== registryOrigin ||
-      finalUrl.pathname !== `/${encodedName}/latest`
-    ) {
-      throw new NpmRegistryError('NPM_REGISTRY_REDIRECT_REJECTED');
-    }
-  }
-
-  const contentType = response.headers.get('content-type')?.toLowerCase() ?? '';
-  if (!contentType.startsWith('application/json')) {
-    throw new NpmRegistryError('NPM_REGISTRY_MEDIA_TYPE_INVALID');
-  }
+  assertRegistryResponseUrl(response, registryOrigin, `/${encodedName}/latest`);
+  assertJsonResponse(response);
 
   const body = await readBoundedBody(response);
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(body));
-  } catch {
-    throw new NpmRegistryError('NPM_REGISTRY_RESPONSE_INVALID');
-  }
+  const parsed = parseJsonBody(body);
   const result = packageMetadataSchema.safeParse(parsed);
   if (!result.success) throw new NpmRegistryError('NPM_REGISTRY_RESPONSE_INVALID');
   if (result.data.name !== packageName) {
@@ -262,7 +334,7 @@ export async function resolveNpmPackageMetadata(
     throw new NpmRegistryError('NPM_REGISTRY_VERSION_INVALID');
   }
 
-  const registryUrl = `${registryOrigin}/${encodedName}`;
+  const registryUrl = npmRegistryPackageUrl(packageName, registryOrigin);
   const candidates: PackageSourceCandidate[] = [];
   addCandidate(candidates, 'package_registry_release', candidateUrl(registryUrl));
   addCandidate(
@@ -281,10 +353,105 @@ export async function resolveNpmPackageMetadata(
     packageName,
     latestVersion: result.data.version,
     deprecated: result.data.deprecated !== undefined,
-    registryEtag: response.headers.get('etag')?.slice(0, 512) ?? null,
+    registryEtag: boundedEtag(response),
     registryUrl,
     candidates,
   };
+}
+
+export async function pollNpmPackageRelease(
+  packageName: string,
+  options: {
+    fetch?: Fetch;
+    registryOrigin?: typeof DEFAULT_REGISTRY_ORIGIN;
+    timeoutMs?: number;
+    previousEtag?: string | null;
+  } = {},
+): Promise<NpmPackageReleasePoll> {
+  assertPackageName(packageName);
+  if (options.previousEtag !== undefined && options.previousEtag !== null) {
+    if (options.previousEtag.length < 1 || options.previousEtag.length > 512) {
+      throw new NpmRegistryError('NPM_REGISTRY_RESPONSE_INVALID');
+    }
+  }
+
+  const registryOrigin = options.registryOrigin ?? DEFAULT_REGISTRY_ORIGIN;
+  const encodedName = packagePath(packageName);
+  const expectedPath = `/${encodedName}`;
+  const requestUrl = `${registryOrigin}${expectedPath}`;
+  const response = await fixedRegistryRequest(requestUrl, {
+    fetch: options.fetch ?? globalThis.fetch,
+    timeoutMs: options.timeoutMs ?? REQUEST_TIMEOUT_MS,
+    userAgent: 'migration-api-package-release-poller/1.0',
+    ...(options.previousEtag === undefined || options.previousEtag === null
+      ? {}
+      : { etag: options.previousEtag }),
+  });
+
+  if (response.status >= 300 && response.status < 400 && response.status !== 304) {
+    throw new NpmRegistryError('NPM_REGISTRY_REDIRECT_REJECTED');
+  }
+  if (response.status === 304) {
+    if (options.previousEtag === undefined || options.previousEtag === null) {
+      throw new NpmRegistryError('NPM_REGISTRY_RESPONSE_INVALID');
+    }
+    assertRegistryResponseUrl(response, registryOrigin, expectedPath);
+    return {
+      status: 'not_modified',
+      registryEtag: boundedEtag(response) ?? options.previousEtag,
+    };
+  }
+  if (response.status === 404) throw new NpmRegistryError('NPM_PACKAGE_NOT_FOUND');
+  if (!response.ok) throw new NpmRegistryError('NPM_REGISTRY_REQUEST_FAILED');
+
+  assertRegistryResponseUrl(response, registryOrigin, expectedPath);
+  assertJsonResponse(response);
+  const body = await readBoundedBody(response, MAX_PACKUMENT_RESPONSE_BYTES);
+  const result = packageDocumentSchema.safeParse(parseJsonBody(body));
+  if (!result.success) throw new NpmRegistryError('NPM_REGISTRY_RESPONSE_INVALID');
+  if (result.data.name !== packageName) {
+    throw new NpmRegistryError('NPM_REGISTRY_PACKAGE_MISMATCH');
+  }
+
+  const latestVersion = result.data['dist-tags'].latest;
+  if (valid(latestVersion) === null || prerelease(latestVersion) !== null) {
+    throw new NpmRegistryError('NPM_REGISTRY_VERSION_INVALID');
+  }
+  const latestMetadata = packageVersionSchema.safeParse(
+    result.data.versions[latestVersion],
+  );
+  if (!latestMetadata.success) {
+    throw new NpmRegistryError('NPM_REGISTRY_RESPONSE_INVALID');
+  }
+
+  const rawPublishedAt = result.data.time?.[latestVersion];
+  let publishedAt: string | null = null;
+  if (rawPublishedAt !== undefined) {
+    const parsedPublishedAt = new Date(rawPublishedAt);
+    if (Number.isNaN(parsedPublishedAt.getTime())) {
+      throw new NpmRegistryError('NPM_REGISTRY_RESPONSE_INVALID');
+    }
+    publishedAt = parsedPublishedAt.toISOString();
+  }
+
+  return {
+    status: 'modified',
+    packageName,
+    latestVersion,
+    latestDeprecated: latestMetadata.data.deprecated !== undefined,
+    publishedAt,
+    registryEtag: boundedEtag(response),
+    responseDigest: createHash('sha256').update(body).digest('hex'),
+    responseBody: body,
+  };
+}
+
+export function isRetryableNpmRegistryError(error: unknown): boolean {
+  return (
+    error instanceof NpmRegistryError &&
+    (error.safeCode === 'NPM_REGISTRY_TIMEOUT' ||
+      error.safeCode === 'NPM_REGISTRY_REQUEST_FAILED')
+  );
 }
 
 export function npmRegistrySafeErrorCode(error: unknown): NpmRegistrySafeErrorCode {

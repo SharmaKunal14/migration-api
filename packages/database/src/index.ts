@@ -322,6 +322,76 @@ export interface VendorReleaseTable {
   createdAt: Timestamp;
 }
 
+export interface PackageSourcePollStateTable {
+  sourceId: string;
+  nextPollAt: Timestamp;
+  leaseOwner: string | null;
+  leaseExpiresAt: Timestamp | null;
+  consecutiveFailures: number;
+  exhaustedAlertedAt: Timestamp | null;
+  lastSuccessAt: Timestamp | null;
+  lastObservedVersion: string | null;
+  lastObservedPublishedAt: Timestamp | null;
+  lastMetadataDigest: string | null;
+  latestDeprecated: boolean | null;
+  inconsistencyCode: string | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
+export interface PackageSourcePollRunTable {
+  id: string;
+  sourceId: string;
+  attempt: number;
+  correlationId: string;
+  status: 'running' | 'succeeded' | 'failed';
+  outcome:
+    | 'baseline'
+    | 'not_modified'
+    | 'unchanged'
+    | 'release_detected'
+    | 'inconsistent'
+    | null;
+  previousVersion: string | null;
+  observedVersion: string | null;
+  observedPublishedAt: Timestamp | null;
+  latestDeprecated: boolean | null;
+  registryEtag: string | null;
+  evidenceObjectKey: string | null;
+  evidenceDigest: string | null;
+  metadataDigest: string | null;
+  retryable: boolean | null;
+  safeErrorCode: string | null;
+  startedAt: Timestamp;
+  completedAt: Timestamp | null;
+}
+
+export interface PackageReleaseDetectionTable {
+  id: string;
+  apiProductId: string;
+  sourceId: string;
+  version: string;
+  publishedAt: Timestamp | null;
+  firstDetectedAt: Timestamp;
+  lastObservedAt: Timestamp;
+  latestDeprecated: boolean;
+  evidenceObjectKey: string;
+  evidenceDigest: string;
+  metadataDigest: string;
+  status: 'detected' | 'superseded';
+}
+
+export interface PackageVersionDeprecationStateTable {
+  apiProductId: string;
+  version: string;
+  sourceId: string;
+  deprecated: boolean;
+  evidenceObjectKey: string;
+  evidenceDigest: string;
+  firstObservedAt: Timestamp;
+  lastObservedAt: Timestamp;
+}
+
 export interface PackageSourceMappingTable {
   id: string;
   ecosystem: 'npm';
@@ -914,6 +984,10 @@ export interface Database {
   apiProducts: ApiProductTable;
   vendorSources: VendorSourceTable;
   vendorReleases: VendorReleaseTable;
+  packageSourcePollStates: PackageSourcePollStateTable;
+  packageSourcePollRuns: PackageSourcePollRunTable;
+  packageReleaseDetections: PackageReleaseDetectionTable;
+  packageVersionDeprecationStates: PackageVersionDeprecationStateTable;
   packageSourceMappings: PackageSourceMappingTable;
   packageSourceMappingControls: PackageSourceMappingControlTable;
   packageSourceResolutionRuns: PackageSourceResolutionRunTable;

@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from 'vitest';
 
 import {
   npmRegistrySafeErrorCode,
+  pollNpmPackageRelease,
   resolveNpmPackageMetadata,
 } from '@migration/npm-registry';
 import type { NpmRegistryError } from '@migration/npm-registry';
@@ -201,6 +202,93 @@ describe('npm registry resolver', () => {
     );
     expect(npmRegistrySafeErrorCode(new Error('private upstream detail'))).toBe(
       'NPM_REGISTRY_REQUEST_FAILED',
+    );
+  });
+});
+
+describe('npm release polling', () => {
+  it('uses the fixed package document and extracts stable release state', async () => {
+    const fetch = vi.fn(async (_input: string | URL, _init?: RequestInit) =>
+      metadataResponse(
+        {
+          name: '@types/node',
+          'dist-tags': { latest: '24.1.0', next: '25.0.0-beta.1' },
+          time: { '24.1.0': '2026-07-31T10:00:00.000Z' },
+          versions: {
+            '24.1.0': {},
+            '25.0.0-beta.1': {},
+          },
+        },
+        { headers: { etag: '"packument-etag"' } },
+      ),
+    );
+
+    const result = await pollNpmPackageRelease('@types/node', {
+      fetch,
+      previousEtag: '"previous-etag"',
+    });
+
+    expect(fetch.mock.calls[0]?.[0]).toBe('https://registry.npmjs.org/%40types%2Fnode');
+    const request = fetch.mock.calls[0]?.[1];
+    expect(request?.method).toBe('GET');
+    expect(request?.redirect).toBe('manual');
+    expect(request?.headers).toMatchObject({
+      'if-none-match': '"previous-etag"',
+    });
+    expect(result.status).toBe('modified');
+    if (result.status !== 'modified') throw new Error('Expected modified metadata.');
+    expect(result).toMatchObject({
+      status: 'modified',
+      packageName: '@types/node',
+      latestVersion: '24.1.0',
+      latestDeprecated: false,
+      publishedAt: '2026-07-31T10:00:00.000Z',
+      registryEtag: '"packument-etag"',
+    });
+    expect(result.responseDigest).toMatch(/^[a-f0-9]{64}$/u);
+    expect(result.responseBody.byteLength).toBeGreaterThan(0);
+  });
+
+  it('accepts a conditional 304 only when an ETag was supplied', async () => {
+    await expect(
+      pollNpmPackageRelease('typescript', {
+        previousEtag: '"same"',
+        fetch: async () => new Response(null, { status: 304 }),
+      }),
+    ).resolves.toEqual({ status: 'not_modified', registryEtag: '"same"' });
+
+    await expectedErrorCode(
+      () =>
+        pollNpmPackageRelease('typescript', {
+          fetch: async () => new Response(null, { status: 304 }),
+        }),
+      'NPM_REGISTRY_RESPONSE_INVALID',
+    );
+  });
+
+  it('rejects prerelease latest tags and oversized full documents', async () => {
+    await expectedErrorCode(
+      () =>
+        pollNpmPackageRelease('typescript', {
+          fetch: async () =>
+            metadataResponse({
+              name: 'typescript',
+              'dist-tags': { latest: '7.0.0-beta.1' },
+              versions: { '7.0.0-beta.1': {} },
+            }),
+        }),
+      'NPM_REGISTRY_VERSION_INVALID',
+    );
+    await expectedErrorCode(
+      () =>
+        pollNpmPackageRelease('typescript', {
+          fetch: async () =>
+            metadataResponse(
+              {},
+              { headers: { 'content-length': String(32 * 1024 * 1024 + 1) } },
+            ),
+        }),
+      'NPM_REGISTRY_RESPONSE_TOO_LARGE',
     );
   });
 });
