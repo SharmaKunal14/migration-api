@@ -1256,6 +1256,7 @@ export class ApiRepository implements ApiRepositoryPort {
     userId: string,
     input: ReviewPackageSourceCandidateInput,
   ): Promise<PublicPackageSourceCandidateReview> {
+    let failureStage: PackageSourceReviewFailureStage = 'operator_check';
     const requestDigest = digestJson(
       input.decision === 'approve'
         ? {
@@ -1275,7 +1276,9 @@ export class ApiRepository implements ApiRepositoryPort {
     );
     try {
       return await this.database.transaction().execute(async transaction => {
+        failureStage = 'operator_check';
         await requirePlatformOperator(transaction, userId);
+        failureStage = 'idempotency_lookup';
         const previous = await transaction
           .selectFrom('apiIdempotencyKeys')
           .select(['requestDigest', 'resultResourceId'])
@@ -1302,6 +1305,7 @@ export class ApiRepository implements ApiRepositoryPort {
           };
         }
 
+        failureStage = 'candidate_load';
         const current = await transaction
           .selectFrom('packageSourceCandidates as candidate')
           .innerJoin(
@@ -1357,6 +1361,7 @@ export class ApiRepository implements ApiRepositoryPort {
           );
         }
 
+        failureStage = 'approval_function';
         await sql`
           select review_exact_package_source_candidate(
             ${input.candidateId}::uuid,
@@ -1369,6 +1374,7 @@ export class ApiRepository implements ApiRepositoryPort {
             ${input.requestId}::uuid
           )
         `.execute(transaction);
+        failureStage = 'idempotency_write';
         const now = new Date();
         await transaction
           .insertInto('apiIdempotencyKeys')
@@ -1382,6 +1388,7 @@ export class ApiRepository implements ApiRepositoryPort {
             expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
           })
           .executeTakeFirstOrThrow();
+        failureStage = 'result_reload';
         return {
           mapping: await loadPackageSourceMappingByCandidate(
             transaction,
@@ -1405,11 +1412,24 @@ export class ApiRepository implements ApiRepositoryPort {
           409,
         );
       }
-      if (code === '42501') {
+      if (
+        code === '42501' &&
+        [
+          'platform operator required',
+          'platform operator authorization required',
+        ].includes(postgresErrorMessage(error) ?? '')
+      ) {
         throw new DomainError(
           'PLATFORM_OPERATOR_REQUIRED',
           'Platform operator authorization is required.',
           403,
+        );
+      }
+      if (code === '42501') {
+        throw new DomainError(
+          packageSourceReviewPermissionCode(failureStage),
+          'The package source review encountered an internal database authorization error.',
+          500,
         );
       }
       throw error;
@@ -3889,6 +3909,29 @@ function postgresErrorCode(error: unknown): string | undefined {
     typeof error.code === 'string'
     ? error.code
     : undefined;
+}
+
+function postgresErrorMessage(error: unknown): string | undefined {
+  return typeof error === 'object' &&
+    error !== null &&
+    'message' in error &&
+    typeof error.message === 'string'
+    ? error.message
+    : undefined;
+}
+
+type PackageSourceReviewFailureStage =
+  | 'operator_check'
+  | 'idempotency_lookup'
+  | 'candidate_load'
+  | 'approval_function'
+  | 'idempotency_write'
+  | 'result_reload';
+
+function packageSourceReviewPermissionCode(
+  stage: PackageSourceReviewFailureStage,
+): string {
+  return `PACKAGE_SOURCE_REVIEW_${stage.toUpperCase()}_PERMISSION_DENIED`;
 }
 
 function canonicalPackageSourceUrl(value: string): {

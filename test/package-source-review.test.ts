@@ -167,4 +167,12 @@ describe('stage 8C package source review', () => {
     expect(exactApprovalMigration).toContain('current_candidate.canonical_url');
     expect(exactApprovalMigration).not.toContain('p_official_domains');
   });
+
+  it('does not misreport unrelated database permission failures as operator denial', () => {
+    expect(repository).toContain("failureStage = 'approval_function'");
+    expect(repository).toContain("failureStage = 'idempotency_write'");
+    expect(repository).toContain("failureStage = 'result_reload'");
+    expect(repository).toContain("postgresErrorMessage(error) ?? ''");
+    expect(repository).toContain('packageSourceReviewPermissionCode(failureStage)');
+  });
 });
