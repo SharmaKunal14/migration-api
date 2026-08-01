@@ -1,4 +1,5 @@
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { isIP } from 'node:net';
 
 import { sql, type Transaction } from 'kysely';
 
@@ -19,6 +20,9 @@ import type {
   GithubInstallationVerification,
   MigrationApprovalAuthority,
   MigrationSpecification,
+  PackageSourceCandidateReviewRequest,
+  PackageSourceCandidateReplacementRequest,
+  PackageSourceMappingStateRequest,
   PublicDependencyObservation,
   PublicGithubInstallation,
   PublicMigrationCandidate,
@@ -35,6 +39,10 @@ import type {
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
+  PublicPackageSourceCandidateReview,
+  PublicPackageSourceCatalogEntry,
+  PublicPackageSourceMapping,
+  PublicPackageSourceVendor,
   PublicRepository,
   PublicRepositoryScan,
 } from '@migration/contracts';
@@ -104,6 +112,25 @@ export interface ReviewMigrationSpecificationInput {
   readonly idempotencyKey: string;
   readonly requestId: string;
 }
+
+export type ReviewPackageSourceCandidateInput = PackageSourceCandidateReviewRequest & {
+  readonly candidateId: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+};
+
+export type ReplacePackageSourceCandidateInput =
+  PackageSourceCandidateReplacementRequest & {
+    readonly candidateId: string;
+    readonly idempotencyKey: string;
+    readonly requestId: string;
+  };
+
+export type SetPackageSourceMappingStateInput = PackageSourceMappingStateRequest & {
+  readonly mappingId: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+};
 
 export interface CreateMigrationApprovalInput extends CreateMigrationApprovalRequest {
   readonly organisationId: string;
@@ -181,6 +208,7 @@ export const GITHUB_INSTALL_RETURN_PATH = '/settings/github';
 
 export interface ApiRepositoryPort {
   ensureUser(actor: Actor): Promise<string>;
+  hasPlatformOperatorAccess(userId: string): Promise<boolean>;
   listOrganisations(userId: string): Promise<OrganisationRecord[]>;
   createOrganisation(
     userId: string,
@@ -219,6 +247,26 @@ export interface ApiRepositoryPort {
     userId: string,
     input: CompleteGithubInstallationInput,
   ): Promise<CompletedGithubInstallation>;
+  listPackageSourceMappings(
+    userId: string,
+    status: 'needs_review' | 'mapped' | 'rejected' | 'disabled',
+  ): Promise<PublicPackageSourceMapping[]>;
+  listPackageSourceCatalog(userId: string): Promise<{
+    readonly products: readonly PublicPackageSourceCatalogEntry[];
+    readonly vendors: readonly PublicPackageSourceVendor[];
+  }>;
+  reviewPackageSourceCandidate(
+    userId: string,
+    input: ReviewPackageSourceCandidateInput,
+  ): Promise<PublicPackageSourceCandidateReview>;
+  replacePackageSourceCandidate(
+    userId: string,
+    input: ReplacePackageSourceCandidateInput,
+  ): Promise<PublicPackageSourceCandidateReview>;
+  setPackageSourceMappingState(
+    userId: string,
+    input: SetPackageSourceMappingStateInput,
+  ): Promise<PublicPackageSourceCandidateReview>;
   listMigrationSpecifications(
     userId: string,
     trustState: 'draft' | 'reviewed' | 'vendor_verified',
@@ -495,6 +543,13 @@ export class ApiRepository implements ApiRepositoryPort {
       .where('authSubject', '=', actor.subject)
       .executeTakeFirstOrThrow();
     return raced.id;
+  }
+
+  public async hasPlatformOperatorAccess(userId: string): Promise<boolean> {
+    const result = await sql<{ isOperator: boolean }>`
+      select is_platform_operator(${userId}::uuid) as "isOperator"
+    `.execute(this.database);
+    return result.rows[0]?.isOperator === true;
   }
 
   public async listOrganisations(userId: string): Promise<OrganisationRecord[]> {
@@ -1150,6 +1205,373 @@ export class ApiRepository implements ApiRepositoryPort {
         status: 'queued',
       };
     });
+  }
+
+  public async listPackageSourceMappings(
+    userId: string,
+    status: 'needs_review' | 'mapped' | 'rejected' | 'disabled',
+  ): Promise<PublicPackageSourceMapping[]> {
+    await requirePlatformOperator(this.database, userId);
+    return loadPackageSourceMappings(this.database, status);
+  }
+
+  public async listPackageSourceCatalog(userId: string): Promise<{
+    readonly products: readonly PublicPackageSourceCatalogEntry[];
+    readonly vendors: readonly PublicPackageSourceVendor[];
+  }> {
+    await requirePlatformOperator(this.database, userId);
+    const vendors = await this.database
+      .selectFrom('vendors')
+      .select([
+        'id as vendorId',
+        'slug as vendorSlug',
+        'name as vendorName',
+        'trustState as vendorTrustState',
+        'officialDomains',
+      ])
+      .where('synthetic', '=', false)
+      .orderBy('name', 'asc')
+      .limit(500)
+      .execute();
+    const products = await this.database
+      .selectFrom('apiProducts as product')
+      .innerJoin('vendors as vendor', 'vendor.id', 'product.vendorId')
+      .select([
+        'product.id as apiProductId',
+        'product.canonicalIdentifier as packageName',
+        'product.status as productStatus',
+        'vendor.id as vendorId',
+        'vendor.slug as vendorSlug',
+        'vendor.name as vendorName',
+        'vendor.trustState as vendorTrustState',
+        'vendor.officialDomains',
+      ])
+      .orderBy('product.canonicalIdentifier', 'asc')
+      .limit(500)
+      .execute();
+    return { products, vendors };
+  }
+
+  public async reviewPackageSourceCandidate(
+    userId: string,
+    input: ReviewPackageSourceCandidateInput,
+  ): Promise<PublicPackageSourceCandidateReview> {
+    const requestDigest = digestJson(
+      input.decision === 'approve'
+        ? {
+            candidateId: input.candidateId,
+            decision: input.decision,
+            expectedCandidateVersion: input.expectedCandidateVersion,
+            expectedMappingVersion: input.expectedMappingVersion,
+            catalog: input.catalog,
+            approveCandidateDomain: input.approveCandidateDomain,
+            pollIntervalSeconds: input.pollIntervalSeconds,
+          }
+        : {
+            candidateId: input.candidateId,
+            decision: input.decision,
+            expectedCandidateVersion: input.expectedCandidateVersion,
+            expectedMappingVersion: input.expectedMappingVersion,
+            rejectionReasonCode: input.rejectionReasonCode,
+          },
+    );
+    try {
+      return await this.database.transaction().execute(async transaction => {
+        await requirePlatformOperator(transaction, userId);
+        const previous = await transaction
+          .selectFrom('apiIdempotencyKeys')
+          .select(['requestDigest', 'resultResourceId'])
+          .where('actorId', '=', userId)
+          .where('action', '=', 'package_source_candidate:review')
+          .where('idempotencyKey', '=', input.idempotencyKey)
+          .executeTakeFirst();
+        if (previous) {
+          if (
+            previous.requestDigest !== requestDigest ||
+            previous.resultResourceId !== input.candidateId
+          ) {
+            throw new DomainError(
+              'IDEMPOTENCY_CONFLICT',
+              'The idempotency key was already used for another request.',
+              409,
+            );
+          }
+          return {
+            mapping: await loadPackageSourceMappingByCandidate(
+              transaction,
+              input.candidateId,
+            ),
+          };
+        }
+
+        const current = await transaction
+          .selectFrom('packageSourceCandidates as candidate')
+          .innerJoin(
+            'packageSourceMappings as mapping',
+            'mapping.id',
+            'candidate.mappingId',
+          )
+          .select([
+            'candidate.reviewState',
+            'candidate.sourceKind',
+            'candidate.version as candidateVersion',
+            'mapping.version as mappingVersion',
+          ])
+          .where('candidate.id', '=', input.candidateId)
+          .forUpdate()
+          .executeTakeFirst();
+        if (!current) {
+          throw new DomainError(
+            'PACKAGE_SOURCE_CANDIDATE_NOT_FOUND',
+            'The package source candidate was not found.',
+            404,
+          );
+        }
+        if (
+          current.candidateVersion !== input.expectedCandidateVersion ||
+          current.mappingVersion !== input.expectedMappingVersion
+        ) {
+          throw new DomainError(
+            'PACKAGE_SOURCE_REVIEW_CONFLICT',
+            'The package source evidence changed before it could be reviewed.',
+            409,
+          );
+        }
+        if (current.reviewState !== 'pending_review') {
+          throw new DomainError(
+            'PACKAGE_SOURCE_ALREADY_REVIEWED',
+            'The package source candidate has already been reviewed.',
+            409,
+          );
+        }
+        if (
+          input.decision === 'approve' &&
+          current.sourceKind !== 'package_registry_release' &&
+          current.sourceKind !== 'sdk_repository_release' &&
+          current.sourceKind !== 'changelog' &&
+          current.sourceKind !== 'release_feed' &&
+          current.sourceKind !== 'migration_guide'
+        ) {
+          throw new DomainError(
+            'PACKAGE_SOURCE_NOT_PROMOTABLE',
+            'This candidate type cannot be promoted to the trusted source catalog.',
+            409,
+          );
+        }
+
+        await sql`
+          select review_package_source_candidate(
+            ${input.candidateId}::uuid,
+            ${userId}::uuid,
+            ${input.expectedCandidateVersion},
+            ${input.expectedMappingVersion},
+            ${input.decision},
+            ${input.decision === 'approve' ? input.catalog.mode : null},
+            ${input.decision === 'approve' && input.catalog.mode === 'existing_product' ? input.catalog.apiProductId : null}::uuid,
+            ${input.decision === 'approve' && input.catalog.mode === 'existing_vendor' ? input.catalog.vendorId : null}::uuid,
+            ${input.decision === 'approve' && input.catalog.mode === 'new_vendor' ? input.catalog.vendorSlug : null},
+            ${input.decision === 'approve' && input.catalog.mode === 'new_vendor' ? input.catalog.vendorName : null},
+            ${input.decision === 'approve' && input.catalog.mode === 'new_vendor' ? input.catalog.officialDomains : null}::text[],
+            ${input.decision === 'approve' ? input.approveCandidateDomain : null},
+            ${input.decision === 'approve' ? input.pollIntervalSeconds : null},
+            ${input.decision === 'reject' ? input.rejectionReasonCode : null},
+            ${input.requestId}::uuid
+          )
+        `.execute(transaction);
+        const now = new Date();
+        await transaction
+          .insertInto('apiIdempotencyKeys')
+          .values({
+            actorId: userId,
+            action: 'package_source_candidate:review',
+            idempotencyKey: input.idempotencyKey,
+            requestDigest,
+            resultResourceId: input.candidateId,
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
+          })
+          .executeTakeFirstOrThrow();
+        return {
+          mapping: await loadPackageSourceMappingByCandidate(
+            transaction,
+            input.candidateId,
+          ),
+        };
+      });
+    } catch (error) {
+      const code = postgresErrorCode(error);
+      if (code === '40001') {
+        throw new DomainError(
+          'PACKAGE_SOURCE_REVIEW_CONFLICT',
+          'The package source evidence changed before it could be reviewed.',
+          409,
+        );
+      }
+      if (code === '23514' || code === '23505') {
+        throw new DomainError(
+          'PACKAGE_SOURCE_CATALOG_CONFLICT',
+          'The candidate conflicts with the trusted source catalog.',
+          409,
+        );
+      }
+      if (code === '42501') {
+        throw new DomainError(
+          'PLATFORM_OPERATOR_REQUIRED',
+          'Platform operator authorization is required.',
+          403,
+        );
+      }
+      throw error;
+    }
+  }
+
+  public async replacePackageSourceCandidate(
+    userId: string,
+    input: ReplacePackageSourceCandidateInput,
+  ): Promise<PublicPackageSourceCandidateReview> {
+    const replacement = canonicalPackageSourceUrl(input.canonicalUrl);
+    const requestDigest = digestJson({
+      candidateId: input.candidateId,
+      expectedCandidateVersion: input.expectedCandidateVersion,
+      expectedMappingVersion: input.expectedMappingVersion,
+      sourceKind: input.sourceKind,
+      canonicalUrl: replacement.url,
+      proposalNote: input.proposalNote,
+    });
+    try {
+      return await this.database.transaction().execute(async transaction => {
+        await requirePlatformOperator(transaction, userId);
+        const previous = await transaction
+          .selectFrom('apiIdempotencyKeys')
+          .select(['requestDigest', 'resultResourceId'])
+          .where('actorId', '=', userId)
+          .where('action', '=', 'package_source_candidate:replace')
+          .where('idempotencyKey', '=', input.idempotencyKey)
+          .executeTakeFirst();
+        if (previous) {
+          if (previous.requestDigest !== requestDigest) {
+            throw new DomainError(
+              'IDEMPOTENCY_CONFLICT',
+              'The idempotency key was already used for another request.',
+              409,
+            );
+          }
+          return {
+            mapping: await loadPackageSourceMappingByCandidate(
+              transaction,
+              previous.resultResourceId,
+            ),
+          };
+        }
+        const result = await sql<{ candidateId: string }>`
+          select replace_package_source_candidate(
+            ${input.candidateId}::uuid,
+            ${userId}::uuid,
+            ${input.expectedCandidateVersion},
+            ${input.expectedMappingVersion},
+            ${input.sourceKind},
+            ${replacement.url},
+            ${replacement.domain},
+            ${input.proposalNote},
+            ${input.requestId}::uuid
+          ) as "candidateId"
+        `.execute(transaction);
+        const candidateId = result.rows[0]?.candidateId;
+        if (!candidateId) {
+          throw new DomainError(
+            'PACKAGE_SOURCE_REPLACEMENT_FAILED',
+            'The replacement candidate could not be created.',
+            500,
+          );
+        }
+        const now = new Date();
+        await transaction
+          .insertInto('apiIdempotencyKeys')
+          .values({
+            actorId: userId,
+            action: 'package_source_candidate:replace',
+            idempotencyKey: input.idempotencyKey,
+            requestDigest,
+            resultResourceId: candidateId,
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
+          })
+          .executeTakeFirstOrThrow();
+        return {
+          mapping: await loadPackageSourceMappingByCandidate(transaction, candidateId),
+        };
+      });
+    } catch (error) {
+      throwPackageSourceMutationError(error, 'replacement');
+    }
+  }
+
+  public async setPackageSourceMappingState(
+    userId: string,
+    input: SetPackageSourceMappingStateInput,
+  ): Promise<PublicPackageSourceCandidateReview> {
+    const requestDigest = digestJson({
+      mappingId: input.mappingId,
+      action: input.action,
+      expectedMappingVersion: input.expectedMappingVersion,
+      disabledReasonCode:
+        input.action === 'disable' ? input.disabledReasonCode : undefined,
+    });
+    try {
+      return await this.database.transaction().execute(async transaction => {
+        await requirePlatformOperator(transaction, userId);
+        const previous = await transaction
+          .selectFrom('apiIdempotencyKeys')
+          .select(['requestDigest', 'resultResourceId'])
+          .where('actorId', '=', userId)
+          .where('action', '=', 'package_source_mapping:state')
+          .where('idempotencyKey', '=', input.idempotencyKey)
+          .executeTakeFirst();
+        if (previous) {
+          if (
+            previous.requestDigest !== requestDigest ||
+            previous.resultResourceId !== input.mappingId
+          ) {
+            throw new DomainError(
+              'IDEMPOTENCY_CONFLICT',
+              'The idempotency key was already used for another request.',
+              409,
+            );
+          }
+          return {
+            mapping: await loadPackageSourceMappingById(transaction, input.mappingId),
+          };
+        }
+        await sql`
+          select set_package_source_mapping_enabled(
+            ${input.mappingId}::uuid,
+            ${userId}::uuid,
+            ${input.expectedMappingVersion},
+            ${input.action === 'enable'},
+            ${input.action === 'disable' ? input.disabledReasonCode : null},
+            ${input.requestId}::uuid
+          )
+        `.execute(transaction);
+        const now = new Date();
+        await transaction
+          .insertInto('apiIdempotencyKeys')
+          .values({
+            actorId: userId,
+            action: 'package_source_mapping:state',
+            idempotencyKey: input.idempotencyKey,
+            requestDigest,
+            resultResourceId: input.mappingId,
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
+          })
+          .executeTakeFirstOrThrow();
+        return {
+          mapping: await loadPackageSourceMappingById(transaction, input.mappingId),
+        };
+      });
+    } catch (error) {
+      throwPackageSourceMutationError(error, 'state change');
+    }
   }
 
   public async listMigrationSpecifications(
@@ -3232,6 +3654,309 @@ async function requirePlatformOperator(
       403,
     );
   }
+}
+
+type PackageSourceDatabase = AppDatabase | Transaction<Database>;
+
+async function loadPackageSourceMappingByCandidate(
+  database: PackageSourceDatabase,
+  candidateId: string,
+): Promise<PublicPackageSourceMapping> {
+  const candidate = await database
+    .selectFrom('packageSourceCandidates')
+    .select('mappingId')
+    .where('id', '=', candidateId)
+    .executeTakeFirst();
+  if (!candidate) {
+    throw new DomainError(
+      'PACKAGE_SOURCE_CANDIDATE_NOT_FOUND',
+      'The package source candidate was not found.',
+      404,
+    );
+  }
+  const mappings = await loadPackageSourceMappings(
+    database,
+    undefined,
+    candidate.mappingId,
+  );
+  const mapping = mappings[0];
+  if (!mapping) {
+    throw new DomainError(
+      'PACKAGE_SOURCE_MAPPING_NOT_FOUND',
+      'The package source mapping was not found.',
+      404,
+    );
+  }
+  return mapping;
+}
+
+async function loadPackageSourceMappingById(
+  database: PackageSourceDatabase,
+  mappingId: string,
+): Promise<PublicPackageSourceMapping> {
+  const mappings = await loadPackageSourceMappings(database, undefined, mappingId);
+  const mapping = mappings[0];
+  if (!mapping) {
+    throw new DomainError(
+      'PACKAGE_SOURCE_MAPPING_NOT_FOUND',
+      'The package source mapping was not found.',
+      404,
+    );
+  }
+  return mapping;
+}
+
+async function loadPackageSourceMappings(
+  database: PackageSourceDatabase,
+  status?: 'needs_review' | 'mapped' | 'rejected' | 'disabled',
+  mappingId?: string,
+): Promise<PublicPackageSourceMapping[]> {
+  let query = database
+    .selectFrom('packageSourceMappings as mapping')
+    .innerJoin(
+      'packageSourceMappingControls as control',
+      'control.mappingId',
+      'mapping.id',
+    )
+    .leftJoin('apiProducts as product', 'product.id', 'mapping.apiProductId')
+    .leftJoin('vendors as vendor', 'vendor.id', 'product.vendorId')
+    .select([
+      'mapping.id',
+      'mapping.packageName',
+      'mapping.status',
+      'mapping.latestVersion',
+      'mapping.latestDeprecated',
+      'mapping.resolvedAt',
+      'mapping.registryMetadataDigest as evidenceDigest',
+      'mapping.version',
+      'mapping.apiProductId',
+      'vendor.id as vendorId',
+      'vendor.slug as vendorSlug',
+      'vendor.name as vendorName',
+      'control.disabled',
+      'control.disabledReasonCode',
+      'control.disabledAt',
+    ])
+    .orderBy('mapping.updatedAt', 'desc')
+    .limit(100);
+  if (status) {
+    query =
+      status === 'disabled'
+        ? query.where('control.disabled', '=', true)
+        : query
+            .where('control.disabled', '=', false)
+            .where('mapping.status', '=', status);
+  }
+  if (mappingId) {
+    query = query.where('mapping.id', '=', mappingId);
+  }
+  const rows = await query.execute();
+  if (rows.length === 0) {
+    return [];
+  }
+  const mappingIds = rows.map(row => row.id);
+  const candidates = await database
+    .selectFrom('packageSourceCandidates')
+    .select([
+      'id',
+      'mappingId',
+      'sourceKind',
+      'canonicalUrl',
+      'canonicalDomain',
+      'reviewState',
+      'discoveryMethod',
+      'proposalReasonCode',
+      'proposalNote',
+      'supersedesCandidateId',
+      'rejectionReasonCode',
+      'reviewedAt',
+      'version',
+    ])
+    .where('mappingId', 'in', mappingIds)
+    .orderBy('createdAt', 'asc')
+    .execute();
+  const usageResult = await sql<{
+    mappingId: string;
+    total: string;
+    direct: string;
+    development: string;
+    optional: string;
+    peer: string;
+  }>`
+    with latest_snapshots as (
+      select distinct on (snapshot.repository_id)
+        snapshot.id,
+        snapshot.repository_id
+      from repository_snapshots as snapshot
+      inner join repositories as repository on repository.id = snapshot.repository_id
+      where snapshot.status = 'available'
+        and snapshot.expires_at > now()
+        and repository.selected
+        and repository.enabled
+        and not repository.archived
+      order by snapshot.repository_id, snapshot.created_at desc, snapshot.id desc
+    )
+    select
+      mapping.id as "mappingId",
+      count(distinct latest.repository_id)::text as total,
+      count(distinct latest.repository_id) filter (
+        where observation.dependency_kind = 'dependency'
+      )::text as direct,
+      count(distinct latest.repository_id) filter (
+        where observation.dependency_kind = 'development'
+      )::text as development,
+      count(distinct latest.repository_id) filter (
+        where observation.dependency_kind = 'optional'
+      )::text as optional,
+      count(distinct latest.repository_id) filter (
+        where observation.dependency_kind = 'peer'
+      )::text as peer
+    from package_source_mappings as mapping
+    left join dependency_observations as observation
+      on observation.package_name = mapping.package_name
+    left join latest_snapshots as latest
+      on latest.id = observation.repository_snapshot_id
+    where mapping.id in (${sql.join(mappingIds.map(id => sql`${id}::uuid`))})
+    group by mapping.id
+  `.execute(database);
+  const usageByMapping = new Map(
+    usageResult.rows.map(usage => [
+      usage.mappingId,
+      {
+        total: Number(usage.total),
+        direct: Number(usage.direct),
+        development: Number(usage.development),
+        optional: Number(usage.optional),
+        peer: Number(usage.peer),
+      },
+    ]),
+  );
+  return rows.map(row => {
+    if (
+      row.status !== 'needs_review' &&
+      row.status !== 'mapped' &&
+      row.status !== 'rejected'
+    ) {
+      throw new DomainError(
+        'PACKAGE_SOURCE_MAPPING_STATE_INVALID',
+        'The package source mapping cannot be shown in the review queue.',
+        500,
+      );
+    }
+    return {
+      id: row.id,
+      packageName: row.packageName,
+      status: row.disabled ? 'disabled' : row.status,
+      latestVersion: row.latestVersion,
+      latestDeprecated: row.latestDeprecated,
+      resolvedAt: row.resolvedAt?.toISOString() ?? null,
+      evidenceDigest: row.evidenceDigest,
+      vendorSlug: row.vendorSlug,
+      vendorName: row.vendorName,
+      vendorId: row.vendorId,
+      apiProductId: row.apiProductId,
+      disabledReasonCode: row.disabledReasonCode,
+      disabledAt: row.disabledAt?.toISOString() ?? null,
+      version: row.version,
+      repositoryUsage: usageByMapping.get(row.id) ?? {
+        total: 0,
+        direct: 0,
+        development: 0,
+        optional: 0,
+        peer: 0,
+      },
+      candidates: candidates
+        .filter(candidate => candidate.mappingId === row.id)
+        .map(candidate => ({
+          id: candidate.id,
+          sourceKind: candidate.sourceKind,
+          canonicalUrl: candidate.canonicalUrl,
+          canonicalDomain: candidate.canonicalDomain,
+          reviewState: candidate.reviewState,
+          discoveryMethod: candidate.discoveryMethod,
+          proposalReasonCode: candidate.proposalReasonCode,
+          proposalNote: candidate.proposalNote,
+          supersedesCandidateId: candidate.supersedesCandidateId,
+          rejectionReasonCode: candidate.rejectionReasonCode,
+          reviewedAt: candidate.reviewedAt?.toISOString() ?? null,
+          version: candidate.version,
+          canPromote:
+            candidate.sourceKind === 'package_registry_release' ||
+            candidate.sourceKind === 'sdk_repository_release' ||
+            candidate.sourceKind === 'changelog' ||
+            candidate.sourceKind === 'release_feed' ||
+            candidate.sourceKind === 'migration_guide',
+        })),
+    };
+  });
+}
+
+function postgresErrorCode(error: unknown): string | undefined {
+  return typeof error === 'object' &&
+    error !== null &&
+    'code' in error &&
+    typeof error.code === 'string'
+    ? error.code
+    : undefined;
+}
+
+function canonicalPackageSourceUrl(value: string): {
+  readonly url: string;
+  readonly domain: string;
+} {
+  const parsed = new URL(value);
+  const domain = parsed.hostname.toLowerCase();
+  if (
+    parsed.protocol !== 'https:' ||
+    parsed.username !== '' ||
+    parsed.password !== '' ||
+    parsed.port !== '' ||
+    parsed.hash !== '' ||
+    isIP(domain) !== 0 ||
+    !domain.includes('.') ||
+    domain === 'localhost'
+  ) {
+    throw new DomainError(
+      'PACKAGE_SOURCE_REPLACEMENT_URL_INVALID',
+      'The replacement must use a public HTTPS hostname without credentials, port, or fragment.',
+      400,
+    );
+  }
+  return { url: parsed.toString(), domain };
+}
+
+function throwPackageSourceMutationError(error: unknown, operation: string): never {
+  if (error instanceof DomainError) throw error;
+  const code = postgresErrorCode(error);
+  if (code === '40001') {
+    throw new DomainError(
+      'PACKAGE_SOURCE_REVIEW_CONFLICT',
+      `The package source ${operation} conflicted with a concurrent change.`,
+      409,
+    );
+  }
+  if (code === '23514' || code === '23505') {
+    throw new DomainError(
+      'PACKAGE_SOURCE_CATALOG_CONFLICT',
+      `The package source ${operation} conflicts with the trusted catalog.`,
+      409,
+    );
+  }
+  if (code === '42501') {
+    throw new DomainError(
+      'PLATFORM_OPERATOR_REQUIRED',
+      'Platform operator authorization is required.',
+      403,
+    );
+  }
+  if (code === 'P0002') {
+    throw new DomainError(
+      'PACKAGE_SOURCE_NOT_FOUND',
+      'The package source resource was not found.',
+      404,
+    );
+  }
+  throw error;
 }
 
 async function countOpenCandidates(

@@ -25,6 +25,9 @@ import {
   githubSetupCompletionRequestSchema,
   impactAnalysisWorkflowInputSchema,
   migrationSpecificationReviewRequestSchema,
+  packageSourceCandidateReviewRequestSchema,
+  packageSourceCandidateReplacementRequestSchema,
+  packageSourceMappingStateRequestSchema,
   repositoryScanRequestSchema,
   revokeMigrationApprovalRequestSchema,
   type GithubInstallationVerification,
@@ -131,6 +134,9 @@ export async function handleRequest(
       response = json(200, {
         user: { id: userId },
         organisations: await repository.listOrganisations(userId),
+        operator: {
+          hasAccess: await repository.hasPlatformOperatorAccess(userId),
+        },
       });
     } else if (method === 'GET' && path === '/v1/organisations') {
       response = json(200, {
@@ -240,6 +246,24 @@ export async function handleRequest(
         method === 'GET'
           ? /^\/v1\/operator\/migration-specifications\/([0-9a-f-]{36})$/u.exec(path)
           : null;
+      const packageSourceReviewMatch =
+        method === 'POST'
+          ? /^\/v1\/operator\/package-source-candidates\/([0-9a-f-]{36})\/review$/u.exec(
+              path,
+            )
+          : null;
+      const packageSourceReplacementMatch =
+        method === 'POST'
+          ? /^\/v1\/operator\/package-source-candidates\/([0-9a-f-]{36})\/replacement$/u.exec(
+              path,
+            )
+          : null;
+      const packageSourceMappingStateMatch =
+        method === 'POST'
+          ? /^\/v1\/operator\/package-source-mappings\/([0-9a-f-]{36})\/state$/u.exec(
+              path,
+            )
+          : null;
       if (method === 'POST' && path === '/v1/github/setup/callback') {
         const input = githubSetupCompletionRequestSchema.parse(parseBody(event));
         await repository.validateGithubInstallState(userId, input.state);
@@ -299,6 +323,48 @@ export async function handleRequest(
           requestId,
         });
         response = json(202, { scan });
+      } else if (method === 'GET' && path === '/v1/operator/package-source-mappings') {
+        const status = z
+          .enum(['needs_review', 'mapped', 'rejected', 'disabled'])
+          .default('needs_review')
+          .parse(event.queryStringParameters?.status);
+        response = json(200, {
+          mappings: await repository.listPackageSourceMappings(userId, status),
+        });
+      } else if (packageSourceReviewMatch?.[1]) {
+        const input = packageSourceCandidateReviewRequestSchema.parse(parseBody(event));
+        response = json(200, {
+          review: await repository.reviewPackageSourceCandidate(userId, {
+            ...input,
+            candidateId: z.uuid().parse(packageSourceReviewMatch[1]),
+            idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+            requestId,
+          }),
+        });
+      } else if (packageSourceReplacementMatch?.[1]) {
+        const input = packageSourceCandidateReplacementRequestSchema.parse(
+          parseBody(event),
+        );
+        response = json(201, {
+          review: await repository.replacePackageSourceCandidate(userId, {
+            ...input,
+            candidateId: z.uuid().parse(packageSourceReplacementMatch[1]),
+            idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+            requestId,
+          }),
+        });
+      } else if (packageSourceMappingStateMatch?.[1]) {
+        const input = packageSourceMappingStateRequestSchema.parse(parseBody(event));
+        response = json(200, {
+          review: await repository.setPackageSourceMappingState(userId, {
+            ...input,
+            mappingId: z.uuid().parse(packageSourceMappingStateMatch[1]),
+            idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+            requestId,
+          }),
+        });
+      } else if (method === 'GET' && path === '/v1/operator/package-source-catalog') {
+        response = json(200, await repository.listPackageSourceCatalog(userId));
       } else if (method === 'GET' && path === '/v1/operator/migration-specifications') {
         const trustState = z
           .enum(['draft', 'reviewed', 'vendor_verified'])

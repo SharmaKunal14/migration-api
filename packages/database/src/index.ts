@@ -293,6 +293,7 @@ export interface VendorSourceTable {
     | 'package_registry_release'
     | 'migration_guide'
     | 'changelog'
+    | 'release_feed'
     | 'api_definition'
     | 'sdk_repository_release';
   canonicalUrl: string;
@@ -367,6 +368,9 @@ export interface PackageSourceCandidateTable {
   sourceKind:
     | 'package_registry_release'
     | 'sdk_repository_release'
+    | 'changelog'
+    | 'release_feed'
+    | 'migration_guide'
     | 'homepage'
     | 'issue_tracker';
   canonicalUrl: string;
@@ -375,7 +379,30 @@ export interface PackageSourceCandidateTable {
   reviewState: 'pending_review' | 'approved' | 'rejected';
   reviewedByUserId: string | null;
   reviewedAt: Timestamp | null;
+  discoveryMethod: 'npm_registry_metadata' | 'operator_replacement';
+  proposalReasonCode:
+    | 'NPM_REGISTRY_AUTHORITATIVE'
+    | 'NPM_REPOSITORY_DECLARATION'
+    | 'NPM_HOMEPAGE_DECLARATION'
+    | 'NPM_BUGS_DECLARATION'
+    | 'OPERATOR_REPLACEMENT';
+  proposalNote: string | null;
+  supersedesCandidateId: string | null;
+  proposedByUserId: string | null;
+  rejectionReasonCode:
+    'NOT_OFFICIAL' | 'DUPLICATE' | 'UNSUPPORTED_SOURCE' | 'REPLACED' | null;
   createdAt: Timestamp;
+  version: number;
+}
+
+export interface PackageSourceMappingControlTable {
+  mappingId: string;
+  disabled: boolean;
+  disabledReasonCode:
+    'OPERATOR_DISABLED' | 'PACKAGE_UNSUPPORTED' | 'SECURITY_CONCERN' | null;
+  disabledByUserId: string | null;
+  disabledAt: Timestamp | null;
+  updatedAt: Timestamp;
 }
 
 export interface MigrationSpecificationTable {
@@ -888,6 +915,7 @@ export interface Database {
   vendorSources: VendorSourceTable;
   vendorReleases: VendorReleaseTable;
   packageSourceMappings: PackageSourceMappingTable;
+  packageSourceMappingControls: PackageSourceMappingControlTable;
   packageSourceResolutionRuns: PackageSourceResolutionRunTable;
   packageSourceCandidates: PackageSourceCandidateTable;
   migrationSpecifications: MigrationSpecificationTable;

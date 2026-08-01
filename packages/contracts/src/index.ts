@@ -242,6 +242,105 @@ export const migrationSpecificationReviewRequestSchema = z
   })
   .strict();
 
+const packageSourceReviewVersionSchema = z.number().int().positive();
+const officialDomainSchema = z
+  .string()
+  .max(253)
+  .regex(
+    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/u,
+  )
+  .refine(
+    value => value.includes('.') && !/^\d+\.\d+\.\d+\.\d+$/u.test(value),
+    'Official domains must be public DNS hostnames.',
+  );
+const packageSourceCatalogBindingSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('existing_product'), apiProductId: uuidSchema }).strict(),
+  z.object({ mode: z.literal('existing_vendor'), vendorId: uuidSchema }).strict(),
+  z
+    .object({
+      mode: z.literal('new_vendor'),
+      vendorSlug: z.string().regex(/^[a-z][a-z0-9-]{1,62}$/u),
+      vendorName: z.string().trim().min(1).max(120),
+      officialDomains: z.array(officialDomainSchema).min(1).max(20),
+    })
+    .strict(),
+]);
+
+export const packageSourceCandidateReviewRequestSchema = z.discriminatedUnion(
+  'decision',
+  [
+    z
+      .object({
+        decision: z.literal('approve'),
+        expectedCandidateVersion: packageSourceReviewVersionSchema,
+        expectedMappingVersion: packageSourceReviewVersionSchema,
+        catalog: packageSourceCatalogBindingSchema,
+        approveCandidateDomain: z.boolean(),
+        pollIntervalSeconds: z.number().int().min(3_600).max(2_592_000),
+      })
+      .strict(),
+    z
+      .object({
+        decision: z.literal('reject'),
+        expectedCandidateVersion: packageSourceReviewVersionSchema,
+        expectedMappingVersion: packageSourceReviewVersionSchema,
+        rejectionReasonCode: z.enum([
+          'NOT_OFFICIAL',
+          'DUPLICATE',
+          'UNSUPPORTED_SOURCE',
+        ]),
+      })
+      .strict(),
+  ],
+);
+
+export const packageSourceCandidateReplacementRequestSchema = z
+  .object({
+    expectedCandidateVersion: packageSourceReviewVersionSchema,
+    expectedMappingVersion: packageSourceReviewVersionSchema,
+    sourceKind: z.enum([
+      'sdk_repository_release',
+      'changelog',
+      'release_feed',
+      'migration_guide',
+    ]),
+    canonicalUrl: z
+      .url()
+      .max(2_048)
+      .refine(value => {
+        const parsed = new URL(value);
+        return (
+          parsed.protocol === 'https:' &&
+          parsed.username === '' &&
+          parsed.password === '' &&
+          parsed.port === '' &&
+          parsed.hash === ''
+        );
+      }, 'Replacement URL must be an HTTPS URL without credentials, port, or fragment.'),
+    proposalNote: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
+export const packageSourceMappingStateRequestSchema = z.discriminatedUnion('action', [
+  z
+    .object({
+      action: z.literal('disable'),
+      expectedMappingVersion: packageSourceReviewVersionSchema,
+      disabledReasonCode: z.enum([
+        'OPERATOR_DISABLED',
+        'PACKAGE_UNSUPPORTED',
+        'SECURITY_CONCERN',
+      ]),
+    })
+    .strict(),
+  z
+    .object({
+      action: z.literal('enable'),
+      expectedMappingVersion: packageSourceReviewVersionSchema,
+    })
+    .strict(),
+]);
+
 export const workflowInputSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -2428,6 +2527,15 @@ export const agentResultEnvelopeSchema = z
   });
 
 export type DemoRunRequest = z.infer<typeof demoRunRequestSchema>;
+export type PackageSourceCandidateReviewRequest = z.infer<
+  typeof packageSourceCandidateReviewRequestSchema
+>;
+export type PackageSourceCandidateReplacementRequest = z.infer<
+  typeof packageSourceCandidateReplacementRequestSchema
+>;
+export type PackageSourceMappingStateRequest = z.infer<
+  typeof packageSourceMappingStateRequestSchema
+>;
 export type WorkflowInput = z.infer<typeof workflowInputSchema>;
 export type MigrationPlan = z.infer<typeof migrationPlanSchema>;
 export type MigrationSpecification = z.infer<typeof migrationSpecificationSchema>;
@@ -2637,6 +2745,84 @@ export interface PublicMigrationSpecification {
   readonly createdAt: string;
 }
 
+export interface PublicPackageSourceCandidate {
+  readonly id: string;
+  readonly sourceKind:
+    | 'package_registry_release'
+    | 'sdk_repository_release'
+    | 'changelog'
+    | 'release_feed'
+    | 'migration_guide'
+    | 'homepage'
+    | 'issue_tracker';
+  readonly canonicalUrl: string;
+  readonly canonicalDomain: string;
+  readonly reviewState: 'pending_review' | 'approved' | 'rejected';
+  readonly discoveryMethod: 'npm_registry_metadata' | 'operator_replacement';
+  readonly proposalReasonCode:
+    | 'NPM_REGISTRY_AUTHORITATIVE'
+    | 'NPM_REPOSITORY_DECLARATION'
+    | 'NPM_HOMEPAGE_DECLARATION'
+    | 'NPM_BUGS_DECLARATION'
+    | 'OPERATOR_REPLACEMENT';
+  readonly proposalNote: string | null;
+  readonly supersedesCandidateId: string | null;
+  readonly rejectionReasonCode:
+    'NOT_OFFICIAL' | 'DUPLICATE' | 'UNSUPPORTED_SOURCE' | 'REPLACED' | null;
+  readonly reviewedAt: string | null;
+  readonly version: number;
+  readonly canPromote: boolean;
+}
+
+export interface PublicPackageSourceMapping {
+  readonly id: string;
+  readonly packageName: string;
+  readonly status: 'needs_review' | 'mapped' | 'rejected' | 'disabled';
+  readonly latestVersion: string | null;
+  readonly latestDeprecated: boolean | null;
+  readonly resolvedAt: string | null;
+  readonly evidenceDigest: string | null;
+  readonly vendorSlug: string | null;
+  readonly vendorName: string | null;
+  readonly vendorId: string | null;
+  readonly apiProductId: string | null;
+  readonly disabledReasonCode:
+    'OPERATOR_DISABLED' | 'PACKAGE_UNSUPPORTED' | 'SECURITY_CONCERN' | null;
+  readonly disabledAt: string | null;
+  readonly repositoryUsage: {
+    readonly total: number;
+    readonly direct: number;
+    readonly development: number;
+    readonly optional: number;
+    readonly peer: number;
+  };
+  readonly version: number;
+  readonly candidates: readonly PublicPackageSourceCandidate[];
+}
+
+export interface PublicPackageSourceCatalogEntry {
+  readonly apiProductId: string;
+  readonly packageName: string;
+  readonly productStatus: 'active' | 'disabled';
+  readonly vendorId: string;
+  readonly vendorSlug: string;
+  readonly vendorName: string;
+  readonly vendorTrustState: 'draft' | 'trusted' | 'disabled';
+  readonly officialDomains: readonly string[];
+}
+
+export interface PublicPackageSourceVendor {
+  readonly vendorId: string;
+  readonly vendorSlug: string;
+  readonly vendorName: string;
+  readonly vendorTrustState: 'draft' | 'trusted' | 'disabled';
+  readonly officialDomains: readonly string[];
+}
+
+export interface PublicPackageSourceCandidateReview {
+  readonly mapping: PublicPackageSourceMapping;
+}
+
 export interface PublicMigrationSpecificationReview {
   readonly specification: PublicMigrationSpecification;
   readonly matchedRepositories: number;
@@ -2684,6 +2870,7 @@ export interface PublicVendorEvidenceItem {
     | 'package_registry_release'
     | 'migration_guide'
     | 'changelog'
+    | 'release_feed'
     | 'api_definition'
     | 'sdk_repository_release';
   readonly canonicalUrl: string;

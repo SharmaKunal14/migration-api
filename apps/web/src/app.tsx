@@ -19,6 +19,10 @@ import type {
   PublicMigrationPatchReview,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
+  PublicPackageSourceCandidate,
+  PublicPackageSourceCatalogEntry,
+  PublicPackageSourceMapping,
+  PublicPackageSourceVendor,
   PublicOrganisation,
   PublicPublicationNotification,
   PublicRepository,
@@ -40,12 +44,17 @@ import {
   loadMigrationRun,
   loadMigrationPatchReview,
   loadMigrationRuns,
+  loadPackageSourceMappings,
+  loadPackageSourceCatalog,
   loadPublicationNotifications,
   loadRepositories,
   loadRun,
   requestImpactAnalysis,
+  reviewPackageSourceCandidate,
+  replacePackageSourceCandidate,
   revokeMigrationApproval,
   startRepositoryScan,
+  setPackageSourceMappingState,
 } from './api.js';
 import { useAuth } from './auth.js';
 import { supabase } from './supabase.js';
@@ -57,6 +66,7 @@ export function App(): React.JSX.Element {
       <Route path="/auth/callback" element={<AuthCallback />} />
       <Route element={<ProtectedLayout />}>
         <Route path="/onboarding" element={<OnboardingPage />} />
+        <Route path="/operator/package-sources" element={<PackageSourceReviewPage />} />
         <Route path="/github/setup/callback" element={<GithubSetupCallbackPage />} />
         <Route
           path="/organisations/:orgId/settings/github"
@@ -218,11 +228,15 @@ function OnboardingPage(): React.JSX.Element {
   const [error, setError] = useState<string | null>(null);
   const [name, setName] = useState('');
   const [slug, setSlug] = useState('');
+  const [operatorAccess, setOperatorAccess] = useState(false);
 
   useEffect(() => {
     if (!session) return;
     void loadMe(session.access_token)
-      .then(data => setOrganisations(data.organisations))
+      .then(data => {
+        setOrganisations(data.organisations);
+        setOperatorAccess(data.operator.hasAccess);
+      })
       .catch((caught: unknown) => setError(errorText(caught)))
       .finally(() => setLoading(false));
   }, [session]);
@@ -249,6 +263,11 @@ function OnboardingPage(): React.JSX.Element {
       <p className="lede">
         Organisation membership is loaded from PostgreSQL on every protected request.
       </p>
+      {operatorAccess && (
+        <Link className="operator-link" to="/operator/package-sources">
+          Review package source candidates
+        </Link>
+      )}
       {loading ? (
         <p>Loading organisations…</p>
       ) : (
@@ -298,6 +317,578 @@ function OnboardingPage(): React.JSX.Element {
       </form>
       {error && <p className="error-message">{error}</p>}
     </div>
+  );
+}
+
+type PackageSourceQueueStatus = 'needs_review' | 'mapped' | 'rejected' | 'disabled';
+
+function PackageSourceReviewPage(): React.JSX.Element {
+  const { session } = useAuth();
+  const [status, setStatus] = useState<PackageSourceQueueStatus>('needs_review');
+  const [mappings, setMappings] = useState<PublicPackageSourceMapping[]>([]);
+  const [catalogProducts, setCatalogProducts] = useState<
+    PublicPackageSourceCatalogEntry[]
+  >([]);
+  const [catalogVendors, setCatalogVendors] = useState<PublicPackageSourceVendor[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [generation, setGeneration] = useState(0);
+
+  useEffect(() => {
+    if (!session) return;
+    let active = true;
+    void Promise.all([
+      loadPackageSourceMappings(session.access_token, status),
+      loadPackageSourceCatalog(session.access_token),
+    ])
+      .then(([mappingData, catalogData]) => {
+        if (active) {
+          setMappings(mappingData.mappings);
+          setCatalogProducts(catalogData.products);
+          setCatalogVendors(catalogData.vendors);
+        }
+      })
+      .catch((caught: unknown) => {
+        if (active) setError(errorText(caught));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [generation, session, status]);
+
+  return (
+    <div className="page package-source-page">
+      <Link to="/onboarding">← Workspaces</Link>
+      <p className="eyebrow">Platform operator</p>
+      <h1>Package source review</h1>
+      <p className="lede">
+        Promote only evidence that you have independently verified as an official
+        package registry or SDK repository source. Approval trusts the exact URL shown.
+      </p>
+      <div className="queue-filters" aria-label="Package source queue filters">
+        {(['needs_review', 'mapped', 'rejected', 'disabled'] as const).map(value => (
+          <button
+            className={status === value ? 'primary-button' : 'secondary-button'}
+            key={value}
+            type="button"
+            onClick={() => {
+              if (value === status) return;
+              setLoading(true);
+              setError(null);
+              setStatus(value);
+            }}
+          >
+            {value.replace('_', ' ')}
+          </button>
+        ))}
+      </div>
+      {loading && <p>Loading package sources…</p>}
+      {error && <p className="error-message">{error}</p>}
+      {!loading && !error && mappings.length === 0 && (
+        <p className="panel empty-state">No mappings are in this state.</p>
+      )}
+      <div className="package-source-list">
+        {mappings.map(mapping => (
+          <PackageSourceMappingCard
+            key={mapping.id}
+            mapping={mapping}
+            token={session?.access_token ?? ''}
+            catalogProducts={catalogProducts}
+            catalogVendors={catalogVendors}
+            onReviewed={() => {
+              setLoading(true);
+              setError(null);
+              setGeneration(value => value + 1);
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function PackageSourceMappingCard({
+  mapping,
+  token,
+  catalogProducts,
+  catalogVendors,
+  onReviewed,
+}: {
+  readonly mapping: PublicPackageSourceMapping;
+  readonly token: string;
+  readonly catalogProducts: readonly PublicPackageSourceCatalogEntry[];
+  readonly catalogVendors: readonly PublicPackageSourceVendor[];
+  readonly onReviewed: () => void;
+}): React.JSX.Element {
+  const [catalogMode, setCatalogMode] = useState<
+    'existing_product' | 'existing_vendor' | 'new_vendor'
+  >(mapping.apiProductId ? 'existing_product' : 'new_vendor');
+  const [selectedProductId, setSelectedProductId] = useState(
+    mapping.apiProductId ?? '',
+  );
+  const [selectedVendorId, setSelectedVendorId] = useState(mapping.vendorId ?? '');
+  const [vendorSlug, setVendorSlug] = useState(mapping.vendorSlug ?? '');
+  const [vendorName, setVendorName] = useState(mapping.vendorName ?? '');
+  const [officialDomains, setOfficialDomains] = useState('');
+  const [approveCandidateDomain, setApproveCandidateDomain] = useState(false);
+  const [pollIntervalSeconds, setPollIntervalSeconds] = useState(86_400);
+  const [rejectionReasonCode, setRejectionReasonCode] = useState<
+    'NOT_OFFICIAL' | 'DUPLICATE' | 'UNSUPPORTED_SOURCE'
+  >('NOT_OFFICIAL');
+  const [busyCandidate, setBusyCandidate] = useState<string | null>(null);
+  const [replacementKind, setReplacementKind] = useState<
+    'sdk_repository_release' | 'changelog' | 'release_feed' | 'migration_guide'
+  >('sdk_repository_release');
+  const [replacementUrl, setReplacementUrl] = useState('');
+  const [replacementNote, setReplacementNote] = useState('');
+  const [disabledReasonCode, setDisabledReasonCode] = useState<
+    'OPERATOR_DISABLED' | 'PACKAGE_UNSUPPORTED' | 'SECURITY_CONCERN'
+  >('OPERATOR_DISABLED');
+  const [error, setError] = useState<string | null>(null);
+  const selectedCatalogDomains =
+    catalogMode === 'existing_product'
+      ? catalogProducts.find(product => product.apiProductId === selectedProductId)
+          ?.officialDomains
+      : catalogMode === 'existing_vendor'
+        ? catalogVendors.find(vendor => vendor.vendorId === selectedVendorId)
+            ?.officialDomains
+        : undefined;
+
+  async function review(
+    candidate: PublicPackageSourceCandidate,
+    decision: 'approve' | 'reject',
+  ): Promise<void> {
+    setBusyCandidate(candidate.id);
+    setError(null);
+    try {
+      await reviewPackageSourceCandidate(
+        token,
+        candidate.id,
+        crypto.randomUUID(),
+        decision === 'approve'
+          ? {
+              decision,
+              expectedCandidateVersion: candidate.version,
+              expectedMappingVersion: mapping.version,
+              catalog:
+                catalogMode === 'existing_product'
+                  ? { mode: catalogMode, apiProductId: selectedProductId }
+                  : catalogMode === 'existing_vendor'
+                    ? { mode: catalogMode, vendorId: selectedVendorId }
+                    : {
+                        mode: catalogMode,
+                        vendorSlug,
+                        vendorName,
+                        officialDomains: officialDomains
+                          .split(',')
+                          .map(value => value.trim().toLowerCase())
+                          .filter(Boolean),
+                      },
+              approveCandidateDomain:
+                candidate.sourceKind === 'package_registry_release'
+                  ? false
+                  : approveCandidateDomain,
+              pollIntervalSeconds,
+            }
+          : {
+              decision,
+              expectedCandidateVersion: candidate.version,
+              expectedMappingVersion: mapping.version,
+              rejectionReasonCode,
+            },
+      );
+      onReviewed();
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setBusyCandidate(null);
+    }
+  }
+
+  async function replace(candidate: PublicPackageSourceCandidate): Promise<void> {
+    setBusyCandidate(candidate.id);
+    setError(null);
+    try {
+      await replacePackageSourceCandidate(token, candidate.id, crypto.randomUUID(), {
+        expectedCandidateVersion: candidate.version,
+        expectedMappingVersion: mapping.version,
+        sourceKind: replacementKind,
+        canonicalUrl: replacementUrl,
+        proposalNote: replacementNote,
+      });
+      onReviewed();
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setBusyCandidate(null);
+    }
+  }
+
+  async function changeMappingState(): Promise<void> {
+    setBusyCandidate(mapping.id);
+    setError(null);
+    try {
+      await setPackageSourceMappingState(
+        token,
+        mapping.id,
+        crypto.randomUUID(),
+        mapping.status === 'disabled'
+          ? { action: 'enable', expectedMappingVersion: mapping.version }
+          : {
+              action: 'disable',
+              expectedMappingVersion: mapping.version,
+              disabledReasonCode,
+            },
+      );
+      onReviewed();
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setBusyCandidate(null);
+    }
+  }
+
+  return (
+    <article className="panel package-source-card">
+      <header>
+        <div>
+          <span className="eyebrow">{mapping.status.replace('_', ' ')}</span>
+          <h2>{mapping.packageName}</h2>
+        </div>
+        <div className="mapping-state-controls">
+          <code>v{mapping.version}</code>
+          {mapping.status !== 'disabled' && (
+            <select
+              aria-label="Disable reason"
+              value={disabledReasonCode}
+              onChange={event =>
+                setDisabledReasonCode(event.target.value as typeof disabledReasonCode)
+              }
+            >
+              <option value="OPERATOR_DISABLED">Operator disabled</option>
+              <option value="PACKAGE_UNSUPPORTED">Package unsupported</option>
+              <option value="SECURITY_CONCERN">Security concern</option>
+            </select>
+          )}
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busyCandidate !== null}
+            onClick={() => void changeMappingState()}
+          >
+            {mapping.status === 'disabled' ? 'Enable mapping' : 'Disable mapping'}
+          </button>
+        </div>
+      </header>
+      <dl className="package-source-metadata">
+        <div>
+          <dt>Latest npm version</dt>
+          <dd>{mapping.latestVersion ?? 'Unknown'}</dd>
+        </div>
+        <div>
+          <dt>Deprecated</dt>
+          <dd>
+            {mapping.latestDeprecated === null
+              ? 'Unknown'
+              : mapping.latestDeprecated
+                ? 'Yes'
+                : 'No'}
+          </dd>
+        </div>
+        <div>
+          <dt>Evidence digest</dt>
+          <dd>
+            <code>{mapping.evidenceDigest ?? 'Unavailable'}</code>
+          </dd>
+        </div>
+        <div>
+          <dt>Registry evidence retrieved</dt>
+          <dd>
+            {mapping.resolvedAt ? formatTimestamp(mapping.resolvedAt) : 'Unknown'}
+          </dd>
+        </div>
+        <div>
+          <dt>npm package page</dt>
+          <dd>
+            <a
+              href={`https://www.npmjs.com/package/${mapping.packageName}`}
+              target="_blank"
+              rel="noreferrer"
+            >
+              View package
+            </a>
+          </dd>
+        </div>
+        <div>
+          <dt>Repositories using package</dt>
+          <dd>
+            {mapping.repositoryUsage.total} total · {mapping.repositoryUsage.direct}{' '}
+            direct · {mapping.repositoryUsage.development} development ·{' '}
+            {mapping.repositoryUsage.optional} optional · {mapping.repositoryUsage.peer}{' '}
+            peer
+          </dd>
+        </div>
+        {mapping.status === 'disabled' && (
+          <div>
+            <dt>Disabled</dt>
+            <dd>
+              {mapping.disabledReasonCode?.replaceAll('_', ' ').toLowerCase()} ·{' '}
+              {mapping.disabledAt
+                ? formatTimestamp(mapping.disabledAt)
+                : 'Unknown time'}
+            </dd>
+          </div>
+        )}
+      </dl>
+      <div className="source-coverage" aria-label="Proposed source coverage">
+        {(
+          [
+            ['package_registry_release', 'npm registry'],
+            ['sdk_repository_release', 'repository'],
+            ['changelog', 'changelog'],
+            ['release_feed', 'release feed'],
+            ['migration_guide', 'migration documentation'],
+          ] as const
+        ).map(([sourceKind, label]) => (
+          <span key={sourceKind}>
+            {label}:{' '}
+            {mapping.candidates.some(candidate => candidate.sourceKind === sourceKind)
+              ? 'proposed'
+              : 'not proposed'}
+          </span>
+        ))}
+      </div>
+      {mapping.status !== 'disabled' &&
+        mapping.candidates.some(
+          candidate => candidate.reviewState === 'pending_review',
+        ) && (
+          <div className="package-source-vendor-fields">
+            <label>
+              Catalog binding
+              <select
+                value={catalogMode}
+                onChange={event =>
+                  setCatalogMode(event.target.value as typeof catalogMode)
+                }
+              >
+                <option value="new_vendor">Create vendor and product</option>
+                <option value="existing_vendor">Existing vendor, new product</option>
+                <option value="existing_product">Existing product</option>
+              </select>
+            </label>
+            {catalogMode === 'existing_product' && (
+              <label>
+                Existing API product
+                <select
+                  required
+                  value={selectedProductId}
+                  onChange={event => setSelectedProductId(event.target.value)}
+                >
+                  <option value="">Select product</option>
+                  {catalogProducts
+                    .filter(
+                      product =>
+                        product.packageName === mapping.packageName &&
+                        product.productStatus === 'active' &&
+                        product.vendorTrustState !== 'disabled',
+                    )
+                    .map(product => (
+                      <option key={product.apiProductId} value={product.apiProductId}>
+                        {product.vendorName} · {product.packageName}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
+            {catalogMode === 'existing_vendor' && (
+              <label>
+                Existing vendor
+                <select
+                  required
+                  value={selectedVendorId}
+                  onChange={event => setSelectedVendorId(event.target.value)}
+                >
+                  <option value="">Select vendor</option>
+                  {catalogVendors
+                    .filter(vendor => vendor.vendorTrustState !== 'disabled')
+                    .map(vendor => (
+                      <option key={vendor.vendorId} value={vendor.vendorId}>
+                        {vendor.vendorName} · {vendor.vendorSlug}
+                      </option>
+                    ))}
+                </select>
+              </label>
+            )}
+            {catalogMode === 'new_vendor' && (
+              <>
+                <label>
+                  Vendor slug
+                  <input
+                    required
+                    pattern="[a-z][a-z0-9-]{1,62}"
+                    value={vendorSlug}
+                    onChange={event => setVendorSlug(event.target.value)}
+                  />
+                </label>
+                <label>
+                  Official vendor domains
+                  <input
+                    required
+                    placeholder="vendor.example, docs.vendor.example"
+                    value={officialDomains}
+                    onChange={event => setOfficialDomains(event.target.value)}
+                  />
+                </label>
+              </>
+            )}
+            {selectedCatalogDomains && (
+              <p className="catalog-domain-summary">
+                Approved domains: {selectedCatalogDomains.join(', ')}
+              </p>
+            )}
+            {catalogMode === 'new_vendor' && (
+              <label>
+                Vendor name
+                <input
+                  required
+                  maxLength={120}
+                  value={vendorName}
+                  onChange={event => setVendorName(event.target.value)}
+                />
+              </label>
+            )}
+            <label>
+              Poll interval (seconds)
+              <input
+                required
+                type="number"
+                min={3600}
+                max={2592000}
+                value={pollIntervalSeconds}
+                onChange={event => setPollIntervalSeconds(Number(event.target.value))}
+              />
+            </label>
+            <label>
+              Rejection reason
+              <select
+                value={rejectionReasonCode}
+                onChange={event =>
+                  setRejectionReasonCode(
+                    event.target.value as typeof rejectionReasonCode,
+                  )
+                }
+              >
+                <option value="NOT_OFFICIAL">Not official</option>
+                <option value="DUPLICATE">Duplicate</option>
+                <option value="UNSUPPORTED_SOURCE">Unsupported source</option>
+              </select>
+            </label>
+            <label className="checkbox-label">
+              <input
+                type="checkbox"
+                checked={approveCandidateDomain}
+                onChange={event => setApproveCandidateDomain(event.target.checked)}
+              />
+              Explicitly add the candidate domain to the selected vendor
+            </label>
+          </div>
+        )}
+      <div className="package-source-candidates">
+        {mapping.candidates.map(candidate => (
+          <section key={candidate.id}>
+            <div>
+              <strong>{candidate.sourceKind.replaceAll('_', ' ')}</strong>
+              <span>{candidate.reviewState.replace('_', ' ')}</span>
+            </div>
+            <a href={candidate.canonicalUrl} target="_blank" rel="noreferrer">
+              {candidate.canonicalUrl}
+            </a>
+            <p className="fine-print">
+              Proposed because:{' '}
+              {packageSourceProposalText(candidate.proposalReasonCode)}
+              {candidate.proposalNote ? ` · ${candidate.proposalNote}` : ''}
+            </p>
+            {candidate.reviewState === 'pending_review' &&
+              mapping.status !== 'disabled' && (
+                <div className="review-actions">
+                  <button
+                    className="primary-button"
+                    type="button"
+                    disabled={
+                      !candidate.canPromote ||
+                      busyCandidate !== null ||
+                      (catalogMode === 'existing_product' && !selectedProductId) ||
+                      (catalogMode === 'existing_vendor' && !selectedVendorId) ||
+                      (catalogMode === 'new_vendor' &&
+                        (!vendorSlug || !vendorName || !officialDomains.trim()))
+                    }
+                    aria-busy={busyCandidate === candidate.id}
+                    onClick={() => void review(candidate, 'approve')}
+                  >
+                    Approve exact source
+                  </button>
+                  <button
+                    className="secondary-button"
+                    type="button"
+                    disabled={busyCandidate !== null}
+                    onClick={() => void review(candidate, 'reject')}
+                  >
+                    Reject
+                  </button>
+                  {candidate.sourceKind !== 'package_registry_release' && (
+                    <div className="replacement-controls">
+                      <select
+                        aria-label="Replacement source type"
+                        value={replacementKind}
+                        onChange={event =>
+                          setReplacementKind(
+                            event.target.value as typeof replacementKind,
+                          )
+                        }
+                      >
+                        <option value="sdk_repository_release">SDK repository</option>
+                        <option value="changelog">Changelog</option>
+                        <option value="release_feed">Release feed</option>
+                        <option value="migration_guide">Migration documentation</option>
+                      </select>
+                      <input
+                        aria-label="Replacement URL"
+                        type="url"
+                        placeholder="https://vendor.example/releases"
+                        value={replacementUrl}
+                        onChange={event => setReplacementUrl(event.target.value)}
+                      />
+                      <input
+                        aria-label="Replacement reason"
+                        maxLength={500}
+                        placeholder="Why this is the official replacement"
+                        value={replacementNote}
+                        onChange={event => setReplacementNote(event.target.value)}
+                      />
+                      <button
+                        className="secondary-button"
+                        type="button"
+                        disabled={
+                          busyCandidate !== null ||
+                          !replacementUrl ||
+                          !replacementNote.trim()
+                        }
+                        onClick={() => void replace(candidate)}
+                      >
+                        Replace candidate
+                      </button>
+                    </div>
+                  )}
+                </div>
+              )}
+          </section>
+        ))}
+      </div>
+      {error && <p className="error-message">{error}</p>}
+    </article>
   );
 }
 
@@ -2613,4 +3204,24 @@ function errorText(error: unknown): string {
       : error.message;
   }
   return 'The request could not be completed.';
+}
+
+function formatTimestamp(value: string): string {
+  return new Intl.DateTimeFormat(undefined, {
+    dateStyle: 'medium',
+    timeStyle: 'short',
+  }).format(new Date(value));
+}
+
+function packageSourceProposalText(
+  code: PublicPackageSourceCandidate['proposalReasonCode'],
+): string {
+  const descriptions: Record<typeof code, string> = {
+    NPM_REGISTRY_AUTHORITATIVE: 'the fixed-origin npm registry supplied version data',
+    NPM_REPOSITORY_DECLARATION: 'npm metadata declared this repository',
+    NPM_HOMEPAGE_DECLARATION: 'npm metadata declared this homepage',
+    NPM_BUGS_DECLARATION: 'npm metadata declared this issue tracker',
+    OPERATOR_REPLACEMENT: 'a platform operator proposed a reviewed replacement',
+  };
+  return descriptions[code];
 }

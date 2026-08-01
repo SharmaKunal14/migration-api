@@ -32,7 +32,8 @@ body {
 }
 
 button,
-input {
+input,
+select {
   font: inherit;
 }
 
@@ -42,9 +43,163 @@ button {
 
 button:focus-visible,
 input:focus-visible,
+select:focus-visible,
 a:focus-visible {
   outline: 3px solid var(--lime);
   outline-offset: 3px;
+}
+
+.operator-link {
+  display: inline-block;
+  margin-bottom: 2rem;
+  color: var(--mint);
+}
+
+.package-source-page > a {
+  color: var(--mint);
+}
+
+.queue-filters,
+.review-actions {
+  display: flex;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+}
+
+.queue-filters {
+  margin-bottom: 2rem;
+}
+
+.package-source-list {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.package-source-card {
+  display: grid;
+  gap: 1.5rem;
+}
+
+.package-source-card > header,
+.package-source-candidates section > div:first-child {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.mapping-state-controls {
+  display: flex;
+  gap: 0.75rem;
+  align-items: center;
+  flex-wrap: wrap;
+}
+
+.mapping-state-controls select,
+.replacement-controls select,
+.replacement-controls input {
+  padding: 0.65rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: #08110f;
+}
+
+.package-source-card .eyebrow {
+  font-size: 0.7rem;
+}
+
+.package-source-metadata,
+.package-source-vendor-fields {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 1rem;
+  margin: 0;
+}
+
+.package-source-metadata div,
+.package-source-vendor-fields label {
+  display: grid;
+  gap: 0.45rem;
+}
+
+.package-source-metadata dt,
+.package-source-vendor-fields label {
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.package-source-metadata dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+
+.package-source-vendor-fields input,
+.package-source-vendor-fields select {
+  width: 100%;
+  padding: 0.7rem;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  color: var(--ink);
+  background: #08110f;
+}
+
+.package-source-candidates {
+  display: grid;
+  gap: 1rem;
+}
+
+.source-coverage {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.source-coverage span {
+  padding: 0.35rem 0.55rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: var(--muted);
+  font-size: 0.7rem;
+  text-transform: capitalize;
+}
+
+.package-source-candidates section {
+  display: grid;
+  gap: 0.8rem;
+  padding: 1rem;
+  border: 1px solid var(--line);
+  border-radius: 10px;
+}
+
+.package-source-candidates a {
+  color: var(--mint);
+  overflow-wrap: anywhere;
+}
+
+.checkbox-label {
+  display: flex !important;
+  align-items: center;
+  grid-column: 1 / -1;
+  grid-template-columns: auto 1fr;
+}
+
+.catalog-domain-summary {
+  grid-column: 1 / -1;
+  margin: 0;
+  color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.checkbox-label input {
+  width: auto;
+}
+
+.replacement-controls {
+  display: grid;
+  width: 100%;
+  grid-template-columns: repeat(3, minmax(0, 1fr)) auto;
+  gap: 0.65rem;
 }
 
 h1,
@@ -1806,6 +1961,12 @@ input {
   .dependency-row {
     display: grid;
     grid-template-columns: 1fr 1fr;
+  }
+
+  .package-source-metadata,
+  .package-source-vendor-fields,
+  .replacement-controls {
+    grid-template-columns: 1fr;
   }
 
   .dependency-row > span::before {

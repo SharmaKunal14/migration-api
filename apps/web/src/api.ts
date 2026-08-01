@@ -12,6 +12,13 @@ import type {
   PublicMigrationPatchReview,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
+  PackageSourceCandidateReviewRequest,
+  PackageSourceCandidateReplacementRequest,
+  PackageSourceMappingStateRequest,
+  PublicPackageSourceCandidateReview,
+  PublicPackageSourceCatalogEntry,
+  PublicPackageSourceMapping,
+  PublicPackageSourceVendor,
   PublicPublicationNotification,
   PublicOrganisation,
   PublicDependencyObservation,
@@ -65,10 +72,75 @@ async function request<T>(token: string, path: string, init?: RequestInit): Prom
   return body as T;
 }
 
-export async function loadMe(
-  token: string,
-): Promise<{ organisations: PublicOrganisation[] }> {
+export async function loadMe(token: string): Promise<{
+  organisations: PublicOrganisation[];
+  operator: { readonly hasAccess: boolean };
+}> {
   return request(token, '/v1/me');
+}
+
+export async function loadPackageSourceMappings(
+  token: string,
+  status: 'needs_review' | 'mapped' | 'rejected' | 'disabled',
+): Promise<{ mappings: PublicPackageSourceMapping[] }> {
+  return request(
+    token,
+    `/v1/operator/package-source-mappings?status=${encodeURIComponent(status)}`,
+  );
+}
+
+export async function loadPackageSourceCatalog(token: string): Promise<{
+  products: PublicPackageSourceCatalogEntry[];
+  vendors: PublicPackageSourceVendor[];
+}> {
+  return request(token, '/v1/operator/package-source-catalog');
+}
+
+export async function reviewPackageSourceCandidate(
+  token: string,
+  candidateId: string,
+  idempotencyKey: string,
+  input: PackageSourceCandidateReviewRequest,
+): Promise<{ review: PublicPackageSourceCandidateReview }> {
+  return request(
+    token,
+    `/v1/operator/package-source-candidates/${candidateId}/review`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function replacePackageSourceCandidate(
+  token: string,
+  candidateId: string,
+  idempotencyKey: string,
+  input: PackageSourceCandidateReplacementRequest,
+): Promise<{ review: PublicPackageSourceCandidateReview }> {
+  return request(
+    token,
+    `/v1/operator/package-source-candidates/${candidateId}/replacement`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
+export async function setPackageSourceMappingState(
+  token: string,
+  mappingId: string,
+  idempotencyKey: string,
+  input: PackageSourceMappingStateRequest,
+): Promise<{ review: PublicPackageSourceCandidateReview }> {
+  return request(token, `/v1/operator/package-source-mappings/${mappingId}/state`, {
+    method: 'POST',
+    headers: { 'idempotency-key': idempotencyKey },
+    body: JSON.stringify(input),
+  });
 }
 
 export async function createOrganisation(

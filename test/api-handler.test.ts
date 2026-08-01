@@ -19,6 +19,10 @@ import type {
   PublicMigrationSpecification,
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
+  PublicPackageSourceCandidateReview,
+  PublicPackageSourceCatalogEntry,
+  PublicPackageSourceMapping,
+  PublicPackageSourceVendor,
   PublicRepository,
   PublicRepositoryScan,
 } from '@migration/contracts';
@@ -37,7 +41,10 @@ import type {
   OrganisationRecord,
   ReviewMigrationSpecificationInput,
   RequestImpactAnalysisInput,
+  ReviewPackageSourceCandidateInput,
+  ReplacePackageSourceCandidateInput,
   RevokeMigrationApprovalInput,
+  SetPackageSourceMappingStateInput,
 } from '../services/api/src/repository.js';
 
 const organisationId = '6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624';
@@ -89,6 +96,47 @@ const draftSpecification: PublicMigrationSpecification = {
   evidenceDigest: 'a'.repeat(64),
   reviewedAt: null,
   createdAt: '2026-07-26T00:00:00.000Z',
+};
+
+const packageSourceMapping: PublicPackageSourceMapping = {
+  id: organisationId,
+  packageName: '@orbitchat/sdk',
+  status: 'needs_review',
+  latestVersion: '2.0.0',
+  latestDeprecated: false,
+  resolvedAt: '2026-08-01T00:00:00.000Z',
+  evidenceDigest: 'b'.repeat(64),
+  vendorSlug: null,
+  vendorName: null,
+  vendorId: null,
+  apiProductId: null,
+  disabledReasonCode: null,
+  disabledAt: null,
+  repositoryUsage: {
+    total: 1,
+    direct: 1,
+    development: 0,
+    optional: 0,
+    peer: 0,
+  },
+  version: 1,
+  candidates: [
+    {
+      id: runId,
+      sourceKind: 'package_registry_release',
+      canonicalUrl: 'https://registry.npmjs.org/@orbitchat%2Fsdk',
+      canonicalDomain: 'registry.npmjs.org',
+      reviewState: 'pending_review',
+      discoveryMethod: 'npm_registry_metadata',
+      proposalReasonCode: 'NPM_REGISTRY_AUTHORITATIVE',
+      proposalNote: null,
+      supersedesCandidateId: null,
+      rejectionReasonCode: null,
+      reviewedAt: null,
+      version: 1,
+      canPromote: true,
+    },
+  ],
 };
 
 class FakeRepository implements ApiRepositoryPort {
@@ -222,9 +270,66 @@ class FakeRepository implements ApiRepositoryPort {
       unmatchedRepositories: 0,
     }),
   );
+  public readonly reviewPackageSourceCandidateMock = vi.fn<
+    (
+      userId: string,
+      input: ReviewPackageSourceCandidateInput,
+    ) => Promise<PublicPackageSourceCandidateReview>
+  >(() => Promise.resolve({ mapping: packageSourceMapping }));
+  public readonly replacePackageSourceCandidateMock = vi.fn<
+    (
+      userId: string,
+      input: ReplacePackageSourceCandidateInput,
+    ) => Promise<PublicPackageSourceCandidateReview>
+  >(() => Promise.resolve({ mapping: packageSourceMapping }));
+  public readonly setPackageSourceMappingStateMock = vi.fn<
+    (
+      userId: string,
+      input: SetPackageSourceMappingStateInput,
+    ) => Promise<PublicPackageSourceCandidateReview>
+  >(() => Promise.resolve({ mapping: packageSourceMapping }));
 
   public ensureUser(_actor: Actor): Promise<string> {
     return Promise.resolve(userId);
+  }
+
+  public hasPlatformOperatorAccess(_userId: string): Promise<boolean> {
+    return Promise.resolve(true);
+  }
+
+  public listPackageSourceMappings(
+    _userId: string,
+    _status: 'needs_review' | 'mapped' | 'rejected' | 'disabled',
+  ): Promise<PublicPackageSourceMapping[]> {
+    return Promise.resolve([packageSourceMapping]);
+  }
+
+  public reviewPackageSourceCandidate(
+    _userId: string,
+    _input: ReviewPackageSourceCandidateInput,
+  ): Promise<PublicPackageSourceCandidateReview> {
+    return this.reviewPackageSourceCandidateMock(_userId, _input);
+  }
+
+  public listPackageSourceCatalog(_userId: string): Promise<{
+    readonly products: readonly PublicPackageSourceCatalogEntry[];
+    readonly vendors: readonly PublicPackageSourceVendor[];
+  }> {
+    return Promise.resolve({ products: [], vendors: [] });
+  }
+
+  public replacePackageSourceCandidate(
+    _userId: string,
+    _input: ReplacePackageSourceCandidateInput,
+  ): Promise<PublicPackageSourceCandidateReview> {
+    return this.replacePackageSourceCandidateMock(_userId, _input);
+  }
+
+  public setPackageSourceMappingState(
+    _userId: string,
+    _input: SetPackageSourceMappingStateInput,
+  ): Promise<PublicPackageSourceCandidateReview> {
+    return this.setPackageSourceMappingStateMock(_userId, _input);
   }
 
   public listOrganisations(_userId: string): Promise<OrganisationRecord[]> {
@@ -1061,6 +1166,186 @@ describe('API handler trust boundary', () => {
         matchedRepositories: 1,
       },
     });
+  });
+
+  it('lists the operator package source review queue', async () => {
+    const response = await handleRequest(
+      event('GET', '/api/v1/operator/package-source-mappings'),
+      dependencies(),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(parsedBody(response)).toMatchObject({
+      mappings: [{ packageName: '@orbitchat/sdk', status: 'needs_review' }],
+    });
+  });
+
+  it('lists the operator catalog without exposing customer repositories', async () => {
+    const response = await handleRequest(
+      event('GET', '/api/v1/operator/package-source-catalog'),
+      dependencies(),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(parsedBody(response)).toEqual({ products: [], vendors: [] });
+  });
+
+  it('validates and reviews an exact package source candidate', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-candidates/${runId}/review`,
+        {
+          decision: 'approve',
+          expectedCandidateVersion: 1,
+          expectedMappingVersion: 1,
+          catalog: {
+            mode: 'new_vendor',
+            vendorSlug: 'orbitchat',
+            vendorName: 'OrbitChat',
+            officialDomains: ['orbitchat.example'],
+          },
+          approveCandidateDomain: false,
+          pollIntervalSeconds: 86400,
+        },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-source-review:01J7Y5ABCD',
+        },
+      ),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(repository.reviewPackageSourceCandidateMock.mock.calls[0]?.[0]).toBe(userId);
+    expect(
+      repository.reviewPackageSourceCandidateMock.mock.calls[0]?.[1],
+    ).toMatchObject({
+      candidateId: runId,
+      decision: 'approve',
+      catalog: { mode: 'new_vendor', vendorSlug: 'orbitchat' },
+      idempotencyKey: 'package-source-review:01J7Y5ABCD',
+    });
+  });
+
+  it('rejects package source approvals that try to supply extra fields', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-candidates/${runId}/review`,
+        {
+          decision: 'approve',
+          expectedCandidateVersion: 1,
+          expectedMappingVersion: 1,
+          catalog: {
+            mode: 'new_vendor',
+            vendorSlug: 'orbitchat',
+            vendorName: 'OrbitChat',
+            officialDomains: ['orbitchat.example'],
+          },
+          approveCandidateDomain: false,
+          pollIntervalSeconds: 86400,
+          canonicalUrl: 'https://attacker.example/source',
+        },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-source-review:01J7Y5ABCE',
+        },
+      ),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(repository.reviewPackageSourceCandidateMock).not.toHaveBeenCalled();
+  });
+
+  it('creates a versioned operator replacement candidate', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-candidates/${runId}/replacement`,
+        {
+          expectedCandidateVersion: 1,
+          expectedMappingVersion: 1,
+          sourceKind: 'changelog',
+          canonicalUrl: 'https://docs.orbitchat.example/changelog',
+          proposalNote: 'The vendor documentation links this changelog.',
+        },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-source-replacement:01J7Y5ABCF',
+        },
+      ),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(201);
+    expect(repository.replacePackageSourceCandidateMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        candidateId: runId,
+        sourceKind: 'changelog',
+        expectedCandidateVersion: 1,
+      }),
+    );
+  });
+
+  it('disables a package source mapping with an explicit reason', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-mappings/${organisationId}/state`,
+        {
+          action: 'disable',
+          expectedMappingVersion: 1,
+          disabledReasonCode: 'SECURITY_CONCERN',
+        },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-source-state:01J7Y5ABCG',
+        },
+      ),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(repository.setPackageSourceMappingStateMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        mappingId: organisationId,
+        action: 'disable',
+        disabledReasonCode: 'SECURITY_CONCERN',
+      }),
+    );
+  });
+
+  it('rejects unsafe replacement URL shapes before catalog mutation', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-candidates/${runId}/replacement`,
+        {
+          expectedCandidateVersion: 1,
+          expectedMappingVersion: 1,
+          sourceKind: 'changelog',
+          canonicalUrl: 'http://169.254.169.254/latest/meta-data',
+          proposalNote: 'Unsafe source.',
+        },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-source-replacement:01J7Y5ABCH',
+        },
+      ),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(repository.replacePackageSourceCandidateMock).not.toHaveBeenCalled();
   });
 
   it('creates a short-lived GitHub App installation URL', async () => {
