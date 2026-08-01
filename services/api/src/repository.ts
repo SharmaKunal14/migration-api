@@ -1263,8 +1263,6 @@ export class ApiRepository implements ApiRepositoryPort {
             decision: input.decision,
             expectedCandidateVersion: input.expectedCandidateVersion,
             expectedMappingVersion: input.expectedMappingVersion,
-            catalog: input.catalog,
-            approveCandidateDomain: input.approveCandidateDomain,
             pollIntervalSeconds: input.pollIntervalSeconds,
           }
         : {
@@ -1360,19 +1358,12 @@ export class ApiRepository implements ApiRepositoryPort {
         }
 
         await sql`
-          select review_package_source_candidate(
+          select review_exact_package_source_candidate(
             ${input.candidateId}::uuid,
             ${userId}::uuid,
             ${input.expectedCandidateVersion},
             ${input.expectedMappingVersion},
             ${input.decision},
-            ${input.decision === 'approve' ? input.catalog.mode : null},
-            ${input.decision === 'approve' && input.catalog.mode === 'existing_product' ? input.catalog.apiProductId : null}::uuid,
-            ${input.decision === 'approve' && input.catalog.mode === 'existing_vendor' ? input.catalog.vendorId : null}::uuid,
-            ${input.decision === 'approve' && input.catalog.mode === 'new_vendor' ? input.catalog.vendorSlug : null},
-            ${input.decision === 'approve' && input.catalog.mode === 'new_vendor' ? input.catalog.vendorName : null},
-            ${input.decision === 'approve' && input.catalog.mode === 'new_vendor' ? input.catalog.officialDomains : null}::text[],
-            ${input.decision === 'approve' ? input.approveCandidateDomain : null},
             ${input.decision === 'approve' ? input.pollIntervalSeconds : null},
             ${input.decision === 'reject' ? input.rejectionReasonCode : null},
             ${input.requestId}::uuid

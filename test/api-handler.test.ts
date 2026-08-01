@@ -1200,13 +1200,6 @@ describe('API handler trust boundary', () => {
           decision: 'approve',
           expectedCandidateVersion: 1,
           expectedMappingVersion: 1,
-          catalog: {
-            mode: 'new_vendor',
-            vendorSlug: 'orbitchat',
-            vendorName: 'OrbitChat',
-            officialDomains: ['orbitchat.example'],
-          },
-          approveCandidateDomain: false,
           pollIntervalSeconds: 86400,
         },
         {
@@ -1224,7 +1217,7 @@ describe('API handler trust boundary', () => {
     ).toMatchObject({
       candidateId: runId,
       decision: 'approve',
-      catalog: { mode: 'new_vendor', vendorSlug: 'orbitchat' },
+      pollIntervalSeconds: 86400,
       idempotencyKey: 'package-source-review:01J7Y5ABCD',
     });
   });

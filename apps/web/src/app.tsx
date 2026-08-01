@@ -20,9 +20,7 @@ import type {
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
   PublicPackageSourceCandidate,
-  PublicPackageSourceCatalogEntry,
   PublicPackageSourceMapping,
-  PublicPackageSourceVendor,
   PublicOrganisation,
   PublicPublicationNotification,
   PublicRepository,
@@ -45,7 +43,6 @@ import {
   loadMigrationPatchReview,
   loadMigrationRuns,
   loadPackageSourceMappings,
-  loadPackageSourceCatalog,
   loadPublicationNotifications,
   loadRepositories,
   loadRun,
@@ -326,10 +323,6 @@ function PackageSourceReviewPage(): React.JSX.Element {
   const { session } = useAuth();
   const [status, setStatus] = useState<PackageSourceQueueStatus>('needs_review');
   const [mappings, setMappings] = useState<PublicPackageSourceMapping[]>([]);
-  const [catalogProducts, setCatalogProducts] = useState<
-    PublicPackageSourceCatalogEntry[]
-  >([]);
-  const [catalogVendors, setCatalogVendors] = useState<PublicPackageSourceVendor[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [generation, setGeneration] = useState(0);
@@ -337,15 +330,10 @@ function PackageSourceReviewPage(): React.JSX.Element {
   useEffect(() => {
     if (!session) return;
     let active = true;
-    void Promise.all([
-      loadPackageSourceMappings(session.access_token, status),
-      loadPackageSourceCatalog(session.access_token),
-    ])
-      .then(([mappingData, catalogData]) => {
+    void loadPackageSourceMappings(session.access_token, status)
+      .then(mappingData => {
         if (active) {
           setMappings(mappingData.mappings);
-          setCatalogProducts(catalogData.products);
-          setCatalogVendors(catalogData.vendors);
         }
       })
       .catch((caught: unknown) => {
@@ -365,9 +353,9 @@ function PackageSourceReviewPage(): React.JSX.Element {
       <p className="eyebrow">Platform operator</p>
       <h1>Package source review</h1>
       <p className="lede">
-        Confirm who publishes each package, then approve only the official sources. Most
-        reviews need a publisher and one source decision; replacement and polling
-        controls stay under advanced options.
+        The npm registry entry is authoritative for published package versions. Other
+        URLs are claims from package metadata: approve only the exact repository or
+        documentation URL you recognize, or leave it pending.
       </p>
       <div className="queue-filters" aria-label="Package source queue filters">
         {(['needs_review', 'mapped', 'rejected', 'disabled'] as const).map(value => (
@@ -397,8 +385,6 @@ function PackageSourceReviewPage(): React.JSX.Element {
             key={mapping.id}
             mapping={mapping}
             token={session?.access_token ?? ''}
-            catalogProducts={catalogProducts}
-            catalogVendors={catalogVendors}
             onReviewed={() => {
               setLoading(true);
               setError(null);
@@ -414,38 +400,13 @@ function PackageSourceReviewPage(): React.JSX.Element {
 function PackageSourceMappingCard({
   mapping,
   token,
-  catalogProducts,
-  catalogVendors,
   onReviewed,
 }: {
   readonly mapping: PublicPackageSourceMapping;
   readonly token: string;
-  readonly catalogProducts: readonly PublicPackageSourceCatalogEntry[];
-  readonly catalogVendors: readonly PublicPackageSourceVendor[];
   readonly onReviewed: () => void;
 }): React.JSX.Element {
-  const matchingCatalogProduct = catalogProducts.find(
-    product =>
-      product.packageName === mapping.packageName &&
-      product.productStatus === 'active' &&
-      product.vendorTrustState !== 'disabled',
-  );
-  const [catalogMode, setCatalogMode] = useState<
-    'existing_product' | 'existing_vendor' | 'new_vendor'
-  >(mapping.apiProductId || matchingCatalogProduct ? 'existing_product' : 'new_vendor');
-  const [selectedProductId, setSelectedProductId] = useState(
-    mapping.apiProductId ?? matchingCatalogProduct?.apiProductId ?? '',
-  );
-  const [selectedVendorId, setSelectedVendorId] = useState(mapping.vendorId ?? '');
-  const [vendorSlug, setVendorSlug] = useState(
-    mapping.vendorSlug ?? packagePublisherSlug('', mapping.packageName),
-  );
-  const [vendorName, setVendorName] = useState(mapping.vendorName ?? '');
-  const [officialDomains, setOfficialDomains] = useState('');
-  const [approvedCandidateDomains, setApprovedCandidateDomains] = useState<
-    ReadonlySet<string>
-  >(new Set());
-  const [pollIntervalSeconds, setPollIntervalSeconds] = useState(86_400);
+  const pollIntervalSeconds = 86_400;
   const [rejectionReasonCode, setRejectionReasonCode] = useState<
     'NOT_OFFICIAL' | 'DUPLICATE' | 'UNSUPPORTED_SOURCE'
   >('NOT_OFFICIAL');
@@ -463,62 +424,11 @@ function PackageSourceMappingCard({
   >('OPERATOR_DISABLED');
   const [rejectingCandidateId, setRejectingCandidateId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const selectedCatalogDomains =
-    catalogMode === 'existing_product'
-      ? catalogProducts.find(product => product.apiProductId === selectedProductId)
-          ?.officialDomains
-      : catalogMode === 'existing_vendor'
-        ? catalogVendors.find(vendor => vendor.vendorId === selectedVendorId)
-            ?.officialDomains
-        : undefined;
-  const effectiveCatalogDomains =
-    selectedCatalogDomains ??
-    officialDomains
-      .split(',')
-      .map(value => value.trim().toLowerCase())
-      .filter(Boolean);
-  const catalogSelection =
-    catalogMode === 'existing_product'
-      ? `product:${selectedProductId}`
-      : catalogMode === 'existing_vendor'
-        ? `vendor:${selectedVendorId}`
-        : 'new_vendor';
-
-  function approvalBlocker(candidate: PublicPackageSourceCandidate): string | null {
-    if (!candidate.canPromote) {
-      return 'This source type cannot be promoted.';
-    }
-    if (catalogMode === 'existing_product' && !selectedProductId) {
-      return 'Select the package owner before approving this source.';
-    }
-    if (catalogMode === 'existing_vendor' && !selectedVendorId) {
-      return 'Select the package owner before approving this source.';
-    }
-    if (
-      catalogMode === 'new_vendor' &&
-      (!vendorName.trim() || !vendorSlug || effectiveCatalogDomains.length === 0)
-    ) {
-      return 'Enter the publisher name and official website domain before approving.';
-    }
-    if (
-      candidate.sourceKind !== 'package_registry_release' &&
-      !effectiveCatalogDomains.includes(candidate.canonicalDomain) &&
-      !approvedCandidateDomains.has(candidate.id)
-    ) {
-      return `Confirm that ${candidate.canonicalDomain} is an official publisher domain.`;
-    }
-    return null;
-  }
 
   async function review(
     candidate: PublicPackageSourceCandidate,
     decision: 'approve' | 'reject',
   ): Promise<void> {
-    const blocker = decision === 'approve' ? approvalBlocker(candidate) : null;
-    if (blocker) {
-      setError(blocker);
-      return;
-    }
     setBusyOperation({ targetId: candidate.id, action: decision });
     setError(null);
     try {
@@ -531,24 +441,6 @@ function PackageSourceMappingCard({
               decision,
               expectedCandidateVersion: candidate.version,
               expectedMappingVersion: mapping.version,
-              catalog:
-                catalogMode === 'existing_product'
-                  ? { mode: catalogMode, apiProductId: selectedProductId }
-                  : catalogMode === 'existing_vendor'
-                    ? { mode: catalogMode, vendorId: selectedVendorId }
-                    : {
-                        mode: catalogMode,
-                        vendorSlug,
-                        vendorName,
-                        officialDomains: officialDomains
-                          .split(',')
-                          .map(value => value.trim().toLowerCase())
-                          .filter(Boolean),
-                      },
-              approveCandidateDomain:
-                candidate.sourceKind === 'package_registry_release'
-                  ? false
-                  : approvedCandidateDomains.has(candidate.id),
               pollIntervalSeconds,
             }
           : {
@@ -728,124 +620,14 @@ function PackageSourceMappingCard({
           </span>
         ))}
       </div>
-      {mapping.status !== 'disabled' &&
-        mapping.candidates.some(
-          candidate => candidate.reviewState === 'pending_review',
-        ) && (
-          <section className="package-source-setup">
-            <div>
-              <h3>Confirm the package publisher</h3>
-              <p className="fine-print">
-                This one-time identity check prevents an unrelated project from being
-                treated as the official source for {mapping.packageName}.
-              </p>
-            </div>
-            <div className="package-source-vendor-fields">
-              <label>
-                Publisher
-                <select
-                  value={catalogSelection}
-                  onChange={event => {
-                    const selection = event.target.value;
-                    if (selection === 'new_vendor') {
-                      setCatalogMode('new_vendor');
-                    } else if (selection.startsWith('product:')) {
-                      setCatalogMode('existing_product');
-                      setSelectedProductId(selection.slice('product:'.length));
-                    } else if (selection.startsWith('vendor:')) {
-                      setCatalogMode('existing_vendor');
-                      setSelectedVendorId(selection.slice('vendor:'.length));
-                    }
-                  }}
-                >
-                  <option value="new_vendor">Add a new publisher</option>
-                  {catalogProducts
-                    .filter(
-                      product =>
-                        product.packageName === mapping.packageName &&
-                        product.productStatus === 'active' &&
-                        product.vendorTrustState !== 'disabled',
-                    )
-                    .map(product => (
-                      <option
-                        key={product.apiProductId}
-                        value={`product:${product.apiProductId}`}
-                      >
-                        {product.vendorName} · existing package
-                      </option>
-                    ))}
-                  {catalogVendors
-                    .filter(vendor => vendor.vendorTrustState !== 'disabled')
-                    .map(vendor => (
-                      <option key={vendor.vendorId} value={`vendor:${vendor.vendorId}`}>
-                        {vendor.vendorName} · existing publisher
-                      </option>
-                    ))}
-                </select>
-              </label>
-              {catalogMode === 'new_vendor' && (
-                <>
-                  <label>
-                    Publisher name
-                    <input
-                      maxLength={120}
-                      placeholder="DefinitelyTyped"
-                      value={vendorName}
-                      onChange={event => {
-                        setVendorName(event.target.value);
-                        setVendorSlug(
-                          packagePublisherSlug(event.target.value, mapping.packageName),
-                        );
-                      }}
-                    />
-                  </label>
-                  <label>
-                    Official website domain
-                    <input
-                      placeholder="definitelytyped.org"
-                      value={officialDomains}
-                      onChange={event => setOfficialDomains(event.target.value)}
-                    />
-                  </label>
-                </>
-              )}
-            </div>
-            {selectedCatalogDomains && (
-              <p className="catalog-domain-summary">
-                Trusted domains: {selectedCatalogDomains.join(', ')}
-              </p>
-            )}
-            <details className="review-advanced">
-              <summary>Advanced catalogue settings</summary>
-              <div className="package-source-vendor-fields">
-                {catalogMode === 'new_vendor' && (
-                  <label>
-                    Internal publisher slug
-                    <input
-                      pattern="[a-z][a-z0-9-]{1,62}"
-                      value={vendorSlug}
-                      onChange={event => setVendorSlug(event.target.value)}
-                    />
-                  </label>
-                )}
-                <label>
-                  Check for releases every
-                  <select
-                    value={pollIntervalSeconds}
-                    onChange={event =>
-                      setPollIntervalSeconds(Number(event.target.value))
-                    }
-                  >
-                    <option value={21_600}>6 hours</option>
-                    <option value={43_200}>12 hours</option>
-                    <option value={86_400}>Daily</option>
-                    <option value={604_800}>Weekly</option>
-                  </select>
-                </label>
-              </div>
-            </details>
-          </section>
-        )}
+      <section className="source-review-guide">
+        <strong>Approval trusts only the exact URL shown.</strong>
+        <p>
+          The system creates the internal package record automatically. It does not
+          infer or trust a publisher website, and it does not authorize other URLs on
+          the same domain.
+        </p>
+      </section>
       <div className="package-source-candidates">
         {mapping.candidates.map(candidate => (
           <section key={candidate.id}>
@@ -864,30 +646,6 @@ function PackageSourceMappingCard({
             {candidate.reviewState === 'pending_review' &&
               mapping.status !== 'disabled' && (
                 <div className="review-actions">
-                  {candidate.sourceKind !== 'package_registry_release' &&
-                    !effectiveCatalogDomains.includes(candidate.canonicalDomain) && (
-                      <label className="candidate-domain-confirmation">
-                        <input
-                          type="checkbox"
-                          checked={approvedCandidateDomains.has(candidate.id)}
-                          onChange={event => {
-                            setApprovedCandidateDomains(current => {
-                              const next = new Set(current);
-                              if (event.target.checked) next.add(candidate.id);
-                              else next.delete(candidate.id);
-                              return next;
-                            });
-                          }}
-                        />
-                        I verified that {candidate.canonicalDomain} is an official
-                        domain for this publisher
-                      </label>
-                    )}
-                  {approvalBlocker(candidate) && (
-                    <p className="approval-requirement">
-                      Before approval: {approvalBlocker(candidate)}
-                    </p>
-                  )}
                   <button
                     className="review-decision-button"
                     type="button"
@@ -3348,19 +3106,4 @@ function packageSourceProposalText(
     OPERATOR_REPLACEMENT: 'a platform operator proposed a reviewed replacement',
   };
   return descriptions[code];
-}
-
-function packagePublisherSlug(name: string, packageName: string): string {
-  const packagePublisher = packageName.startsWith('@')
-    ? (packageName.slice(1).split('/')[0] ?? '')
-    : packageName;
-  let slug = (name.trim() || packagePublisher)
-    .normalize('NFKD')
-    .replace(/\p{M}/gu, '')
-    .toLowerCase()
-    .replace(/[^a-z0-9]+/gu, '-')
-    .replace(/^-+|-+$/gu, '');
-  if (!/^[a-z]/u.test(slug)) slug = `publisher-${slug}`;
-  slug = slug.slice(0, 63).replace(/-+$/u, '');
-  return slug.length >= 2 ? slug : `${slug || 'publisher'}-package`.slice(0, 63);
 }

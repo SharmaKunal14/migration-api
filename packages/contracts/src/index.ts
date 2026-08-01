@@ -243,29 +243,6 @@ export const migrationSpecificationReviewRequestSchema = z
   .strict();
 
 const packageSourceReviewVersionSchema = z.number().int().positive();
-const officialDomainSchema = z
-  .string()
-  .max(253)
-  .regex(
-    /^(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)(?:\.(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?))*$/u,
-  )
-  .refine(
-    value => value.includes('.') && !/^\d+\.\d+\.\d+\.\d+$/u.test(value),
-    'Official domains must be public DNS hostnames.',
-  );
-const packageSourceCatalogBindingSchema = z.discriminatedUnion('mode', [
-  z.object({ mode: z.literal('existing_product'), apiProductId: uuidSchema }).strict(),
-  z.object({ mode: z.literal('existing_vendor'), vendorId: uuidSchema }).strict(),
-  z
-    .object({
-      mode: z.literal('new_vendor'),
-      vendorSlug: z.string().regex(/^[a-z][a-z0-9-]{1,62}$/u),
-      vendorName: z.string().trim().min(1).max(120),
-      officialDomains: z.array(officialDomainSchema).min(1).max(20),
-    })
-    .strict(),
-]);
-
 export const packageSourceCandidateReviewRequestSchema = z.discriminatedUnion(
   'decision',
   [
@@ -274,9 +251,7 @@ export const packageSourceCandidateReviewRequestSchema = z.discriminatedUnion(
         decision: z.literal('approve'),
         expectedCandidateVersion: packageSourceReviewVersionSchema,
         expectedMappingVersion: packageSourceReviewVersionSchema,
-        catalog: packageSourceCatalogBindingSchema,
-        approveCandidateDomain: z.boolean(),
-        pollIntervalSeconds: z.number().int().min(3_600).max(2_592_000),
+        pollIntervalSeconds: z.number().int().min(3_600).max(2_592_000).default(86_400),
       })
       .strict(),
     z

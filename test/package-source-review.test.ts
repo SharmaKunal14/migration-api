@@ -19,6 +19,13 @@ const operatorReadMigration = readFileSync(
   new URL('../supabase/migrations/0025_stage_8c_operator_reads.sql', import.meta.url),
   'utf8',
 );
+const exactApprovalMigration = readFileSync(
+  new URL(
+    '../supabase/migrations/0026_stage_8c_exact_source_approval.sql',
+    import.meta.url,
+  ),
+  'utf8',
+);
 const repository = readFileSync(
   new URL('../services/api/src/repository.ts', import.meta.url),
   'utf8',
@@ -39,13 +46,6 @@ describe('stage 8C package source review', () => {
         decision: 'approve',
         expectedCandidateVersion: 1,
         expectedMappingVersion: 1,
-        catalog: {
-          mode: 'new_vendor',
-          vendorSlug: 'orbitchat',
-          vendorName: 'OrbitChat',
-          officialDomains: ['orbitchat.example'],
-        },
-        approveCandidateDomain: false,
         pollIntervalSeconds: 86_400,
       }).success,
     ).toBe(true);
@@ -54,13 +54,6 @@ describe('stage 8C package source review', () => {
         decision: 'approve',
         expectedCandidateVersion: 1,
         expectedMappingVersion: 1,
-        catalog: {
-          mode: 'new_vendor',
-          vendorSlug: 'orbitchat',
-          vendorName: 'OrbitChat',
-          officialDomains: ['orbitchat.example'],
-        },
-        approveCandidateDomain: false,
         pollIntervalSeconds: 86_400,
         canonicalUrl: 'https://attacker.example/source',
       }).success,
@@ -163,14 +156,15 @@ describe('stage 8C package source review', () => {
   });
 
   it('keeps the normal review path short without weakening explicit trust', () => {
-    expect(operatorUi).toContain('Confirm the package publisher');
-    expect(operatorUi).toContain('Publisher name');
-    expect(operatorUi).toContain('Official website domain');
-    expect(operatorUi).toContain('Advanced catalogue settings');
+    expect(operatorUi).toContain('Approval trusts only the exact URL shown.');
     expect(operatorUi).toContain('Use a different official URL');
-    expect(operatorUi).toContain('is an official');
-    expect(operatorUi).toContain('domain for this publisher');
-    expect(operatorUi).not.toContain('Poll interval (seconds)');
-    expect(operatorUi).not.toContain('Catalog binding');
+    expect(operatorUi).not.toContain('Confirm the package publisher');
+    expect(operatorUi).not.toContain('Official website domain');
+    expect(exactApprovalMigration).toContain("'approval_scope', 'exact_url'");
+    expect(exactApprovalMigration).toContain(
+      'array[current_candidate.canonical_domain]',
+    );
+    expect(exactApprovalMigration).toContain('current_candidate.canonical_url');
+    expect(exactApprovalMigration).not.toContain('p_official_domains');
   });
 });

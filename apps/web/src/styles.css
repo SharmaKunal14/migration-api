@@ -136,46 +136,41 @@ a:focus-visible {
   font-size: 0.7rem;
 }
 
-.package-source-metadata,
-.package-source-vendor-fields {
+.package-source-metadata {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 1rem;
   margin: 0;
 }
 
-.package-source-setup {
-  display: grid;
-  gap: 1rem;
+.source-review-guide {
   padding: 1rem;
   border: 1px solid var(--line);
   border-radius: 10px;
   background: rgb(137 247 194 / 3%);
 }
 
-.package-source-setup h3 {
-  margin: 0 0 0.35rem;
+.source-review-guide p {
+  margin: 0.45rem 0 0;
+  color: var(--muted);
+  line-height: 1.5;
 }
 
-.review-advanced summary,
 .candidate-advanced summary {
   color: var(--mint);
   cursor: pointer;
 }
 
-.review-advanced > div,
 .candidate-advanced > div {
   margin-top: 0.85rem;
 }
 
-.package-source-metadata div,
-.package-source-vendor-fields label {
+.package-source-metadata div {
   display: grid;
   gap: 0.45rem;
 }
 
-.package-source-metadata dt,
-.package-source-vendor-fields label {
+.package-source-metadata dt {
   color: var(--muted);
   font-size: 0.75rem;
 }
@@ -183,16 +178,6 @@ a:focus-visible {
 .package-source-metadata dd {
   margin: 0;
   overflow-wrap: anywhere;
-}
-
-.package-source-vendor-fields input,
-.package-source-vendor-fields select {
-  width: 100%;
-  padding: 0.7rem;
-  border: 1px solid var(--line);
-  border-radius: 8px;
-  color: var(--ink);
-  background: #08110f;
 }
 
 .package-source-candidates {
@@ -228,24 +213,6 @@ a:focus-visible {
   overflow-wrap: anywhere;
 }
 
-.checkbox-label {
-  display: flex !important;
-  align-items: center;
-  grid-column: 1 / -1;
-  grid-template-columns: auto 1fr;
-}
-
-.catalog-domain-summary {
-  grid-column: 1 / -1;
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.75rem;
-}
-
-.checkbox-label input {
-  width: auto;
-}
-
 .replacement-controls {
   display: grid;
   width: 100%;
@@ -253,30 +220,9 @@ a:focus-visible {
   gap: 0.65rem;
 }
 
-.candidate-domain-confirmation,
-.approval-requirement,
 .decision-confirmation,
 .candidate-advanced {
   flex-basis: 100%;
-}
-
-.candidate-domain-confirmation {
-  display: flex;
-  gap: 0.65rem;
-  align-items: flex-start;
-  color: var(--muted);
-  line-height: 1.4;
-}
-
-.candidate-domain-confirmation input {
-  margin-top: 0.2rem;
-  accent-color: var(--lime);
-}
-
-.approval-requirement {
-  margin: 0;
-  color: var(--muted);
-  font-size: 0.78rem;
 }
 
 .decision-confirmation {
@@ -2070,7 +2016,6 @@ input {
   }
 
   .package-source-metadata,
-  .package-source-vendor-fields,
   .replacement-controls {
     grid-template-columns: 1fr;
   }
