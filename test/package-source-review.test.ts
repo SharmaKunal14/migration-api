@@ -135,29 +135,31 @@ describe('stage 8C package source review', () => {
     expect(migration).toContain("'package_source_mapping.disabled'");
   });
 
-  it('returns privacy-safe latest-snapshot usage aggregates and complete evidence fields', () => {
+  it('keeps provenance and usage available without putting them in the primary flow', () => {
     expect(repository).toContain('count(distinct latest.repository_id)::text as total');
     expect(repository).toContain("snapshot.status = 'available'");
     expect(repository).toContain('repository.selected');
-    expect(operatorUi).toContain('Registry evidence retrieved');
-    expect(operatorUi).toContain('Repositories using package');
-    expect(operatorUi).toContain('Proposed because:');
-    expect(operatorUi).toContain('Release feed');
-    expect(operatorUi).toContain('Migration documentation');
+    expect(operatorUi).toContain('Technical details and controls');
+    expect(operatorUi).toContain('Registry checked');
+    expect(operatorUi).toContain('Dependency use');
+    expect(operatorUi).toContain('Why this source?');
   });
 
-  it('renders review decisions as neutral controls and shows progress only while active', () => {
-    expect(operatorUi).toContain('className="review-decision-button"');
+  it('renders clear source decisions and shows progress only while active', () => {
+    expect(operatorUi).toContain('className="source-confirm-button"');
+    expect(operatorUi).toContain('className="source-reject-button"');
     expect(operatorUi).toContain("busyOperation.action === 'approve'");
     expect(operatorUi).toContain("busyOperation.action === 'reject'");
-    expect(operatorStyles).toContain('.review-decision-button:disabled');
+    expect(operatorStyles).toContain('.source-confirm-button:disabled');
     expect(operatorStyles).toContain('cursor: not-allowed');
-    expect(operatorStyles).toContain(".review-decision-button[aria-busy='true']");
+    expect(operatorStyles).toContain(".source-confirm-button[aria-busy='true']");
   });
 
   it('keeps the normal review path short without weakening explicit trust', () => {
-    expect(operatorUi).toContain('Approval trusts only the exact URL shown.');
-    expect(operatorUi).toContain('Use a different official URL');
+    expect(operatorUi).toContain('Confirm source');
+    expect(operatorUi).toContain('Not official');
+    expect(operatorUi).toContain('Suggest a different URL');
+    expect(operatorUi).toContain('The npm registry is the standard version feed');
     expect(operatorUi).not.toContain('Confirm the package publisher');
     expect(operatorUi).not.toContain('Official website domain');
     expect(exactApprovalMigration).toContain("'approval_scope', 'exact_url'");
@@ -166,6 +168,25 @@ describe('stage 8C package source review', () => {
     );
     expect(exactApprovalMigration).toContain('current_candidate.canonical_url');
     expect(exactApprovalMigration).not.toContain('p_official_domains');
+  });
+
+  it('keeps partially reviewed packages in the operator queue', () => {
+    expect(operatorUi).toContain(
+      "loadPackageSourceMappings(session.access_token, 'mapped')",
+    );
+    expect(operatorUi).toContain('candidate.canPromote &&');
+    expect(operatorUi).toContain("candidate.reviewState === 'pending_review'");
+    expect(operatorUi).toContain("status === 'mapped'");
+    expect(operatorUi).toContain('!candidate.canPromote ||');
+    expect(operatorUi).toContain("candidate.reviewState !== 'pending_review'");
+  });
+
+  it('does not present non-monitoring metadata links as approval work', () => {
+    expect(operatorUi).toContain(
+      'const reviewableCandidates = mapping.candidates.filter(',
+    );
+    expect(operatorUi).toContain('candidate => candidate.canPromote');
+    expect(operatorUi).toContain('reviewableCandidates.map(candidate =>');
   });
 
   it('does not misreport unrelated database permission failures as operator denial', () => {
