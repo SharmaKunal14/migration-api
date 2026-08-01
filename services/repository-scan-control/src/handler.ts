@@ -19,6 +19,7 @@ import {
 import { createDatabase, type AppDatabase } from '@migration/database';
 import { isRepositoryScannable } from '@migration/domain';
 import { writeLog } from '@migration/observability';
+import { observeNpmPackageSources } from '@migration/package-source-discovery';
 
 const MAX_RESULT_BYTES = 1024 * 1024;
 
@@ -329,6 +330,11 @@ async function persistSuccess(
         .where('id', '=', snapshotId)
         .executeTakeFirstOrThrow();
     }
+    await observeNpmPackageSources(
+      transaction,
+      inventoryResult.observations.map(observation => observation.packageName),
+      observedAt,
+    );
     await reconcileCandidatesForRepository(
       transaction,
       workflow.repositoryId,

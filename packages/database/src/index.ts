@@ -321,6 +321,22 @@ export interface VendorReleaseTable {
   createdAt: Timestamp;
 }
 
+export interface PackageSourceMappingTable {
+  id: string;
+  ecosystem: 'npm';
+  packageName: string;
+  status: 'pending_registry_lookup' | 'needs_review' | 'mapped' | 'rejected' | 'failed';
+  apiProductId: string | null;
+  attemptCount: number;
+  safeErrorCode: string | null;
+  firstObservedAt: Timestamp;
+  lastObservedAt: Timestamp;
+  lastCheckedAt: Timestamp | null;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+  version: number;
+}
+
 export interface MigrationSpecificationTable {
   id: string;
   vendorReleaseId: string;
@@ -830,6 +846,7 @@ export interface Database {
   apiProducts: ApiProductTable;
   vendorSources: VendorSourceTable;
   vendorReleases: VendorReleaseTable;
+  packageSourceMappings: PackageSourceMappingTable;
   migrationSpecifications: MigrationSpecificationTable;
   migrationCandidates: MigrationCandidateTable;
   impactReports: ImpactReportTable;
