@@ -1320,7 +1320,6 @@ export class ApiRepository implements ApiRepositoryPort {
             'mapping.version as mappingVersion',
           ])
           .where('candidate.id', '=', input.candidateId)
-          .forUpdate()
           .executeTakeFirst();
         if (!current) {
           throw new DomainError(

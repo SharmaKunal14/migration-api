@@ -175,4 +175,15 @@ describe('stage 8C package source review', () => {
     expect(repository).toContain("postgresErrorMessage(error) ?? ''");
     expect(repository).toContain('packageSourceReviewPermissionCode(failureStage)');
   });
+
+  it('leaves authoritative review locking inside the security-definer function', () => {
+    const preflightStart = repository.indexOf("failureStage = 'candidate_load'");
+    const approvalStart = repository.indexOf("failureStage = 'approval_function'");
+    expect(preflightStart).toBeGreaterThanOrEqual(0);
+    expect(approvalStart).toBeGreaterThan(preflightStart);
+    expect(repository.slice(preflightStart, approvalStart)).not.toContain(
+      '.forUpdate()',
+    );
+    expect(exactApprovalMigration).toContain('for update;');
+  });
 });
