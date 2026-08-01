@@ -365,8 +365,9 @@ function PackageSourceReviewPage(): React.JSX.Element {
       <p className="eyebrow">Platform operator</p>
       <h1>Package source review</h1>
       <p className="lede">
-        Promote only evidence that you have independently verified as an official
-        package registry or SDK repository source. Approval trusts the exact URL shown.
+        Confirm who publishes each package, then approve only the official sources. Most
+        reviews need a publisher and one source decision; replacement and polling
+        controls stay under advanced options.
       </p>
       <div className="queue-filters" aria-label="Package source queue filters">
         {(['needs_review', 'mapped', 'rejected', 'disabled'] as const).map(value => (
@@ -423,17 +424,27 @@ function PackageSourceMappingCard({
   readonly catalogVendors: readonly PublicPackageSourceVendor[];
   readonly onReviewed: () => void;
 }): React.JSX.Element {
+  const matchingCatalogProduct = catalogProducts.find(
+    product =>
+      product.packageName === mapping.packageName &&
+      product.productStatus === 'active' &&
+      product.vendorTrustState !== 'disabled',
+  );
   const [catalogMode, setCatalogMode] = useState<
     'existing_product' | 'existing_vendor' | 'new_vendor'
-  >(mapping.apiProductId ? 'existing_product' : 'new_vendor');
+  >(mapping.apiProductId || matchingCatalogProduct ? 'existing_product' : 'new_vendor');
   const [selectedProductId, setSelectedProductId] = useState(
-    mapping.apiProductId ?? '',
+    mapping.apiProductId ?? matchingCatalogProduct?.apiProductId ?? '',
   );
   const [selectedVendorId, setSelectedVendorId] = useState(mapping.vendorId ?? '');
-  const [vendorSlug, setVendorSlug] = useState(mapping.vendorSlug ?? '');
+  const [vendorSlug, setVendorSlug] = useState(
+    mapping.vendorSlug ?? packagePublisherSlug('', mapping.packageName),
+  );
   const [vendorName, setVendorName] = useState(mapping.vendorName ?? '');
   const [officialDomains, setOfficialDomains] = useState('');
-  const [approveCandidateDomain, setApproveCandidateDomain] = useState(false);
+  const [approvedCandidateDomains, setApprovedCandidateDomains] = useState<
+    ReadonlySet<string>
+  >(new Set());
   const [pollIntervalSeconds, setPollIntervalSeconds] = useState(86_400);
   const [rejectionReasonCode, setRejectionReasonCode] = useState<
     'NOT_OFFICIAL' | 'DUPLICATE' | 'UNSUPPORTED_SOURCE'
@@ -450,6 +461,7 @@ function PackageSourceMappingCard({
   const [disabledReasonCode, setDisabledReasonCode] = useState<
     'OPERATOR_DISABLED' | 'PACKAGE_UNSUPPORTED' | 'SECURITY_CONCERN'
   >('OPERATOR_DISABLED');
+  const [rejectingCandidateId, setRejectingCandidateId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const selectedCatalogDomains =
     catalogMode === 'existing_product'
@@ -459,11 +471,54 @@ function PackageSourceMappingCard({
         ? catalogVendors.find(vendor => vendor.vendorId === selectedVendorId)
             ?.officialDomains
         : undefined;
+  const effectiveCatalogDomains =
+    selectedCatalogDomains ??
+    officialDomains
+      .split(',')
+      .map(value => value.trim().toLowerCase())
+      .filter(Boolean);
+  const catalogSelection =
+    catalogMode === 'existing_product'
+      ? `product:${selectedProductId}`
+      : catalogMode === 'existing_vendor'
+        ? `vendor:${selectedVendorId}`
+        : 'new_vendor';
+
+  function approvalBlocker(candidate: PublicPackageSourceCandidate): string | null {
+    if (!candidate.canPromote) {
+      return 'This source type cannot be promoted.';
+    }
+    if (catalogMode === 'existing_product' && !selectedProductId) {
+      return 'Select the package owner before approving this source.';
+    }
+    if (catalogMode === 'existing_vendor' && !selectedVendorId) {
+      return 'Select the package owner before approving this source.';
+    }
+    if (
+      catalogMode === 'new_vendor' &&
+      (!vendorName.trim() || !vendorSlug || effectiveCatalogDomains.length === 0)
+    ) {
+      return 'Enter the publisher name and official website domain before approving.';
+    }
+    if (
+      candidate.sourceKind !== 'package_registry_release' &&
+      !effectiveCatalogDomains.includes(candidate.canonicalDomain) &&
+      !approvedCandidateDomains.has(candidate.id)
+    ) {
+      return `Confirm that ${candidate.canonicalDomain} is an official publisher domain.`;
+    }
+    return null;
+  }
 
   async function review(
     candidate: PublicPackageSourceCandidate,
     decision: 'approve' | 'reject',
   ): Promise<void> {
+    const blocker = decision === 'approve' ? approvalBlocker(candidate) : null;
+    if (blocker) {
+      setError(blocker);
+      return;
+    }
     setBusyOperation({ targetId: candidate.id, action: decision });
     setError(null);
     try {
@@ -493,7 +548,7 @@ function PackageSourceMappingCard({
               approveCandidateDomain:
                 candidate.sourceKind === 'package_registry_release'
                   ? false
-                  : approveCandidateDomain,
+                  : approvedCandidateDomains.has(candidate.id),
               pollIntervalSeconds,
             }
           : {
@@ -677,29 +732,33 @@ function PackageSourceMappingCard({
         mapping.candidates.some(
           candidate => candidate.reviewState === 'pending_review',
         ) && (
-          <div className="package-source-vendor-fields">
-            <label>
-              Catalog binding
-              <select
-                value={catalogMode}
-                onChange={event =>
-                  setCatalogMode(event.target.value as typeof catalogMode)
-                }
-              >
-                <option value="new_vendor">Create vendor and product</option>
-                <option value="existing_vendor">Existing vendor, new product</option>
-                <option value="existing_product">Existing product</option>
-              </select>
-            </label>
-            {catalogMode === 'existing_product' && (
+          <section className="package-source-setup">
+            <div>
+              <h3>Confirm the package publisher</h3>
+              <p className="fine-print">
+                This one-time identity check prevents an unrelated project from being
+                treated as the official source for {mapping.packageName}.
+              </p>
+            </div>
+            <div className="package-source-vendor-fields">
               <label>
-                Existing API product
+                Publisher
                 <select
-                  required
-                  value={selectedProductId}
-                  onChange={event => setSelectedProductId(event.target.value)}
+                  value={catalogSelection}
+                  onChange={event => {
+                    const selection = event.target.value;
+                    if (selection === 'new_vendor') {
+                      setCatalogMode('new_vendor');
+                    } else if (selection.startsWith('product:')) {
+                      setCatalogMode('existing_product');
+                      setSelectedProductId(selection.slice('product:'.length));
+                    } else if (selection.startsWith('vendor:')) {
+                      setCatalogMode('existing_vendor');
+                      setSelectedVendorId(selection.slice('vendor:'.length));
+                    }
+                  }}
                 >
-                  <option value="">Select product</option>
+                  <option value="new_vendor">Add a new publisher</option>
                   {catalogProducts
                     .filter(
                       product =>
@@ -708,105 +767,84 @@ function PackageSourceMappingCard({
                         product.vendorTrustState !== 'disabled',
                     )
                     .map(product => (
-                      <option key={product.apiProductId} value={product.apiProductId}>
-                        {product.vendorName} · {product.packageName}
+                      <option
+                        key={product.apiProductId}
+                        value={`product:${product.apiProductId}`}
+                      >
+                        {product.vendorName} · existing package
                       </option>
                     ))}
-                </select>
-              </label>
-            )}
-            {catalogMode === 'existing_vendor' && (
-              <label>
-                Existing vendor
-                <select
-                  required
-                  value={selectedVendorId}
-                  onChange={event => setSelectedVendorId(event.target.value)}
-                >
-                  <option value="">Select vendor</option>
                   {catalogVendors
                     .filter(vendor => vendor.vendorTrustState !== 'disabled')
                     .map(vendor => (
-                      <option key={vendor.vendorId} value={vendor.vendorId}>
-                        {vendor.vendorName} · {vendor.vendorSlug}
+                      <option key={vendor.vendorId} value={`vendor:${vendor.vendorId}`}>
+                        {vendor.vendorName} · existing publisher
                       </option>
                     ))}
                 </select>
               </label>
-            )}
-            {catalogMode === 'new_vendor' && (
-              <>
-                <label>
-                  Vendor slug
-                  <input
-                    required
-                    pattern="[a-z][a-z0-9-]{1,62}"
-                    value={vendorSlug}
-                    onChange={event => setVendorSlug(event.target.value)}
-                  />
-                </label>
-                <label>
-                  Official vendor domains
-                  <input
-                    required
-                    placeholder="vendor.example, docs.vendor.example"
-                    value={officialDomains}
-                    onChange={event => setOfficialDomains(event.target.value)}
-                  />
-                </label>
-              </>
-            )}
+              {catalogMode === 'new_vendor' && (
+                <>
+                  <label>
+                    Publisher name
+                    <input
+                      maxLength={120}
+                      placeholder="DefinitelyTyped"
+                      value={vendorName}
+                      onChange={event => {
+                        setVendorName(event.target.value);
+                        setVendorSlug(
+                          packagePublisherSlug(event.target.value, mapping.packageName),
+                        );
+                      }}
+                    />
+                  </label>
+                  <label>
+                    Official website domain
+                    <input
+                      placeholder="definitelytyped.org"
+                      value={officialDomains}
+                      onChange={event => setOfficialDomains(event.target.value)}
+                    />
+                  </label>
+                </>
+              )}
+            </div>
             {selectedCatalogDomains && (
               <p className="catalog-domain-summary">
-                Approved domains: {selectedCatalogDomains.join(', ')}
+                Trusted domains: {selectedCatalogDomains.join(', ')}
               </p>
             )}
-            {catalogMode === 'new_vendor' && (
-              <label>
-                Vendor name
-                <input
-                  required
-                  maxLength={120}
-                  value={vendorName}
-                  onChange={event => setVendorName(event.target.value)}
-                />
-              </label>
-            )}
-            <label>
-              Poll interval (seconds)
-              <input
-                required
-                type="number"
-                min={3600}
-                max={2592000}
-                value={pollIntervalSeconds}
-                onChange={event => setPollIntervalSeconds(Number(event.target.value))}
-              />
-            </label>
-            <label>
-              Rejection reason
-              <select
-                value={rejectionReasonCode}
-                onChange={event =>
-                  setRejectionReasonCode(
-                    event.target.value as typeof rejectionReasonCode,
-                  )
-                }
-              >
-                <option value="NOT_OFFICIAL">Not official</option>
-                <option value="DUPLICATE">Duplicate</option>
-                <option value="UNSUPPORTED_SOURCE">Unsupported source</option>
-              </select>
-            </label>
-            <label className="checkbox-label">
-              <input
-                type="checkbox"
-                checked={approveCandidateDomain}
-                onChange={event => setApproveCandidateDomain(event.target.checked)}
-              />
-              Explicitly add the candidate domain to the selected vendor
-            </label>
-          </div>
+            <details className="review-advanced">
+              <summary>Advanced catalogue settings</summary>
+              <div className="package-source-vendor-fields">
+                {catalogMode === 'new_vendor' && (
+                  <label>
+                    Internal publisher slug
+                    <input
+                      pattern="[a-z][a-z0-9-]{1,62}"
+                      value={vendorSlug}
+                      onChange={event => setVendorSlug(event.target.value)}
+                    />
+                  </label>
+                )}
+                <label>
+                  Check for releases every
+                  <select
+                    value={pollIntervalSeconds}
+                    onChange={event =>
+                      setPollIntervalSeconds(Number(event.target.value))
+                    }
+                  >
+                    <option value={21_600}>6 hours</option>
+                    <option value={43_200}>12 hours</option>
+                    <option value={86_400}>Daily</option>
+                    <option value={604_800}>Weekly</option>
+                  </select>
+                </label>
+              </div>
+            </details>
+          </section>
         )}
       <div className="package-source-candidates">
         {mapping.candidates.map(candidate => (
@@ -826,17 +864,34 @@ function PackageSourceMappingCard({
             {candidate.reviewState === 'pending_review' &&
               mapping.status !== 'disabled' && (
                 <div className="review-actions">
+                  {candidate.sourceKind !== 'package_registry_release' &&
+                    !effectiveCatalogDomains.includes(candidate.canonicalDomain) && (
+                      <label className="candidate-domain-confirmation">
+                        <input
+                          type="checkbox"
+                          checked={approvedCandidateDomains.has(candidate.id)}
+                          onChange={event => {
+                            setApprovedCandidateDomains(current => {
+                              const next = new Set(current);
+                              if (event.target.checked) next.add(candidate.id);
+                              else next.delete(candidate.id);
+                              return next;
+                            });
+                          }}
+                        />
+                        I verified that {candidate.canonicalDomain} is an official
+                        domain for this publisher
+                      </label>
+                    )}
+                  {approvalBlocker(candidate) && (
+                    <p className="approval-requirement">
+                      Before approval: {approvalBlocker(candidate)}
+                    </p>
+                  )}
                   <button
                     className="review-decision-button"
                     type="button"
-                    disabled={
-                      !candidate.canPromote ||
-                      busyOperation !== null ||
-                      (catalogMode === 'existing_product' && !selectedProductId) ||
-                      (catalogMode === 'existing_vendor' && !selectedVendorId) ||
-                      (catalogMode === 'new_vendor' &&
-                        (!vendorSlug || !vendorName || !officialDomains.trim()))
-                    }
+                    disabled={!candidate.canPromote || busyOperation !== null}
                     aria-busy={
                       busyOperation?.targetId === candidate.id &&
                       busyOperation.action === 'approve'
@@ -846,73 +901,110 @@ function PackageSourceMappingCard({
                     {busyOperation?.targetId === candidate.id &&
                     busyOperation.action === 'approve'
                       ? 'Approving…'
-                      : 'Approve exact source'}
+                      : 'Approve source'}
                   </button>
                   <button
                     className="review-decision-button"
                     type="button"
                     disabled={busyOperation !== null}
-                    aria-busy={
-                      busyOperation?.targetId === candidate.id &&
-                      busyOperation.action === 'reject'
+                    aria-expanded={rejectingCandidateId === candidate.id}
+                    onClick={() =>
+                      setRejectingCandidateId(current =>
+                        current === candidate.id ? null : candidate.id,
+                      )
                     }
-                    onClick={() => void review(candidate, 'reject')}
                   >
-                    {busyOperation?.targetId === candidate.id &&
-                    busyOperation.action === 'reject'
-                      ? 'Rejecting…'
-                      : 'Reject'}
+                    Reject
                   </button>
-                  {candidate.sourceKind !== 'package_registry_release' && (
-                    <div className="replacement-controls">
-                      <select
-                        aria-label="Replacement source type"
-                        value={replacementKind}
-                        onChange={event =>
-                          setReplacementKind(
-                            event.target.value as typeof replacementKind,
-                          )
-                        }
-                      >
-                        <option value="sdk_repository_release">SDK repository</option>
-                        <option value="changelog">Changelog</option>
-                        <option value="release_feed">Release feed</option>
-                        <option value="migration_guide">Migration documentation</option>
-                      </select>
-                      <input
-                        aria-label="Replacement URL"
-                        type="url"
-                        placeholder="https://vendor.example/releases"
-                        value={replacementUrl}
-                        onChange={event => setReplacementUrl(event.target.value)}
-                      />
-                      <input
-                        aria-label="Replacement reason"
-                        maxLength={500}
-                        placeholder="Why this is the official replacement"
-                        value={replacementNote}
-                        onChange={event => setReplacementNote(event.target.value)}
-                      />
+                  {rejectingCandidateId === candidate.id && (
+                    <div className="decision-confirmation">
+                      <label>
+                        Reason
+                        <select
+                          value={rejectionReasonCode}
+                          onChange={event =>
+                            setRejectionReasonCode(
+                              event.target.value as typeof rejectionReasonCode,
+                            )
+                          }
+                        >
+                          <option value="NOT_OFFICIAL">Not official</option>
+                          <option value="DUPLICATE">Duplicate</option>
+                          <option value="UNSUPPORTED_SOURCE">Unsupported source</option>
+                        </select>
+                      </label>
                       <button
                         className="secondary-button"
                         type="button"
-                        disabled={
-                          busyOperation !== null ||
-                          !replacementUrl ||
-                          !replacementNote.trim()
-                        }
+                        disabled={busyOperation !== null}
                         aria-busy={
                           busyOperation?.targetId === candidate.id &&
-                          busyOperation.action === 'replace'
+                          busyOperation.action === 'reject'
                         }
-                        onClick={() => void replace(candidate)}
+                        onClick={() => void review(candidate, 'reject')}
                       >
                         {busyOperation?.targetId === candidate.id &&
-                        busyOperation.action === 'replace'
-                          ? 'Replacing…'
-                          : 'Replace candidate'}
+                        busyOperation.action === 'reject'
+                          ? 'Rejecting…'
+                          : 'Confirm rejection'}
                       </button>
                     </div>
+                  )}
+                  {candidate.sourceKind !== 'package_registry_release' && (
+                    <details className="candidate-advanced">
+                      <summary>Use a different official URL</summary>
+                      <div className="replacement-controls">
+                        <select
+                          aria-label="Replacement source type"
+                          value={replacementKind}
+                          onChange={event =>
+                            setReplacementKind(
+                              event.target.value as typeof replacementKind,
+                            )
+                          }
+                        >
+                          <option value="sdk_repository_release">SDK repository</option>
+                          <option value="changelog">Changelog</option>
+                          <option value="release_feed">Release feed</option>
+                          <option value="migration_guide">
+                            Migration documentation
+                          </option>
+                        </select>
+                        <input
+                          aria-label="Replacement URL"
+                          type="url"
+                          placeholder="https://vendor.example/releases"
+                          value={replacementUrl}
+                          onChange={event => setReplacementUrl(event.target.value)}
+                        />
+                        <input
+                          aria-label="Replacement reason"
+                          maxLength={500}
+                          placeholder="Why this is the official replacement"
+                          value={replacementNote}
+                          onChange={event => setReplacementNote(event.target.value)}
+                        />
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={
+                            busyOperation !== null ||
+                            !replacementUrl ||
+                            !replacementNote.trim()
+                          }
+                          aria-busy={
+                            busyOperation?.targetId === candidate.id &&
+                            busyOperation.action === 'replace'
+                          }
+                          onClick={() => void replace(candidate)}
+                        >
+                          {busyOperation?.targetId === candidate.id &&
+                          busyOperation.action === 'replace'
+                            ? 'Replacing…'
+                            : 'Replace candidate'}
+                        </button>
+                      </div>
+                    </details>
                   )}
                 </div>
               )}
@@ -3256,4 +3348,19 @@ function packageSourceProposalText(
     OPERATOR_REPLACEMENT: 'a platform operator proposed a reviewed replacement',
   };
   return descriptions[code];
+}
+
+function packagePublisherSlug(name: string, packageName: string): string {
+  const packagePublisher = packageName.startsWith('@')
+    ? (packageName.slice(1).split('/')[0] ?? '')
+    : packageName;
+  let slug = (name.trim() || packagePublisher)
+    .normalize('NFKD')
+    .replace(/\p{M}/gu, '')
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/gu, '-')
+    .replace(/^-+|-+$/gu, '');
+  if (!/^[a-z]/u.test(slug)) slug = `publisher-${slug}`;
+  slug = slug.slice(0, 63).replace(/-+$/u, '');
+  return slug.length >= 2 ? slug : `${slug || 'publisher'}-package`.slice(0, 63);
 }

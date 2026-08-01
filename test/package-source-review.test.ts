@@ -161,4 +161,16 @@ describe('stage 8C package source review', () => {
     expect(operatorStyles).toContain('cursor: not-allowed');
     expect(operatorStyles).toContain(".review-decision-button[aria-busy='true']");
   });
+
+  it('keeps the normal review path short without weakening explicit trust', () => {
+    expect(operatorUi).toContain('Confirm the package publisher');
+    expect(operatorUi).toContain('Publisher name');
+    expect(operatorUi).toContain('Official website domain');
+    expect(operatorUi).toContain('Advanced catalogue settings');
+    expect(operatorUi).toContain('Use a different official URL');
+    expect(operatorUi).toContain('is an official');
+    expect(operatorUi).toContain('domain for this publisher');
+    expect(operatorUi).not.toContain('Poll interval (seconds)');
+    expect(operatorUi).not.toContain('Catalog binding');
+  });
 });
