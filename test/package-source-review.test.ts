@@ -15,6 +15,10 @@ const migration = readFileSync(
   ),
   'utf8',
 );
+const operatorReadMigration = readFileSync(
+  new URL('../supabase/migrations/0025_stage_8c_operator_reads.sql', import.meta.url),
+  'utf8',
+);
 const repository = readFileSync(
   new URL('../services/api/src/repository.ts', import.meta.url),
   'utf8',
@@ -82,6 +86,16 @@ describe('stage 8C package source review', () => {
     );
     expect(migration).not.toContain('grant insert on package_source_candidates');
     expect(migration).not.toContain('grant update on package_source_candidates');
+  });
+
+  it('allows the runtime API to read only the global source-review tables', () => {
+    expect(operatorReadMigration).toContain('grant select on');
+    expect(operatorReadMigration).toContain('package_source_mappings');
+    expect(operatorReadMigration).toContain('package_source_candidates');
+    expect(operatorReadMigration).toContain('package_source_mapping_controls');
+    expect(operatorReadMigration).not.toMatch(/grant\s+(?:insert|update|delete)/u);
+    expect(operatorReadMigration).not.toContain('repositories');
+    expect(operatorReadMigration).not.toContain('dependency_observations');
   });
 
   it('requires explicit domain promotion and keeps npm registry domains separate', () => {
