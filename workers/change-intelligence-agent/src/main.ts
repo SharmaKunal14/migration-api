@@ -38,6 +38,9 @@ async function main(): Promise<void> {
       s3,
       config.ARTIFACT_BUCKET,
       config.VENDOR_RELEASE_ID,
+      config.API_PRODUCT_ID,
+      config.TARGET_VERSION,
+      new Set(config.ALLOWED_EVIDENCE_SOURCE_IDS),
       config.EVIDENCE_OBJECT_KEY,
       config.EVIDENCE_DIGEST,
     );
@@ -51,6 +54,14 @@ async function main(): Promise<void> {
       vendorReleaseId: config.VENDOR_RELEASE_ID,
       runId: config.CHANGE_INTELLIGENCE_RUN_ID,
       specificationRevision: config.SPECIFICATION_REVISION,
+      specificationSchemaVersion: config.SPECIFICATION_SCHEMA_VERSION,
+      policyVersion: config.CHANGE_INTELLIGENCE_POLICY_VERSION,
+      vendorSlug: config.VENDOR_SLUG,
+      vendorName: config.VENDOR_NAME,
+      ecosystem: config.ECOSYSTEM,
+      packageIdentifier: config.PACKAGE_IDENTIFIER,
+      sourceCompatibility: config.SOURCE_COMPATIBILITY,
+      targetVersion: config.TARGET_VERSION,
     });
     result = await new ChangeIntelligenceKernel(gateway, tools).run({
       vendorReleaseId: config.VENDOR_RELEASE_ID,
@@ -58,6 +69,14 @@ async function main(): Promise<void> {
       evidenceObjectKey: config.EVIDENCE_OBJECT_KEY,
       evidenceDigest: config.EVIDENCE_DIGEST,
       requestedModel: config.OPENAI_MODEL,
+      budget: {
+        maximumModelCalls: config.MAXIMUM_MODEL_CALLS,
+        maximumToolCalls: config.MAXIMUM_TOOL_CALLS,
+        maximumIterations: config.MAXIMUM_ITERATIONS,
+        maximumInputTokens: config.MAXIMUM_INPUT_TOKENS,
+        maximumOutputTokens: config.MAXIMUM_OUTPUT_TOKENS,
+        maximumWallClockMilliseconds: config.MAXIMUM_WALL_CLOCK_MILLISECONDS,
+      },
     });
   } catch (error) {
     failure = classifyChangeIntelligenceFailure(error);
@@ -86,7 +105,9 @@ async function main(): Promise<void> {
       ServerSideEncryption: 'aws:kms',
       SSEKMSKeyId: config.ARTIFACT_KMS_KEY_ARN,
       Metadata: {
-        'schema-version': '1.0',
+        'schema-version': config.SPECIFICATION_SCHEMA_VERSION,
+        'policy-version': config.CHANGE_INTELLIGENCE_POLICY_VERSION,
+        'api-product-id': config.API_PRODUCT_ID,
         'vendor-release-id': config.VENDOR_RELEASE_ID,
         'change-intelligence-run-id': config.CHANGE_INTELLIGENCE_RUN_ID,
       },

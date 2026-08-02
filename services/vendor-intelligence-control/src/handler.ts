@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import type { Context } from 'aws-lambda';
 import { sql } from 'kysely';
+import { valid, validRange } from 'semver';
 import { z } from 'zod';
 
 import {
@@ -24,6 +25,22 @@ import { writeLog } from '@migration/observability';
 
 const MAXIMUM_RESULT_BYTES = 1024 * 1024;
 const STALE_RUN_MILLISECONDS = 20 * 60 * 1_000;
+
+type TrustedChangeIntelligenceContext = Pick<
+  ChangeIntelligencePreparedInput,
+  | 'apiProductId'
+  | 'vendorSlug'
+  | 'vendorName'
+  | 'ecosystem'
+  | 'packageIdentifier'
+  | 'sourceCompatibility'
+  | 'targetVersion'
+  | 'allowedEvidenceSourceIds'
+  | 'specificationSchemaVersion'
+  | 'policyVersion'
+  | 'requestedModel'
+  | 'budget'
+>;
 
 const commandSchema = z.discriminatedUnion('operation', [
   z
@@ -131,13 +148,16 @@ async function prepareRun(
       .select([
         'release.id',
         'release.version',
+        'release.sourceCompatibility',
         'release.processingState',
         'release.evidenceObjectKey',
         'release.evidenceDigest',
         'product.ecosystem',
+        'product.id as apiProductId',
         'product.canonicalIdentifier',
         'product.status as productStatus',
         'vendor.slug as vendorSlug',
+        'vendor.name as vendorName',
         'vendor.trustState as vendorTrustState',
       ])
       .where('release.id', '=', workflow.vendorReleaseId)
@@ -147,14 +167,51 @@ async function prepareRun(
       release?.processingState !== 'validated' ||
       !release.evidenceObjectKey ||
       !release.evidenceDigest ||
+      !release.sourceCompatibility ||
+      !validRange(release.sourceCompatibility) ||
+      !valid(release.version) ||
       release.vendorTrustState !== 'trusted' ||
-      release.productStatus !== 'active' ||
-      release.vendorSlug !== 'orbitchat' ||
-      release.canonicalIdentifier !== '@orbitchat/sdk' ||
-      release.version !== '2.0.0'
+      release.productStatus !== 'active'
     ) {
       throw new VendorIntelligenceControlError('VENDOR_RELEASE_NOT_ANALYSABLE');
     }
+
+    const evidenceSources = await transaction
+      .selectFrom('vendorEvidenceItems as item')
+      .innerJoin('vendorSources as source', 'source.id', 'item.vendorSourceId')
+      .select('item.vendorSourceId')
+      .where('item.vendorReleaseId', '=', release.id)
+      .where('source.apiProductId', '=', release.apiProductId)
+      .where('source.trustState', '=', 'trusted')
+      .orderBy('item.vendorSourceId', 'asc')
+      .limit(50)
+      .execute();
+    if (evidenceSources.length === 0) {
+      throw new VendorIntelligenceControlError('VENDOR_RELEASE_EVIDENCE_INVALID');
+    }
+    const context: TrustedChangeIntelligenceContext = {
+      apiProductId: release.apiProductId,
+      vendorSlug: release.vendorSlug,
+      vendorName: release.vendorName,
+      ecosystem: release.ecosystem,
+      packageIdentifier: release.canonicalIdentifier,
+      sourceCompatibility: release.sourceCompatibility,
+      targetVersion: release.version,
+      allowedEvidenceSourceIds: evidenceSources.map(source => source.vendorSourceId),
+      specificationSchemaVersion: '1.0',
+      policyVersion: 'stage-8e-v1',
+      requestedModel: dependency.config.OPENAI_MODEL,
+      budget: {
+        maximumModelCalls: dependency.config.CHANGE_INTELLIGENCE_MAXIMUM_MODEL_CALLS,
+        maximumToolCalls: dependency.config.CHANGE_INTELLIGENCE_MAXIMUM_TOOL_CALLS,
+        maximumIterations: dependency.config.CHANGE_INTELLIGENCE_MAXIMUM_ITERATIONS,
+        maximumInputTokens: dependency.config.CHANGE_INTELLIGENCE_MAXIMUM_INPUT_TOKENS,
+        maximumOutputTokens:
+          dependency.config.CHANGE_INTELLIGENCE_MAXIMUM_OUTPUT_TOKENS,
+        maximumWallClockMilliseconds:
+          dependency.config.CHANGE_INTELLIGENCE_MAXIMUM_WALL_CLOCK_MILLISECONDS,
+      },
+    };
 
     const existing = await transaction
       .selectFrom('changeIntelligenceRuns')
@@ -181,6 +238,7 @@ async function prepareRun(
         .executeTakeFirstOrThrow();
       return prepared(
         workflow,
+        context,
         existing.id,
         release.evidenceObjectKey,
         release.evidenceDigest,
@@ -203,8 +261,8 @@ async function prepareRun(
       .selectFrom('migrationSpecifications')
       .select('revision')
       .where('vendorReleaseId', '=', release.id)
-      .where('sourceCompatibility', '=', '1.x')
-      .where('targetVersion', '=', '2.0.0')
+      .where('sourceCompatibility', '=', release.sourceCompatibility)
+      .where('targetVersion', '=', release.version)
       .orderBy('revision', 'desc')
       .executeTakeFirst();
     const specificationRevision = (latestSpecification?.revision ?? 0) + 1;
@@ -233,6 +291,7 @@ async function prepareRun(
         .executeTakeFirstOrThrow();
       return prepared(
         workflow,
+        context,
         existing.id,
         release.evidenceObjectKey,
         release.evidenceDigest,
@@ -275,6 +334,7 @@ async function prepareRun(
       .executeTakeFirstOrThrow();
     return prepared(
       workflow,
+      context,
       runId,
       release.evidenceObjectKey,
       release.evidenceDigest,
@@ -287,6 +347,7 @@ async function prepareRun(
 
 function prepared(
   workflow: ChangeIntelligenceWorkflowInput,
+  context: TrustedChangeIntelligenceContext,
   runId: string,
   evidenceObjectKey: string,
   evidenceDigest: string,
@@ -296,6 +357,7 @@ function prepared(
 ): ChangeIntelligencePreparedInput {
   return changeIntelligencePreparedInputSchema.parse({
     ...workflow,
+    ...context,
     changeIntelligenceRunId: runId,
     evidenceObjectKey,
     evidenceDigest,
@@ -338,7 +400,14 @@ async function readResult(
     result.vendorReleaseId !== workflow.vendorReleaseId ||
     result.changeIntelligenceRunId !== workflow.changeIntelligenceRunId ||
     result.evidenceObjectKey !== workflow.evidenceObjectKey ||
-    result.evidenceDigest !== workflow.evidenceDigest
+    result.evidenceDigest !== workflow.evidenceDigest ||
+    result.model.requestedModel !== workflow.requestedModel ||
+    result.usage.modelCalls > workflow.budget.maximumModelCalls ||
+    result.usage.toolCalls > workflow.budget.maximumToolCalls ||
+    result.usage.iterations > workflow.budget.maximumIterations ||
+    result.usage.inputTokens > workflow.budget.maximumInputTokens ||
+    result.usage.outputTokens > workflow.budget.maximumOutputTokens ||
+    result.usage.durationMs > workflow.budget.maximumWallClockMilliseconds
   ) {
     throw new VendorIntelligenceControlError(
       'CHANGE_INTELLIGENCE_RESULT_OWNERSHIP_INVALID',
@@ -410,7 +479,41 @@ async function verifySpecificationEvidence(
   workflow: ChangeIntelligencePreparedInput,
   specification: MigrationSpecification,
 ): Promise<void> {
+  const trusted = await database
+    .selectFrom('vendorReleases as release')
+    .innerJoin('apiProducts as product', 'product.id', 'release.apiProductId')
+    .innerJoin('vendors as vendor', 'vendor.id', 'product.vendorId')
+    .select([
+      'release.version',
+      'release.sourceCompatibility',
+      'product.id as apiProductId',
+      'product.ecosystem',
+      'product.canonicalIdentifier',
+      'product.status as productStatus',
+      'vendor.slug as vendorSlug',
+      'vendor.name as vendorName',
+      'vendor.trustState as vendorTrustState',
+    ])
+    .where('release.id', '=', workflow.vendorReleaseId)
+    .executeTakeFirst();
   if (
+    trusted?.apiProductId !== workflow.apiProductId ||
+    trusted.vendorSlug !== workflow.vendorSlug ||
+    trusted.vendorName !== workflow.vendorName ||
+    trusted.canonicalIdentifier !== workflow.packageIdentifier ||
+    trusted.sourceCompatibility !== workflow.sourceCompatibility ||
+    trusted.version !== workflow.targetVersion ||
+    trusted.productStatus !== 'active' ||
+    trusted.vendorTrustState !== 'trusted'
+  ) {
+    throw new VendorIntelligenceControlError('MIGRATION_SPECIFICATION_CONTEXT_INVALID');
+  }
+  if (
+    specification.vendor.slug !== workflow.vendorSlug ||
+    specification.vendor.name !== workflow.vendorName ||
+    specification.product.identifier !== workflow.packageIdentifier ||
+    specification.sourceCompatibility !== workflow.sourceCompatibility ||
+    specification.targetVersion !== workflow.targetVersion ||
     specification.revision !== workflow.specificationRevision ||
     specification.trust.status !== 'draft' ||
     specification.trust.generatedBy !== 'change_intelligence_agent' ||
@@ -421,9 +524,22 @@ async function verifySpecificationEvidence(
   const evidence = await database
     .selectFrom('vendorEvidenceItems as item')
     .innerJoin('vendorSources as source', 'source.id', 'item.vendorSourceId')
-    .select(['source.sourceKey', 'item.canonicalUrl', 'item.digest'])
+    .select([
+      'source.id as sourceId',
+      'source.sourceKey',
+      'item.canonicalUrl',
+      'item.digest',
+    ])
     .where('item.vendorReleaseId', '=', workflow.vendorReleaseId)
+    .where('source.apiProductId', '=', workflow.apiProductId)
+    .where('source.trustState', '=', 'trusted')
+    .where('source.id', 'in', workflow.allowedEvidenceSourceIds)
     .execute();
+  if (evidence.length !== workflow.allowedEvidenceSourceIds.length) {
+    throw new VendorIntelligenceControlError(
+      'MIGRATION_SPECIFICATION_EVIDENCE_INVALID',
+    );
+  }
   const registered = new Map(evidence.map(item => [item.sourceKey, item] as const));
   if (!evidenceReferencesMatch(specification.evidence, registered)) {
     throw new VendorIntelligenceControlError(

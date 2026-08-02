@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 
 import {
   agentConfigSchema,
+  changeIntelligenceAgentConfigSchema,
   databaseCredentialSchema,
   dispatcherConfigSchema,
   githubAppSecretSchema,
@@ -59,6 +60,53 @@ describe('startup configuration', () => {
         VENDOR_RELEASE_ID: '914e7575-7dc8-40e4-9445-aa61bfdb4ade',
       }),
     ).toBeDefined();
+  });
+
+  it('parses a bounded, controller-approved change-intelligence context', () => {
+    const environment = {
+      APP_ENVIRONMENT: 'development',
+      AWS_REGION: 'ap-southeast-2',
+      ALLOWED_EVIDENCE_SOURCE_IDS: '["5bbb0741-98ec-4104-b19f-58ae8fc8b67f"]',
+      API_PRODUCT_ID: '16dca0bb-dd7d-4251-8e51-3c34816d5014',
+      ARTIFACT_BUCKET: 'migration-api-artifacts',
+      ARTIFACT_KMS_KEY_ARN: 'arn:aws:kms:ap-southeast-2:123456789012:key/example',
+      CHANGE_INTELLIGENCE_RUN_ID: '40ade5b7-e4c9-438f-90a2-4a1fb93c8124',
+      CHANGE_INTELLIGENCE_POLICY_VERSION: 'stage-8e-v1',
+      ECOSYSTEM: 'npm',
+      EVIDENCE_DIGEST: 'a'.repeat(64),
+      EVIDENCE_OBJECT_KEY: 'env/development/vendor/evidence.json',
+      MAXIMUM_INPUT_TOKENS: '60000',
+      MAXIMUM_ITERATIONS: '4',
+      MAXIMUM_MODEL_CALLS: '3',
+      MAXIMUM_OUTPUT_TOKENS: '12000',
+      MAXIMUM_TOOL_CALLS: '12',
+      MAXIMUM_WALL_CLOCK_MILLISECONDS: '300000',
+      OPENAI_IDENTITY_PROVIDER_ID: 'wip_example',
+      OPENAI_MODEL: 'gpt-5.6-sol',
+      OPENAI_PROJECT_ALIAS: 'development-agent',
+      OPENAI_SERVICE_ACCOUNT_ID: 'svc_example',
+      OPENAI_WIF_AUDIENCE: 'https://api.openai.com/v1',
+      PACKAGE_IDENTIFIER: '@acme/http-client',
+      RESULT_OBJECT_KEY: 'env/development/change-intelligence/result.json',
+      SOURCE_COMPATIBILITY: '^4.0.0',
+      SPECIFICATION_REVISION: '1',
+      SPECIFICATION_SCHEMA_VERSION: '1.0',
+      TARGET_VERSION: '5.0.0',
+      VENDOR_NAME: 'Acme Tools',
+      VENDOR_RELEASE_ID: '914e7575-7dc8-40e4-9445-aa61bfdb4ade',
+      VENDOR_SLUG: 'acme-tools',
+    } as const;
+
+    expect(
+      parseConfig(changeIntelligenceAgentConfigSchema, environment)
+        .ALLOWED_EVIDENCE_SOURCE_IDS,
+    ).toEqual(['5bbb0741-98ec-4104-b19f-58ae8fc8b67f']);
+    expect(() =>
+      parseConfig(changeIntelligenceAgentConfigSchema, {
+        ...environment,
+        ALLOWED_EVIDENCE_SOURCE_IDS: 'not-json',
+      }),
+    ).toThrow('Invalid service configuration: ALLOWED_EVIDENCE_SOURCE_IDS');
   });
 
   it('requires exact workflow ARNs for every outbox event type', () => {

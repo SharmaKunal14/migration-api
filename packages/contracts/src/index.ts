@@ -406,7 +406,12 @@ const migrationTransformationSchema = z
     kind: z.enum([
       'rename_symbol',
       'rename_field',
+      'replace_symbol',
+      'replace_field',
+      'remove_symbol',
+      'remove_field',
       'wrap_field',
+      'configuration_change',
       'runtime_requirement',
       'behavior_review',
     ]),
@@ -419,7 +424,16 @@ const migrationTransformationSchema = z
 const migrationSpecificationChangeSchema = z
   .object({
     changeId: z.string().regex(/^C-[0-9]{2,4}$/u),
-    category: z.enum(['request', 'response', 'runtime', 'behavior', 'deprecation']),
+    category: z.enum([
+      'request',
+      'response',
+      'runtime',
+      'behavior',
+      'deprecation',
+      'configuration',
+      'removal',
+      'replacement',
+    ]),
     summary: z.string().min(1).max(1_024),
     certainty: z.enum(['vendor_confirmed', 'ambiguous']),
     evidenceIds: z
@@ -711,6 +725,27 @@ export const changeIntelligencePreparedInputSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
     vendorReleaseId: uuidSchema,
+    apiProductId: uuidSchema,
+    vendorSlug: z.string().regex(/^[a-z][a-z0-9-]{1,62}$/u),
+    vendorName: z.string().min(1).max(120),
+    ecosystem: z.literal('npm'),
+    packageIdentifier: z.string().min(1).max(214),
+    sourceCompatibility: z.string().min(1).max(100),
+    targetVersion: z.string().min(1).max(100),
+    allowedEvidenceSourceIds: z.array(uuidSchema).min(1).max(50),
+    specificationSchemaVersion: z.literal('1.0'),
+    policyVersion: z.literal('stage-8e-v1'),
+    requestedModel: z.string().min(1).max(200),
+    budget: z
+      .object({
+        maximumModelCalls: z.number().int().min(1).max(3),
+        maximumToolCalls: z.number().int().min(1).max(12),
+        maximumIterations: z.number().int().min(1).max(4),
+        maximumInputTokens: z.number().int().min(1).max(60_000),
+        maximumOutputTokens: z.number().int().min(1).max(12_000),
+        maximumWallClockMilliseconds: z.number().int().min(1_000).max(300_000),
+      })
+      .strict(),
     changeIntelligenceRunId: uuidSchema,
     correlationId: uuidSchema,
     evidenceObjectKey: z.string().min(1).max(1_024),
@@ -719,7 +754,19 @@ export const changeIntelligencePreparedInputSchema = z
     resultObjectKey: z.string().min(1).max(1_024),
     alreadySucceeded: z.boolean(),
   })
-  .strict();
+  .strict()
+  .superRefine((input, context) => {
+    if (
+      new Set(input.allowedEvidenceSourceIds).size !==
+      input.allowedEvidenceSourceIds.length
+    ) {
+      context.addIssue({
+        code: 'custom',
+        message: 'Allowed evidence source IDs must be unique.',
+        path: ['allowedEvidenceSourceIds'],
+      });
+    }
+  });
 
 const changeIntelligenceActionSchema = z
   .object({

@@ -312,6 +312,7 @@ export interface VendorReleaseTable {
   id: string;
   apiProductId: string;
   version: string;
+  sourceCompatibility: string | null;
   revision: number;
   publishedAt: Timestamp | null;
   evidenceObjectKey: string | null;

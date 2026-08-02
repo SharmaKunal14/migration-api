@@ -26,6 +26,27 @@ const commonSchema = z.object({
   AWS_REGION: nonEmpty,
 });
 
+const jsonUuidArraySchema = z
+  .string()
+  .max(4_096)
+  .transform((value, context): unknown => {
+    try {
+      return JSON.parse(value) as unknown;
+    } catch {
+      context.addIssue({ code: 'custom', message: 'Expected a JSON UUID array.' });
+      return z.NEVER;
+    }
+  })
+  .pipe(
+    z
+      .array(z.uuid())
+      .min(1)
+      .max(50)
+      .refine(values => new Set(values).size === values.length, {
+        message: 'UUID array values must be unique.',
+      }),
+  );
+
 export const databaseCredentialSchema = z
   .object({
     host: nonEmpty,
@@ -181,23 +202,75 @@ export const vendorFetcherConfigSchema = commonSchema.extend({
 });
 
 export const changeIntelligenceAgentConfigSchema = commonSchema.extend({
+  ALLOWED_EVIDENCE_SOURCE_IDS: jsonUuidArraySchema,
+  API_PRODUCT_ID: z.uuid(),
   ARTIFACT_BUCKET: nonEmpty,
   ARTIFACT_KMS_KEY_ARN: awsArn,
   CHANGE_INTELLIGENCE_RUN_ID: z.uuid(),
+  CHANGE_INTELLIGENCE_POLICY_VERSION: z.literal('stage-8e-v1'),
+  ECOSYSTEM: z.literal('npm'),
   EVIDENCE_DIGEST: z.string().regex(/^[a-f0-9]{64}$/u),
   EVIDENCE_OBJECT_KEY: z.string().min(1).max(1_024),
+  MAXIMUM_INPUT_TOKENS: z.coerce.number().int().min(1).max(60_000),
+  MAXIMUM_ITERATIONS: z.coerce.number().int().min(1).max(4),
+  MAXIMUM_MODEL_CALLS: z.coerce.number().int().min(1).max(3),
+  MAXIMUM_OUTPUT_TOKENS: z.coerce.number().int().min(1).max(12_000),
+  MAXIMUM_TOOL_CALLS: z.coerce.number().int().min(1).max(12),
+  MAXIMUM_WALL_CLOCK_MILLISECONDS: z.coerce.number().int().min(1_000).max(300_000),
   OPENAI_IDENTITY_PROVIDER_ID: nonEmpty,
   OPENAI_MODEL: nonEmpty.default('gpt-5.6-sol'),
   OPENAI_PROJECT_ALIAS: z.string().regex(/^[a-z][a-z0-9-]{1,62}$/u),
   OPENAI_SERVICE_ACCOUNT_ID: nonEmpty,
   OPENAI_WIF_AUDIENCE: z.literal('https://api.openai.com/v1'),
+  PACKAGE_IDENTIFIER: z.string().min(1).max(214),
   RESULT_OBJECT_KEY: z.string().min(1).max(1_024),
+  SOURCE_COMPATIBILITY: z.string().min(1).max(100),
   SPECIFICATION_REVISION: z.coerce.number().int().positive(),
+  SPECIFICATION_SCHEMA_VERSION: z.literal('1.0'),
+  TARGET_VERSION: z.string().min(1).max(100),
+  VENDOR_NAME: z.string().min(1).max(120),
   VENDOR_RELEASE_ID: z.uuid(),
+  VENDOR_SLUG: z.string().regex(/^[a-z][a-z0-9-]{1,62}$/u),
 });
 
 export const vendorIntelligenceControlConfigSchema = commonSchema.extend({
   ARTIFACT_BUCKET: nonEmpty,
+  CHANGE_INTELLIGENCE_MAXIMUM_INPUT_TOKENS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(60_000)
+    .default(60_000),
+  CHANGE_INTELLIGENCE_MAXIMUM_ITERATIONS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(4)
+    .default(4),
+  CHANGE_INTELLIGENCE_MAXIMUM_MODEL_CALLS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(3)
+    .default(3),
+  CHANGE_INTELLIGENCE_MAXIMUM_OUTPUT_TOKENS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(12_000)
+    .default(12_000),
+  CHANGE_INTELLIGENCE_MAXIMUM_TOOL_CALLS: z.coerce
+    .number()
+    .int()
+    .min(1)
+    .max(12)
+    .default(12),
+  CHANGE_INTELLIGENCE_MAXIMUM_WALL_CLOCK_MILLISECONDS: z.coerce
+    .number()
+    .int()
+    .min(1_000)
+    .max(300_000)
+    .default(300_000),
   DATABASE_SECRET_ARN: awsArn,
   OPENAI_MODEL: nonEmpty.default('gpt-5.6-sol'),
 });

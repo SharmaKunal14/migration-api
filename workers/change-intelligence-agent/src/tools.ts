@@ -62,6 +62,9 @@ export class ChangeIntelligenceTools {
     private readonly s3: S3Client,
     private readonly bucket: string,
     private readonly releaseId: string,
+    private readonly apiProductId: string,
+    private readonly targetVersion: string,
+    private readonly allowedEvidenceSourceIds: ReadonlySet<string>,
     private readonly manifestObjectKey: string,
     private readonly manifestDigest: string,
   ) {}
@@ -91,8 +94,24 @@ export class ChangeIntelligenceTools {
       throw new ToolPolicyError('EVIDENCE_MANIFEST_INVALID');
     }
     const parsed = ingestedVendorEvidenceManifestSchema.safeParse(rawManifest);
-    if (!parsed.success || parsed.data.vendorReleaseId !== this.releaseId) {
+    if (
+      !parsed.success ||
+      parsed.data.vendorReleaseId !== this.releaseId ||
+      parsed.data.productId !== this.apiProductId ||
+      parsed.data.version !== this.targetVersion
+    ) {
       throw new ToolPolicyError('EVIDENCE_MANIFEST_INVALID');
+    }
+    const manifestSourceIds = new Set(
+      parsed.data.sources.map(source => source.vendorSourceId),
+    );
+    if (
+      manifestSourceIds.size !== this.allowedEvidenceSourceIds.size ||
+      [...manifestSourceIds].some(
+        sourceId => !this.allowedEvidenceSourceIds.has(sourceId),
+      )
+    ) {
+      throw new ToolPolicyError('EVIDENCE_SOURCE_NOT_ALLOWED');
     }
     if (
       parsed.data.sources.some(

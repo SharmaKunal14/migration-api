@@ -15,29 +15,20 @@ import {
 import { ToolPolicyError } from './tools.js';
 import type { ChangeIntelligenceTools } from './tools.js';
 
-const budgets = {
-  maximumModelCalls: 3,
-  maximumToolCalls: 12,
-  maximumIterations: 4,
-  maximumInputTokens: 60_000,
-  maximumOutputTokens: 12_000,
-  maximumWallClockMilliseconds: 5 * 60 * 1_000,
-} as const;
-
-const requiredEvidenceSourceKeys = new Set([
-  'release_metadata',
-  'migration_guide',
-  'changelog',
-  'v1_api',
-  'v2_api',
-]);
-
 export interface ChangeIntelligenceKernelInput {
   readonly vendorReleaseId: string;
   readonly changeIntelligenceRunId: string;
   readonly evidenceObjectKey: string;
   readonly evidenceDigest: string;
   readonly requestedModel: string;
+  readonly budget: {
+    readonly maximumModelCalls: number;
+    readonly maximumToolCalls: number;
+    readonly maximumIterations: number;
+    readonly maximumInputTokens: number;
+    readonly maximumOutputTokens: number;
+    readonly maximumWallClockMilliseconds: number;
+  };
 }
 
 export class ChangeIntelligenceKernel {
@@ -50,7 +41,7 @@ export class ChangeIntelligenceKernel {
     input: ChangeIntelligenceKernelInput,
   ): Promise<ChangeIntelligenceResult> {
     const startedAt = Date.now();
-    const deadline = startedAt + budgets.maximumWallClockMilliseconds;
+    const deadline = startedAt + input.budget.maximumWallClockMilliseconds;
     const actions: ChangeIntelligenceResult['actions'] = [];
     const modelInput = this.gateway.initialInput();
     const readSourceKeys = new Set<string>();
@@ -63,15 +54,15 @@ export class ChangeIntelligenceKernel {
     let returnedModel = input.requestedModel;
     let requestId: string | null = null;
 
-    while (iterations < budgets.maximumIterations) {
+    while (iterations < input.budget.maximumIterations) {
       iterations += 1;
       if (Date.now() >= deadline) {
         return envelope('failed', 'AGENT_TIME_BUDGET_EXHAUSTED', null);
       }
-      if (modelCalls >= budgets.maximumModelCalls) {
+      if (modelCalls >= input.budget.maximumModelCalls) {
         return envelope('failed', 'MODEL_CALL_BUDGET_EXHAUSTED', null);
       }
-      const remainingOutputTokens = budgets.maximumOutputTokens - outputTokens;
+      const remainingOutputTokens = input.budget.maximumOutputTokens - outputTokens;
       if (remainingOutputTokens <= 0) {
         return envelope('failed', 'OUTPUT_TOKEN_BUDGET_EXHAUSTED', null);
       }
@@ -86,10 +77,10 @@ export class ChangeIntelligenceKernel {
       requestId = turn.requestId;
       inputTokens += turn.inputTokens;
       outputTokens += turn.outputTokens;
-      if (inputTokens > budgets.maximumInputTokens) {
+      if (inputTokens > input.budget.maximumInputTokens) {
         return envelope('failed', 'INPUT_TOKEN_BUDGET_EXHAUSTED', null);
       }
-      if (outputTokens > budgets.maximumOutputTokens) {
+      if (outputTokens > input.budget.maximumOutputTokens) {
         return envelope('failed', 'OUTPUT_TOKEN_BUDGET_EXHAUSTED', null);
       }
 
@@ -97,12 +88,7 @@ export class ChangeIntelligenceKernel {
         (item): item is ResponseFunctionToolCall => item.type === 'function_call',
       );
       if (calls.length === 0) {
-        if (
-          !listedEvidence ||
-          [...requiredEvidenceSourceKeys].some(
-            sourceKey => !readSourceKeys.has(sourceKey),
-          )
-        ) {
+        if (!listedEvidence || readSourceKeys.size === 0) {
           return envelope('failed', 'EVIDENCE_TOOL_REQUIREMENTS_NOT_MET', null);
         }
         try {
@@ -128,7 +114,7 @@ export class ChangeIntelligenceKernel {
 
       modelInput.push(...calls);
       for (const call of calls) {
-        if (toolCalls >= budgets.maximumToolCalls) {
+        if (toolCalls >= input.budget.maximumToolCalls) {
           return envelope('failed', 'TOOL_CALL_BUDGET_EXHAUSTED', null);
         }
         toolCalls += 1;

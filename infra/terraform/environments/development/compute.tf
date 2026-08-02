@@ -518,11 +518,17 @@ resource "aws_lambda_function" "vendor_intelligence_control" {
 
   environment {
     variables = {
-      APP_ENVIRONMENT     = "development"
-      ARTIFACT_BUCKET     = aws_s3_bucket.artifacts.bucket
-      DATABASE_SECRET_ARN = var.database_secret_arn
-      OPENAI_MODEL        = var.openai_model
-      NODE_OPTIONS        = "--enable-source-maps"
+      APP_ENVIRONMENT                                     = "development"
+      ARTIFACT_BUCKET                                     = aws_s3_bucket.artifacts.bucket
+      DATABASE_SECRET_ARN                                 = var.database_secret_arn
+      OPENAI_MODEL                                        = var.openai_model
+      CHANGE_INTELLIGENCE_MAXIMUM_MODEL_CALLS             = "3"
+      CHANGE_INTELLIGENCE_MAXIMUM_TOOL_CALLS              = "12"
+      CHANGE_INTELLIGENCE_MAXIMUM_ITERATIONS              = "4"
+      CHANGE_INTELLIGENCE_MAXIMUM_INPUT_TOKENS            = "60000"
+      CHANGE_INTELLIGENCE_MAXIMUM_OUTPUT_TOKENS           = "12000"
+      CHANGE_INTELLIGENCE_MAXIMUM_WALL_CLOCK_MILLISECONDS = "300000"
+      NODE_OPTIONS                                        = "--enable-source-maps"
     }
   }
 
@@ -1531,6 +1537,23 @@ resource "aws_sfn_state_machine" "change_intelligence" {
               Name = "change-intelligence-agent"
               Environment = [
                 { Name = "VENDOR_RELEASE_ID", "Value.$" = "$.vendorReleaseId" },
+                { Name = "API_PRODUCT_ID", "Value.$" = "$.apiProductId" },
+                { Name = "VENDOR_SLUG", "Value.$" = "$.vendorSlug" },
+                { Name = "VENDOR_NAME", "Value.$" = "$.vendorName" },
+                { Name = "ECOSYSTEM", "Value.$" = "$.ecosystem" },
+                { Name = "PACKAGE_IDENTIFIER", "Value.$" = "$.packageIdentifier" },
+                { Name = "SOURCE_COMPATIBILITY", "Value.$" = "$.sourceCompatibility" },
+                { Name = "TARGET_VERSION", "Value.$" = "$.targetVersion" },
+                { Name = "ALLOWED_EVIDENCE_SOURCE_IDS", "Value.$" = "States.JsonToString($.allowedEvidenceSourceIds)" },
+                { Name = "SPECIFICATION_SCHEMA_VERSION", "Value.$" = "$.specificationSchemaVersion" },
+                { Name = "CHANGE_INTELLIGENCE_POLICY_VERSION", "Value.$" = "$.policyVersion" },
+                { Name = "OPENAI_MODEL", "Value.$" = "$.requestedModel" },
+                { Name = "MAXIMUM_MODEL_CALLS", "Value.$" = "States.Format('{}', $.budget.maximumModelCalls)" },
+                { Name = "MAXIMUM_TOOL_CALLS", "Value.$" = "States.Format('{}', $.budget.maximumToolCalls)" },
+                { Name = "MAXIMUM_ITERATIONS", "Value.$" = "States.Format('{}', $.budget.maximumIterations)" },
+                { Name = "MAXIMUM_INPUT_TOKENS", "Value.$" = "States.Format('{}', $.budget.maximumInputTokens)" },
+                { Name = "MAXIMUM_OUTPUT_TOKENS", "Value.$" = "States.Format('{}', $.budget.maximumOutputTokens)" },
+                { Name = "MAXIMUM_WALL_CLOCK_MILLISECONDS", "Value.$" = "States.Format('{}', $.budget.maximumWallClockMilliseconds)" },
                 { Name = "CHANGE_INTELLIGENCE_RUN_ID", "Value.$" = "$.changeIntelligenceRunId" },
                 { Name = "EVIDENCE_OBJECT_KEY", "Value.$" = "$.evidenceObjectKey" },
                 { Name = "EVIDENCE_DIGEST", "Value.$" = "$.evidenceDigest" },
