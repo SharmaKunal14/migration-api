@@ -1,3 +1,6 @@
+import { createHash } from 'node:crypto';
+
+import type { S3Client } from '@aws-sdk/client-s3';
 import { describe, expect, it, vi } from 'vitest';
 
 import {
@@ -13,9 +16,32 @@ import {
 
 import {
   bundleObjectKey,
+  readDetectedRegistryEvidence,
   resultObjectKey,
   sourceObjectKey,
 } from '../workers/vendor-fetcher/src/main.js';
+
+const detectedSourceId = '5bbb0741-98ec-4104-b19f-58ae8fc8b67f';
+const detectedPollRunId = '40ade5b7-e4c9-438f-90a2-4a1fb93c8124';
+const detectedObjectKey =
+  `env/development/package-release/npm/source/${detectedSourceId}` +
+  `/poll/${detectedPollRunId}/metadata.json`;
+
+function registryEvidenceClient(
+  body: Uint8Array,
+  digest: string,
+  overrides: Readonly<Record<string, unknown>> = {},
+): { readonly client: S3Client; readonly send: ReturnType<typeof vi.fn> } {
+  const send = vi.fn().mockResolvedValue({
+    ContentLength: body.byteLength,
+    ContentType: 'application/json',
+    Metadata: { digest, 'source-id': detectedSourceId },
+    ChecksumSHA256: Buffer.from(digest, 'hex').toString('base64'),
+    Body: { transformToByteArray: vi.fn().mockResolvedValue(body) },
+    ...overrides,
+  });
+  return { client: { send } as unknown as S3Client, send };
+}
 
 const source = {
   sourceKey: 'migration_guide',
@@ -278,5 +304,87 @@ describe('Stage 3B contracts and keys', () => {
   it('uses safe errors without exposing response content', () => {
     const error = new VendorEvidenceError('VENDOR_SOURCE_REQUEST_REJECTED');
     expect(error.message).toBe('The vendor evidence bundle is invalid.');
+  });
+});
+
+describe('Stage 8F detected registry evidence', () => {
+  const sourceDefinition = {
+    id: detectedSourceId,
+    sourceKey: 'package_registry',
+    canonicalUrl: 'https://registry.npmjs.org/%40types%2Fnode',
+    expectedMediaTypes: ['application/json'],
+  } as const;
+
+  it('reads only the immutable fixed-origin evidence object and verifies its digest', async () => {
+    const body = Buffer.from('{"dist-tags":{"latest":"24.0.0"}}', 'utf8');
+    const evidenceDigest = createHash('sha256').update(body).digest('hex');
+    const s3 = registryEvidenceClient(body, evidenceDigest);
+
+    await expect(
+      readDetectedRegistryEvidence(
+        s3.client,
+        'artifacts',
+        'development',
+        {
+          sourceId: detectedSourceId,
+          objectKey: detectedObjectKey,
+          digest: evidenceDigest,
+        },
+        sourceDefinition,
+      ),
+    ).resolves.toMatchObject({
+      canonicalUrl: sourceDefinition.canonicalUrl,
+      finalUrl: sourceDefinition.canonicalUrl,
+      digest: evidenceDigest,
+      mediaType: 'application/json',
+    });
+    expect(s3.send).toHaveBeenCalledOnce();
+  });
+
+  it('rejects an object key outside the exact source boundary before reading S3', async () => {
+    const body = Buffer.from('{}', 'utf8');
+    const evidenceDigest = createHash('sha256').update(body).digest('hex');
+    const s3 = registryEvidenceClient(body, evidenceDigest);
+
+    await expect(
+      readDetectedRegistryEvidence(
+        s3.client,
+        'artifacts',
+        'development',
+        {
+          sourceId: detectedSourceId,
+          objectKey: 'env/development/package-release/npm/source/other/metadata.json',
+          digest: evidenceDigest,
+        },
+        sourceDefinition,
+      ),
+    ).rejects.toMatchObject({
+      safeCode: 'VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID',
+    });
+    expect(s3.send).not.toHaveBeenCalled();
+  });
+
+  it('rejects metadata or content that does not match the trusted digest', async () => {
+    const body = Buffer.from('{}', 'utf8');
+    const evidenceDigest = createHash('sha256').update(body).digest('hex');
+    const s3 = registryEvidenceClient(body, evidenceDigest, {
+      Metadata: { digest: 'a'.repeat(64), 'source-id': detectedSourceId },
+    });
+
+    await expect(
+      readDetectedRegistryEvidence(
+        s3.client,
+        'artifacts',
+        'development',
+        {
+          sourceId: detectedSourceId,
+          objectKey: detectedObjectKey,
+          digest: evidenceDigest,
+        },
+        sourceDefinition,
+      ),
+    ).rejects.toMatchObject({
+      safeCode: 'VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID',
+    });
   });
 });

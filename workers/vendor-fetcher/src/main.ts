@@ -1,6 +1,11 @@
 import { createHash, randomUUID } from 'node:crypto';
 
-import { PutObjectCommand, S3Client, S3ServiceException } from '@aws-sdk/client-s3';
+import {
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+  S3ServiceException,
+} from '@aws-sdk/client-s3';
 import type { Transaction } from 'kysely';
 
 import { parseConfig, vendorFetcherConfigSchema } from '@migration/config';
@@ -34,6 +39,11 @@ interface ReleaseContext {
   readonly productId: string;
   readonly vendorSlug: string;
   readonly officialDomains: readonly string[];
+  readonly detectedRegistryEvidence: {
+    readonly sourceId: string;
+    readonly objectKey: string;
+    readonly digest: string;
+  } | null;
   readonly sources: readonly {
     id: string;
     sourceKey: string;
@@ -92,12 +102,21 @@ export async function ingestVendorRelease(
     const acquired: AcquiredSource[] = [];
     const allowedDomains = new Set(context.officialDomains);
     for (const source of context.sources) {
-      const evidence = await dependencies.retrieve({
-        sourceKey: source.sourceKey,
-        canonicalUrl: source.canonicalUrl,
-        expectedMediaTypes: source.expectedMediaTypes,
-        allowedDomains,
-      });
+      const evidence =
+        context.detectedRegistryEvidence?.sourceId === source.id
+          ? await readDetectedRegistryEvidence(
+              dependencies.s3,
+              config.ARTIFACT_BUCKET,
+              config.APP_ENVIRONMENT,
+              context.detectedRegistryEvidence,
+              source,
+            )
+          : await dependencies.retrieve({
+              sourceKey: source.sourceKey,
+              canonicalUrl: source.canonicalUrl,
+              expectedMediaTypes: source.expectedMediaTypes,
+              allowedDomains,
+            });
       if (
         source.sourceKey === 'release_metadata' &&
         evidence.digest !== context.sourceDigest
@@ -246,6 +265,11 @@ async function loadReleaseContext(
     .selectFrom('vendorReleases as release')
     .innerJoin('apiProducts as product', 'product.id', 'release.apiProductId')
     .innerJoin('vendors as vendor', 'vendor.id', 'product.vendorId')
+    .leftJoin(
+      'packageReleaseDetections as detection',
+      'detection.vendorReleaseId',
+      'release.id',
+    )
     .select([
       'release.id as releaseId',
       'release.version',
@@ -256,6 +280,9 @@ async function loadReleaseContext(
       'vendor.officialDomains',
       'vendor.trustState as vendorTrustState',
       'product.status as productStatus',
+      'detection.sourceId as detectedSourceId',
+      'detection.evidenceObjectKey as detectedEvidenceObjectKey',
+      'detection.evidenceDigest as detectedEvidenceDigest',
     ])
     .where('release.id', '=', releaseId)
     .executeTakeFirst();
@@ -282,11 +309,83 @@ async function loadReleaseContext(
     .execute();
   if (
     sources.length === 0 ||
-    sources.some(source => !release.officialDomains.includes(source.canonicalDomain))
+    sources.some(source => !release.officialDomains.includes(source.canonicalDomain)) ||
+    (release.detectedSourceId !== null &&
+      !sources.some(source => source.id === release.detectedSourceId))
   ) {
     throw new VendorEvidenceError('VENDOR_SOURCE_CATALOGUE_INVALID');
   }
-  return { ...release, sources };
+  const detectedRegistryEvidence =
+    release.detectedSourceId &&
+    release.detectedEvidenceObjectKey &&
+    release.detectedEvidenceDigest
+      ? {
+          sourceId: release.detectedSourceId,
+          objectKey: release.detectedEvidenceObjectKey,
+          digest: release.detectedEvidenceDigest,
+        }
+      : null;
+  if (
+    release.detectedSourceId &&
+    release.sourceDigest !== detectedRegistryEvidence?.digest
+  ) {
+    throw new VendorEvidenceError('VENDOR_RELEASE_SOURCE_DIGEST_MISMATCH');
+  }
+  return { ...release, detectedRegistryEvidence, sources };
+}
+
+export async function readDetectedRegistryEvidence(
+  s3: S3Client,
+  bucket: string,
+  environment: string,
+  evidence: NonNullable<ReleaseContext['detectedRegistryEvidence']>,
+  source: ReleaseContext['sources'][number],
+): Promise<RetrievedVendorSource> {
+  const prefix = `env/${environment}/package-release/npm/source/${source.id}/poll/`;
+  if (
+    source.id !== evidence.sourceId ||
+    !evidence.objectKey.startsWith(prefix) ||
+    !/\/poll\/[0-9a-f-]{36}\/metadata\.json$/u.test(evidence.objectKey)
+  ) {
+    throw new VendorEvidenceError('VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID');
+  }
+  const object = await s3.send(
+    new GetObjectCommand({
+      Bucket: bucket,
+      Key: evidence.objectKey,
+      ChecksumMode: 'ENABLED',
+    }),
+  );
+  if (
+    !object.Body ||
+    !object.ContentLength ||
+    object.ContentLength > 1024 * 1024 ||
+    object.ContentType?.split(';')[0]?.trim().toLowerCase() !== 'application/json' ||
+    object.Metadata?.digest !== evidence.digest ||
+    object.Metadata['source-id'] !== source.id
+  ) {
+    throw new VendorEvidenceError('VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID');
+  }
+  const bytes = await object.Body.transformToByteArray();
+  const evidenceDigest = digest(bytes);
+  if (
+    bytes.byteLength === 0 ||
+    bytes.byteLength > 1024 * 1024 ||
+    bytes.byteLength !== object.ContentLength ||
+    evidenceDigest !== evidence.digest ||
+    (object.ChecksumSHA256 !== undefined &&
+      object.ChecksumSHA256 !== Buffer.from(evidenceDigest, 'hex').toString('base64'))
+  ) {
+    throw new VendorEvidenceError('VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID');
+  }
+  return {
+    canonicalUrl: source.canonicalUrl,
+    finalUrl: source.canonicalUrl,
+    bytes,
+    digest: evidenceDigest,
+    mediaType: 'application/json',
+    etag: null,
+  };
 }
 
 async function beginRun(

@@ -10,9 +10,11 @@ import type { ScheduledEvent } from 'aws-lambda';
 import {
   migrationWorkflowInputSchema,
   repositoryScanWorkflowInputSchema,
+  vendorIngestionWorkflowInputSchema,
   workflowInputSchema,
   type MigrationWorkflowInput,
   type RepositoryScanWorkflowInput,
+  type VendorIngestionWorkflowInput,
   type WorkflowInput,
 } from '@migration/contracts';
 import {
@@ -54,6 +56,12 @@ export type ClaimedEvent =
       readonly kind: 'migration';
       readonly id: string;
       readonly payload: MigrationWorkflowInput;
+      readonly attempts: number;
+    }
+  | {
+      readonly kind: 'release_intelligence';
+      readonly id: string;
+      readonly payload: VendorIngestionWorkflowInput;
       readonly attempts: number;
     }
   | {
@@ -110,12 +118,16 @@ export async function dispatchOutbox(
       writeLog('info', {
         event: 'outbox_event_delivered',
         correlationId: event.payload.correlationId,
-        organisationId: event.payload.organisationId,
+        ...(event.kind === 'release_intelligence'
+          ? { vendorReleaseId: event.payload.vendorReleaseId }
+          : { organisationId: event.payload.organisationId }),
         ...(event.kind === 'agent'
           ? { agentRunId: event.payload.agentRunId }
           : event.kind === 'repository_scan'
             ? { repositoryScanId: event.payload.repositoryScanId }
-            : { migrationRunId: event.payload.migrationRunId }),
+            : event.kind === 'migration'
+              ? { migrationRunId: event.payload.migrationRunId }
+              : {}),
       });
     } catch {
       const terminal = event.attempts >= MAX_ATTEMPTS;
@@ -130,12 +142,16 @@ export async function dispatchOutbox(
             }
           : {
               correlationId: event.payload.correlationId,
-              organisationId: event.payload.organisationId,
+              ...(event.kind === 'release_intelligence'
+                ? { vendorReleaseId: event.payload.vendorReleaseId }
+                : { organisationId: event.payload.organisationId }),
               ...(event.kind === 'agent'
                 ? { agentRunId: event.payload.agentRunId }
                 : event.kind === 'repository_scan'
                   ? { repositoryScanId: event.payload.repositoryScanId }
-                  : { migrationRunId: event.payload.migrationRunId }),
+                  : event.kind === 'migration'
+                    ? { migrationRunId: event.payload.migrationRunId }
+                    : {}),
             }),
         safeErrorCode: terminal ? 'OUTBOX_DELIVERY_FAILED' : 'OUTBOX_RETRY_PENDING',
       });
@@ -178,6 +194,9 @@ export function workflowExecutionName(event: ClaimedEvent): string {
     throw new Error('In-app notifications do not have workflow execution names.');
   }
   if (event.kind === 'agent') return `agent-${event.payload.agentRunId}`;
+  if (event.kind === 'release_intelligence') {
+    return `release-intelligence-${event.payload.vendorReleaseId}`;
+  }
   if (event.kind === 'repository_scan') {
     return `repository-scan-${event.payload.repositoryScanId}`;
   }
@@ -192,6 +211,9 @@ function workflowStateMachineArn(
     throw new Error('In-app notifications do not use a state machine.');
   }
   if (event.kind === 'agent') return config.STATE_MACHINE_ARN;
+  if (event.kind === 'release_intelligence') {
+    return config.RELEASE_INTELLIGENCE_STATE_MACHINE_ARN;
+  }
   if (event.kind === 'repository_scan') {
     return config.REPOSITORY_SCAN_STATE_MACHINE_ARN;
   }
@@ -333,6 +355,48 @@ async function claimEvents(
     }
     return claimed;
   });
+  const releaseIntelligenceEvents = await database
+    .transaction()
+    .execute(async transaction => {
+      const candidates = await transaction
+        .selectFrom('releaseIntelligenceOutbox')
+        .select(['id', 'payload', 'attempts'])
+        .where('deliveredAt', 'is', null)
+        .where('availableAt', '<=', new Date())
+        .where(builder =>
+          builder.or([
+            builder('leaseExpiresAt', 'is', null),
+            builder('leaseExpiresAt', '<', new Date()),
+          ]),
+        )
+        .where('attempts', '<', MAX_ATTEMPTS)
+        .orderBy('createdAt', 'asc')
+        .limit(PER_KIND_BATCH_SIZE)
+        .forUpdate()
+        .skipLocked()
+        .execute();
+      const claimed: ClaimedEvent[] = [];
+      for (const candidate of candidates) {
+        const payload = vendorIngestionWorkflowInputSchema.parse(candidate.payload);
+        await transaction
+          .updateTable('releaseIntelligenceOutbox')
+          .set({
+            leaseOwner,
+            leaseExpiresAt: new Date(Date.now() + LEASE_MILLISECONDS),
+            attempts: candidate.attempts + 1,
+            safeErrorCode: null,
+          })
+          .where('id', '=', candidate.id)
+          .executeTakeFirstOrThrow();
+        claimed.push({
+          kind: 'release_intelligence',
+          id: candidate.id,
+          payload,
+          attempts: candidate.attempts + 1,
+        });
+      }
+      return claimed;
+    });
   const notificationEvents = await database.transaction().execute(async transaction => {
     const candidates = await transaction
       .selectFrom('publicationNotificationOutbox')
@@ -375,7 +439,13 @@ async function claimEvents(
     }
     return claimed;
   });
-  return [...migrationEvents, ...agentEvents, ...scanEvents, ...notificationEvents];
+  return [
+    ...releaseIntelligenceEvents,
+    ...migrationEvents,
+    ...agentEvents,
+    ...scanEvents,
+    ...notificationEvents,
+  ];
 }
 
 async function markDelivered(
@@ -418,6 +488,20 @@ async function markDelivered(
       .set(values)
       .where('id', '=', event.id)
       .where('leaseOwner', '=', leaseOwner)
+      .executeTakeFirstOrThrow();
+    return;
+  }
+  if (event.kind === 'release_intelligence') {
+    if (!executionArn) {
+      throw new Error('Release intelligence delivery requires an execution ARN.');
+    }
+    await database
+      .updateTable('releaseIntelligenceOutbox')
+      .set({ ...values, workflowExecutionArn: executionArn })
+      .where('id', '=', event.id)
+      .where('aggregateId', '=', event.payload.vendorReleaseId)
+      .where('leaseOwner', '=', leaseOwner)
+      .where('deliveredAt', 'is', null)
       .executeTakeFirstOrThrow();
     return;
   }
@@ -492,6 +576,17 @@ async function markRetry(
       .set(values)
       .where('id', '=', event.id)
       .where('leaseOwner', '=', leaseOwner)
+      .executeTakeFirstOrThrow();
+    return;
+  }
+  if (event.kind === 'release_intelligence') {
+    await database
+      .updateTable('releaseIntelligenceOutbox')
+      .set(values)
+      .where('id', '=', event.id)
+      .where('aggregateId', '=', event.payload.vendorReleaseId)
+      .where('leaseOwner', '=', leaseOwner)
+      .where('deliveredAt', 'is', null)
       .executeTakeFirstOrThrow();
     return;
   }

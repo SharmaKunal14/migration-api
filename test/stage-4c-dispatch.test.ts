@@ -32,6 +32,17 @@ const migrationEvent: ClaimedEvent = {
     expectedVersion: 1,
   },
 };
+const vendorReleaseId = '86b908bf-9fb3-4808-8d47-58c9c0ccb417';
+const releaseIntelligenceEvent: ClaimedEvent = {
+  kind: 'release_intelligence',
+  id: 'd686af04-a313-4427-88ff-b62ffddf4071',
+  attempts: 1,
+  payload: {
+    schemaVersion: '1.0',
+    vendorReleaseId,
+    correlationId: 'f68add37-af58-4535-83ed-cf550d72d7ed',
+  },
+};
 const dispatcherConfig: DispatcherConfig = {
   APP_ENVIRONMENT: 'development',
   AWS_REGION: 'ap-southeast-2',
@@ -41,6 +52,8 @@ const dispatcherConfig: DispatcherConfig = {
     'arn:aws:states:ap-southeast-2:393209814365:stateMachine:migration-api-development-migration',
   REPOSITORY_SCAN_STATE_MACHINE_ARN:
     'arn:aws:states:ap-southeast-2:393209814365:stateMachine:migration-api-development-repository-scan',
+  RELEASE_INTELLIGENCE_STATE_MACHINE_ARN:
+    'arn:aws:states:ap-southeast-2:393209814365:stateMachine:migration-api-development-vendor-ingestion',
   STATE_MACHINE_ARN:
     'arn:aws:states:ap-southeast-2:393209814365:stateMachine:migration-api-development-agent',
 };
@@ -98,6 +111,26 @@ describe('Stage 4C durable migration dispatch', () => {
     ).toBe(
       `arn:aws:states:ap-southeast-2:393209814365:execution:migration-api-development-migration:${name}`,
     );
+  });
+
+  it('starts one deterministic release-intelligence execution', async () => {
+    const send = vi.fn<WorkflowStarter['send']>(() => Promise.resolve({}));
+    const executionArn = await startWorkflowExecution(
+      { send },
+      releaseIntelligenceEvent,
+      dispatcherConfig,
+    );
+    expect(workflowExecutionName(releaseIntelligenceEvent)).toBe(
+      `release-intelligence-${vendorReleaseId}`,
+    );
+    expect(executionArn).toContain(
+      `:execution:migration-api-development-vendor-ingestion:release-intelligence-${vendorReleaseId}`,
+    );
+    expect(send).toHaveBeenCalledOnce();
+    expect(send.mock.calls[0]?.[0]?.input).toMatchObject({
+      stateMachineArn: dispatcherConfig.RELEASE_INTELLIGENCE_STATE_MACHINE_ARN,
+      name: `release-intelligence-${vendorReleaseId}`,
+    });
   });
 
   it('rejects malformed state-machine and execution identities', () => {

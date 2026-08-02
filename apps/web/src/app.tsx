@@ -19,6 +19,8 @@ import type {
   PublicMigrationPatchReview,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
+  PublicMigrationSpecification,
+  PublicMigrationSpecificationDetail,
   PublicPackageSourceCandidate,
   PublicPackageSourceMapping,
   PublicOrganisation,
@@ -42,6 +44,8 @@ import {
   loadMigrationRun,
   loadMigrationPatchReview,
   loadMigrationRuns,
+  loadMigrationSpecification,
+  loadMigrationSpecifications,
   loadPackageSourceMappings,
   loadPublicationNotifications,
   loadRepositories,
@@ -49,6 +53,7 @@ import {
   requestImpactAnalysis,
   reviewPackageSourceCandidate,
   replacePackageSourceCandidate,
+  reviewMigrationSpecification,
   revokeMigrationApproval,
   startRepositoryScan,
   setPackageSourceMappingState,
@@ -64,6 +69,10 @@ export function App(): React.JSX.Element {
       <Route element={<ProtectedLayout />}>
         <Route path="/onboarding" element={<OnboardingPage />} />
         <Route path="/operator/package-sources" element={<PackageSourceReviewPage />} />
+        <Route
+          path="/operator/migration-specifications"
+          element={<MigrationSpecificationReviewPage />}
+        />
         <Route path="/github/setup/callback" element={<GithubSetupCallbackPage />} />
         <Route
           path="/organisations/:orgId/settings/github"
@@ -261,9 +270,14 @@ function OnboardingPage(): React.JSX.Element {
         Organisation membership is loaded from PostgreSQL on every protected request.
       </p>
       {operatorAccess && (
-        <Link className="operator-link" to="/operator/package-sources">
-          Review package source candidates
-        </Link>
+        <nav className="operator-actions" aria-label="Platform operator tools">
+          <Link className="operator-link" to="/operator/package-sources">
+            Review package sources
+          </Link>
+          <Link className="operator-link" to="/operator/migration-specifications">
+            Review migration guidance
+          </Link>
+        </nav>
       )}
       {loading ? (
         <p>Loading organisations…</p>
@@ -313,6 +327,283 @@ function OnboardingPage(): React.JSX.Element {
         </button>
       </form>
       {error && <p className="error-message">{error}</p>}
+    </div>
+  );
+}
+
+type SpecificationQueueState = 'draft' | 'reviewed' | 'vendor_verified';
+
+function MigrationSpecificationReviewPage(): React.JSX.Element {
+  const { session } = useAuth();
+  const [trustState, setTrustState] = useState<SpecificationQueueState>('draft');
+  const [specifications, setSpecifications] = useState<PublicMigrationSpecification[]>(
+    [],
+  );
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [detail, setDetail] = useState<PublicMigrationSpecificationDetail | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [detailLoading, setDetailLoading] = useState(false);
+  const [reviewing, setReviewing] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [generation, setGeneration] = useState(0);
+
+  useEffect(() => {
+    if (!session) return;
+    let active = true;
+    void loadMigrationSpecifications(session.access_token, trustState)
+      .then(result => {
+        if (!active) return;
+        setSpecifications(result.specifications);
+        const nextSelectedId = result.specifications[0]?.id ?? null;
+        setDetail(null);
+        setDetailLoading(nextSelectedId !== null);
+        setSelectedId(nextSelectedId);
+      })
+      .catch((caught: unknown) => {
+        if (active) setError(errorText(caught));
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [generation, session, trustState]);
+
+  useEffect(() => {
+    if (!session || !selectedId) return;
+    let active = true;
+    void loadMigrationSpecification(session.access_token, selectedId)
+      .then(result => {
+        if (active) setDetail(result.specification);
+      })
+      .catch((caught: unknown) => {
+        if (active) setError(errorText(caught));
+      })
+      .finally(() => {
+        if (active) setDetailLoading(false);
+      });
+    return (): void => {
+      active = false;
+    };
+  }, [selectedId, session]);
+
+  const ambiguousChanges =
+    detail?.specification.changes.filter(change => change.certainty === 'ambiguous') ??
+    [];
+
+  async function review(): Promise<void> {
+    if (!session || !detail || ambiguousChanges.length > 0) return;
+    setReviewing(true);
+    setError(null);
+    try {
+      await reviewMigrationSpecification(
+        session.access_token,
+        detail.id,
+        crypto.randomUUID(),
+        detail.revision,
+      );
+      setDetail(null);
+      setSelectedId(null);
+      setLoading(true);
+      setGeneration(value => value + 1);
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setReviewing(false);
+    }
+  }
+
+  return (
+    <div className="page specification-review-page">
+      <Link to="/onboarding">← Workspaces</Link>
+      <p className="eyebrow">Platform operator</p>
+      <h1>Migration guidance</h1>
+      <p className="lede">
+        Review evidence-backed guidance before it can be matched to customer
+        repositories. Drafts with ambiguous changes stay blocked.
+      </p>
+      <div className="queue-filters" aria-label="Migration guidance filters">
+        {(
+          [
+            ['draft', 'To review'],
+            ['reviewed', 'Reviewed'],
+            ['vendor_verified', 'Vendor verified'],
+          ] as const
+        ).map(([value, label]) => (
+          <button
+            className="queue-filter"
+            key={value}
+            type="button"
+            aria-pressed={trustState === value}
+            onClick={() => {
+              if (value === trustState) return;
+              setLoading(true);
+              setError(null);
+              setDetail(null);
+              setSelectedId(null);
+              setTrustState(value);
+            }}
+          >
+            {label}
+          </button>
+        ))}
+      </div>
+      {error && <p className="error-message">{error}</p>}
+      {loading ? (
+        <p>Loading migration guidance…</p>
+      ) : specifications.length === 0 ? (
+        <p className="panel empty-state">No specifications are in this state.</p>
+      ) : (
+        <div className="specification-review-layout">
+          <div className="specification-review-list" aria-label="Specifications">
+            {specifications.map(item => (
+              <button
+                className="specification-review-item"
+                type="button"
+                key={item.id}
+                aria-pressed={selectedId === item.id}
+                onClick={() => {
+                  if (selectedId === item.id) return;
+                  setError(null);
+                  setDetail(null);
+                  setDetailLoading(true);
+                  setSelectedId(item.id);
+                }}
+              >
+                <strong>{item.productIdentifier}</strong>
+                <span>
+                  {item.sourceCompatibility} → {item.targetVersion}
+                </span>
+                <small>{item.vendorName}</small>
+              </button>
+            ))}
+          </div>
+          <section className="panel specification-detail" aria-live="polite">
+            {detailLoading || !detail ? (
+              <p>Loading specification…</p>
+            ) : (
+              <>
+                <header className="specification-detail-header">
+                  <div>
+                    <p className="eyebrow">{detail.vendorName}</p>
+                    <h2>{detail.productIdentifier}</h2>
+                    <p className="specification-version-route">
+                      {detail.sourceCompatibility} → {detail.targetVersion}
+                    </p>
+                    <p className="specification-provenance">
+                      Generated {formatTimestamp(detail.createdAt)} · evidence{' '}
+                      <code title={detail.evidenceDigest}>
+                        {detail.evidenceDigest.slice(0, 12)}…
+                      </code>
+                    </p>
+                  </div>
+                  <span className={`source-status source-status-${detail.trustState}`}>
+                    {detail.trustState.replaceAll('_', ' ')}
+                  </span>
+                </header>
+                <section>
+                  <h3>What changes</h3>
+                  <div className="specification-change-list">
+                    {detail.specification.changes.map(change => (
+                      <article className="specification-change" key={change.changeId}>
+                        <div>
+                          <strong>{change.summary}</strong>
+                          <span>{change.category}</span>
+                        </div>
+                        <span className={`certainty certainty-${change.certainty}`}>
+                          {change.certainty === 'vendor_confirmed'
+                            ? 'Evidence confirmed'
+                            : 'Ambiguous'}
+                        </span>
+                        {change.transformations.length > 0 && (
+                          <ul>
+                            {change.transformations.map((transformation, index) => (
+                              <li key={`${change.changeId}-${String(index)}`}>
+                                {transformation.before} → {transformation.after}
+                              </li>
+                            ))}
+                          </ul>
+                        )}
+                      </article>
+                    ))}
+                  </div>
+                </section>
+                <section className="specification-two-column">
+                  <div>
+                    <h3>Preconditions</h3>
+                    {detail.specification.preconditions.length === 0 ? (
+                      <p className="muted-copy">None recorded.</p>
+                    ) : (
+                      <ul>
+                        {detail.specification.preconditions.map(item => (
+                          <li key={item}>{item}</li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div>
+                    <h3>Verification</h3>
+                    <ul>
+                      {detail.specification.verificationRecommendations.map(item => (
+                        <li key={item}>{item.replaceAll('_', ' ')}</li>
+                      ))}
+                    </ul>
+                  </div>
+                </section>
+                {detail.specification.uncertainties.length > 0 && (
+                  <details className="specification-evidence">
+                    <summary>Recorded uncertainties</summary>
+                    <ul>
+                      {detail.specification.uncertainties.map(item => (
+                        <li key={item.code}>{item.summary}</li>
+                      ))}
+                    </ul>
+                  </details>
+                )}
+                <details className="specification-evidence">
+                  <summary>Evidence ({detail.specification.evidence.length})</summary>
+                  <ul>
+                    {detail.specification.evidence.map(item => (
+                      <li key={item.evidenceId}>
+                        <a href={item.sourceUrl} target="_blank" rel="noreferrer">
+                          {item.sourceKey} ↗
+                        </a>{' '}
+                        — {item.summary}
+                      </li>
+                    ))}
+                  </ul>
+                </details>
+                {detail.trustState === 'draft' && (
+                  <footer className="specification-review-footer">
+                    {ambiguousChanges.length > 0 && (
+                      <p className="review-blocker">
+                        Review is blocked: {ambiguousChanges.length}{' '}
+                        {ambiguousChanges.length === 1 ? 'change is' : 'changes are'}
+                        ambiguous. This draft cannot be promoted without stronger
+                        evidence.
+                      </p>
+                    )}
+                    <button
+                      className="primary-button"
+                      type="button"
+                      disabled={reviewing || ambiguousChanges.length > 0}
+                      aria-busy={reviewing}
+                      onClick={() => void review()}
+                    >
+                      {reviewing ? 'Reviewing…' : 'Approve migration guidance'}
+                    </button>
+                    <p className="fine-print">
+                      Approval makes this guidance eligible for repository matching. It
+                      does not modify code or create a pull request.
+                    </p>
+                  </footer>
+                )}
+              </>
+            )}
+          </section>
+        </div>
+      )}
     </div>
   );
 }

@@ -120,6 +120,8 @@ describe('startup configuration', () => {
           'arn:aws:states:ap-southeast-2:123456789012:stateMachine:migration',
         REPOSITORY_SCAN_STATE_MACHINE_ARN:
           'arn:aws:states:ap-southeast-2:123456789012:stateMachine:scan',
+        RELEASE_INTELLIGENCE_STATE_MACHINE_ARN:
+          'arn:aws:states:ap-southeast-2:123456789012:stateMachine:release-intelligence',
         STATE_MACHINE_ARN:
           'arn:aws:states:ap-southeast-2:123456789012:stateMachine:agent',
       }),

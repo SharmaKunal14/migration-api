@@ -372,6 +372,8 @@ export interface PackageReleaseDetectionTable {
   apiProductId: string;
   sourceId: string;
   version: string;
+  sourceVersion: string | null;
+  vendorReleaseId: string | null;
   publishedAt: Timestamp | null;
   firstDetectedAt: Timestamp;
   lastObservedAt: Timestamp;
@@ -379,7 +381,24 @@ export interface PackageReleaseDetectionTable {
   evidenceObjectKey: string;
   evidenceDigest: string;
   metadataDigest: string;
-  status: 'detected' | 'superseded';
+  status: 'detected' | 'suppressed' | 'superseded';
+}
+
+export interface ReleaseIntelligenceOutboxTable {
+  id: string;
+  eventType: 'release_intelligence.requested';
+  aggregateId: string;
+  aggregateVersion: number;
+  idempotencyKey: string;
+  payload: unknown;
+  availableAt: Timestamp;
+  leaseOwner: string | null;
+  leaseExpiresAt: Timestamp | null;
+  attempts: number;
+  deliveredAt: Timestamp | null;
+  workflowExecutionArn: string | null;
+  safeErrorCode: string | null;
+  createdAt: Timestamp;
 }
 
 export interface PackageVersionDeprecationStateTable {
@@ -988,6 +1007,7 @@ export interface Database {
   packageSourcePollStates: PackageSourcePollStateTable;
   packageSourcePollRuns: PackageSourcePollRunTable;
   packageReleaseDetections: PackageReleaseDetectionTable;
+  releaseIntelligenceOutbox: ReleaseIntelligenceOutboxTable;
   packageVersionDeprecationStates: PackageVersionDeprecationStateTable;
   packageSourceMappings: PackageSourceMappingTable;
   packageSourceMappingControls: PackageSourceMappingControlTable;

@@ -603,12 +603,13 @@ resource "aws_lambda_function" "outbox" {
 
   environment {
     variables = {
-      APP_ENVIRONMENT                   = "development"
-      DATABASE_SECRET_ARN               = var.database_secret_arn
-      MIGRATION_STATE_MACHINE_ARN       = aws_sfn_state_machine.migration.arn
-      STATE_MACHINE_ARN                 = aws_sfn_state_machine.agent.arn
-      REPOSITORY_SCAN_STATE_MACHINE_ARN = aws_sfn_state_machine.repository_scan.arn
-      NODE_OPTIONS                      = "--enable-source-maps"
+      APP_ENVIRONMENT                        = "development"
+      DATABASE_SECRET_ARN                    = var.database_secret_arn
+      MIGRATION_STATE_MACHINE_ARN            = aws_sfn_state_machine.migration.arn
+      RELEASE_INTELLIGENCE_STATE_MACHINE_ARN = aws_sfn_state_machine.vendor_ingestion.arn
+      STATE_MACHINE_ARN                      = aws_sfn_state_machine.agent.arn
+      REPOSITORY_SCAN_STATE_MACHINE_ARN      = aws_sfn_state_machine.repository_scan.arn
+      NODE_OPTIONS                           = "--enable-source-maps"
     }
   }
 
@@ -1185,6 +1186,20 @@ data "aws_iam_policy_document" "step_functions" {
     actions   = ["logs:CreateLogDelivery", "logs:GetLogDelivery", "logs:UpdateLogDelivery", "logs:DeleteLogDelivery", "logs:ListLogDeliveries", "logs:PutResourcePolicy", "logs:DescribeResourcePolicies", "logs:DescribeLogGroups"]
     resources = ["*"]
   }
+
+  statement {
+    sid       = "StartChangeIntelligenceWorkflow"
+    actions   = ["states:StartExecution"]
+    resources = [aws_sfn_state_machine.change_intelligence.arn]
+  }
+
+  statement {
+    sid     = "MonitorChangeIntelligenceWorkflow"
+    actions = ["states:DescribeExecution", "states:StopExecution"]
+    resources = [
+      "arn:aws:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:execution:${aws_sfn_state_machine.change_intelligence.name}:*"
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "step_functions" {
@@ -1435,7 +1450,7 @@ resource "aws_sfn_state_machine" "vendor_ingestion" {
   }
 
   definition = jsonencode({
-    Comment = "Stage 3B bounded and idempotent trusted-vendor evidence ingestion"
+    Comment = "Stage 8F bounded trusted-release ingestion and draft specification generation"
     StartAt = "FetchVendorEvidence"
     States = {
       FetchVendorEvidence = {
@@ -1464,13 +1479,40 @@ resource "aws_sfn_state_machine" "vendor_ingestion" {
           }
         }
         ResultPath = null
+        Retry = [
+          {
+            ErrorEquals     = ["ECS.AmazonECSException", "ECS.ThrottlingException"]
+            IntervalSeconds = 5
+            BackoffRate     = 2
+            MaxAttempts     = 2
+          },
+          {
+            ErrorEquals     = ["States.TaskFailed"]
+            IntervalSeconds = 10
+            BackoffRate     = 2
+            MaxAttempts     = 2
+            JitterStrategy  = "FULL"
+          }
+        ]
+        Next = "GenerateDraftSpecification"
+      }
+      GenerateDraftSpecification = {
+        Type           = "Task"
+        Resource       = "arn:aws:states:::states:startExecution.sync:2"
+        TimeoutSeconds = 900
+        Parameters = {
+          StateMachineArn = aws_sfn_state_machine.change_intelligence.arn
+          "Input.$"       = "$"
+        }
         Retry = [{
-          ErrorEquals     = ["ECS.AmazonECSException", "ECS.ThrottlingException"]
-          IntervalSeconds = 5
+          ErrorEquals     = ["States.TaskFailed"]
+          IntervalSeconds = 15
           BackoffRate     = 2
           MaxAttempts     = 2
+          JitterStrategy  = "FULL"
         }]
-        End = true
+        ResultPath = null
+        End        = true
       }
     }
   })
@@ -2731,7 +2773,8 @@ data "aws_iam_policy_document" "outbox_workflow" {
     resources = [
       aws_sfn_state_machine.agent.arn,
       aws_sfn_state_machine.repository_scan.arn,
-      aws_sfn_state_machine.migration.arn
+      aws_sfn_state_machine.migration.arn,
+      aws_sfn_state_machine.vendor_ingestion.arn
     ]
   }
 }

@@ -656,6 +656,12 @@ data "aws_iam_policy_document" "vendor_fetcher_task" {
   }
 
   statement {
+    sid       = "ReadDetectedRegistryEvidence"
+    actions   = ["s3:GetObject"]
+    resources = ["${aws_s3_bucket.artifacts.arn}/env/development/package-release/npm/source/*/poll/*/metadata.json"]
+  }
+
+  statement {
     sid       = "WriteVendorEvidence"
     actions   = ["s3:PutObject"]
     resources = ["${aws_s3_bucket.artifacts.arn}/env/development/vendor/*"]
@@ -663,7 +669,7 @@ data "aws_iam_policy_document" "vendor_fetcher_task" {
 
   statement {
     sid       = "EncryptVendorEvidence"
-    actions   = ["kms:Encrypt", "kms:GenerateDataKey"]
+    actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"]
     resources = [aws_kms_key.artifacts.arn]
   }
 }

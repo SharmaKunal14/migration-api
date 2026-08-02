@@ -1717,6 +1717,13 @@ export class ApiRepository implements ApiRepositoryPort {
             500,
           );
         }
+        if (parsed.data.changes.some(change => change.certainty === 'ambiguous')) {
+          throw new DomainError(
+            'MIGRATION_SPECIFICATION_AMBIGUOUS',
+            'Resolve every ambiguous change before reviewing the migration specification.',
+            409,
+          );
+        }
         const now = new Date();
         const reviewedAt = current.reviewedAt ?? now;
         const reviewedSpecification: MigrationSpecification = {

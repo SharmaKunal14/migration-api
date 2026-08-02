@@ -92,6 +92,7 @@ export const apiConfigSchema = commonSchema.extend({
 export const dispatcherConfigSchema = commonSchema.extend({
   DATABASE_SECRET_ARN: awsArn,
   MIGRATION_STATE_MACHINE_ARN: awsArn,
+  RELEASE_INTELLIGENCE_STATE_MACHINE_ARN: awsArn,
   REPOSITORY_SCAN_STATE_MACHINE_ARN: awsArn,
   STATE_MACHINE_ARN: awsArn,
 });

@@ -12,6 +12,9 @@ import type {
   PublicMigrationPatchReview,
   PublicMigrationRunDetail,
   PublicMigrationRunSummary,
+  PublicMigrationSpecification,
+  PublicMigrationSpecificationDetail,
+  PublicMigrationSpecificationReview,
   PackageSourceCandidateReviewRequest,
   PackageSourceCandidateReplacementRequest,
   PackageSourceMappingStateRequest,
@@ -94,6 +97,40 @@ export async function loadPackageSourceCatalog(token: string): Promise<{
   vendors: PublicPackageSourceVendor[];
 }> {
   return request(token, '/v1/operator/package-source-catalog');
+}
+
+export async function loadMigrationSpecifications(
+  token: string,
+  trustState: 'draft' | 'reviewed' | 'vendor_verified',
+): Promise<{ specifications: PublicMigrationSpecification[] }> {
+  return request(
+    token,
+    `/v1/operator/migration-specifications?trustState=${encodeURIComponent(trustState)}`,
+  );
+}
+
+export async function loadMigrationSpecification(
+  token: string,
+  specificationId: string,
+): Promise<{ specification: PublicMigrationSpecificationDetail }> {
+  return request(token, `/v1/operator/migration-specifications/${specificationId}`);
+}
+
+export async function reviewMigrationSpecification(
+  token: string,
+  specificationId: string,
+  idempotencyKey: string,
+  expectedRevision: number,
+): Promise<{ review: PublicMigrationSpecificationReview }> {
+  return request(
+    token,
+    `/v1/operator/migration-specifications/${specificationId}/review`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify({ expectedRevision }),
+    },
+  );
 }
 
 export async function reviewPackageSourceCandidate(
