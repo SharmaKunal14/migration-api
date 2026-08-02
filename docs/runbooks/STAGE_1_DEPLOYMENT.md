@@ -118,6 +118,14 @@ apply a second bootstrap or manually broaden the role trust policy. The
 service-linked role remains bootstrap-owned so the GitHub deployment role does
 not need permission to create arbitrary service-linked roles.
 
+The bootstrap state also retains the former CI promotion role and signing key.
+They are intentionally still declared with deletion protection even though the
+current deployment workflow does not use them. A routine permission update must
+not delete them or schedule the signing key for deletion. Retire those resources
+only through a separate, explicitly reviewed cleanup plan. For the package
+release poller permission update, the expected plan is an in-place update to
+`aws_iam_role_policy.github_deploy` with no resource destruction.
+
 ### One-time ECR foundation
 
 The three ECR repositories must exist before the deployment workflow can build

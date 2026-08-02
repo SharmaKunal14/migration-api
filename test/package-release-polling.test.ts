@@ -65,4 +65,11 @@ describe('stage 8D package release polling', () => {
     expect(bootstrap).toContain('migration-api-development-package-release-poller-dlq');
     expect(bootstrap).not.toContain('arn:aws:sqs:${var.aws_region}:*:*');
   });
+
+  it('does not retire state-owned CI signing resources as a polling side effect', () => {
+    expect(bootstrap).toContain('resource "aws_kms_key" "promotion_signing"');
+    expect(bootstrap).toContain('resource "aws_iam_role" "github_ci_artifacts"');
+    expect(bootstrap).toContain('prevent_destroy = true');
+    expect(bootstrap).toMatch(/sid\s*=\s*"ProtectCiPromotionKey"/u);
+  });
 });
