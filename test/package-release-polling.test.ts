@@ -16,6 +16,10 @@ const infrastructure = readFileSync(
   ),
   'utf8',
 );
+const bootstrap = readFileSync(
+  new URL('../infra/terraform/bootstrap/main.tf', import.meta.url),
+  'utf8',
+);
 
 describe('stage 8D package release polling', () => {
   it('uses leased bounded claims and idempotent logical releases', () => {
@@ -54,5 +58,11 @@ describe('stage 8D package release polling', () => {
     expect(infrastructure).toContain(
       '${aws_s3_bucket.artifacts.arn}/env/development/package-release/npm/*',
     );
+  });
+
+  it('allows the deployment role to manage only the named release-poller DLQ', () => {
+    expect(bootstrap).toContain('"sqs:CreateQueue"');
+    expect(bootstrap).toContain('migration-api-development-package-release-poller-dlq');
+    expect(bootstrap).not.toContain('arn:aws:sqs:${var.aws_region}:*:*');
   });
 });
