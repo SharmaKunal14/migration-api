@@ -20,6 +20,13 @@ const bootstrap = readFileSync(
   new URL('../infra/terraform/bootstrap/main.tf', import.meta.url),
   'utf8',
 );
+const claimAmbiguityFix = readFileSync(
+  new URL(
+    '../supabase/migrations/0028_fix_package_source_poll_claim_ambiguity.sql',
+    import.meta.url,
+  ),
+  'utf8',
+);
 
 describe('stage 8D package release polling', () => {
   it('uses leased bounded claims and idempotent logical releases', () => {
@@ -29,6 +36,16 @@ describe('stage 8D package release polling', () => {
     expect(migration).toContain('unique (api_product_id, version)');
     expect(migration).toContain("'NPM_REGISTRY_VERSION_ROLLBACK'");
     expect(migration).toContain('package_version_deprecation_states');
+  });
+
+  it('qualifies the poll-state conflict target against PL/pgSQL output names', () => {
+    expect(claimAmbiguityFix).toContain(
+      'on conflict on constraint package_source_poll_states_pkey do nothing',
+    );
+    expect(claimAmbiguityFix).not.toContain('on conflict (source_id) do nothing');
+    expect(claimAmbiguityFix).toContain(
+      'where package_source_poll_runs.source_id = claimed.source_id',
+    );
   });
 
   it('keeps runtime table access denied and exposes only bounded functions', () => {
