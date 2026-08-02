@@ -242,6 +242,12 @@ export const migrationSpecificationReviewRequestSchema = z
   })
   .strict();
 
+export const candidateNotificationStateRequestSchema = z
+  .object({
+    action: z.enum(['mark_read', 'dismiss']),
+  })
+  .strict();
+
 const packageSourceReviewVersionSchema = z.number().int().positive();
 export const packageSourceCandidateReviewRequestSchema = z.discriminatedUnion(
   'decision',
@@ -2623,6 +2629,9 @@ export type GithubPublicationAccessResult = z.infer<
 export type PublicationAttempt = z.infer<typeof publicationAttemptSchema>;
 export type GithubPublication = z.infer<typeof githubPublicationSchema>;
 export type PublicationNotification = z.infer<typeof publicationNotificationSchema>;
+export type CandidateNotificationStateRequest = z.infer<
+  typeof candidateNotificationStateRequestSchema
+>;
 export type CancelMigrationRunRequest = z.infer<typeof cancelMigrationRunRequestSchema>;
 export type RevokeMigrationApprovalRequest = z.infer<
   typeof revokeMigrationApprovalRequestSchema
@@ -3094,6 +3103,31 @@ export interface PublicPublicationNotification {
   readonly pullRequestState: 'open' | 'closed' | 'merged';
   readonly isDraft: boolean;
   readonly deliveredAt: string;
+}
+
+export interface PublicCandidateNotificationState {
+  readonly notificationId: string;
+  readonly readAt: string | null;
+  readonly dismissedAt: string | null;
+  readonly version: number;
+}
+
+export interface PublicCandidateNotification extends PublicCandidateNotificationState {
+  readonly eventType: 'migration_candidate_ready';
+  readonly candidateId: string;
+  readonly candidateStatus: 'open' | 'dismissed' | 'superseded' | 'resolved';
+  readonly repositoryFullName: string;
+  readonly packageName: string;
+  readonly currentVersion: string;
+  readonly targetVersion: string;
+  readonly title: string;
+  readonly summary: string;
+  readonly sourceProvenance: 'trusted_registry_and_reviewed_specification';
+  readonly impactStatus: 'pending' | 'ready';
+  readonly riskCategory: 'low' | 'medium' | 'high' | 'unknown' | null;
+  readonly uncertaintyCount: number | null;
+  readonly deliveredAt: string;
+  readonly createdAt: string;
 }
 
 export interface PublicMigrationVerificationAttempt {

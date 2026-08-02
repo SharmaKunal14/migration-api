@@ -23,6 +23,9 @@ import type {
   PackageSourceCandidateReviewRequest,
   PackageSourceCandidateReplacementRequest,
   PackageSourceMappingStateRequest,
+  CandidateNotificationStateRequest,
+  PublicCandidateNotification,
+  PublicCandidateNotificationState,
   PublicDependencyObservation,
   PublicGithubInstallation,
   PublicMigrationCandidate,
@@ -131,6 +134,13 @@ export type SetPackageSourceMappingStateInput = PackageSourceMappingStateRequest
   readonly idempotencyKey: string;
   readonly requestId: string;
 };
+
+export type UpdateCandidateNotificationStateInput =
+  CandidateNotificationStateRequest & {
+    readonly organisationId: string;
+    readonly notificationId: string;
+    readonly requestId: string;
+  };
 
 export interface CreateMigrationApprovalInput extends CreateMigrationApprovalRequest {
   readonly organisationId: string;
@@ -310,6 +320,14 @@ export interface ApiRepositoryPort {
     userId: string,
     organisationId: string,
   ): Promise<PublicPublicationNotification[]>;
+  listCandidateNotifications(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicCandidateNotification[]>;
+  updateCandidateNotificationState(
+    userId: string,
+    input: UpdateCandidateNotificationStateInput,
+  ): Promise<PublicCandidateNotificationState>;
   cancelMigrationRun(
     userId: string,
     input: CancelMigrationRunInput,
@@ -2596,6 +2614,198 @@ export class ApiRepository implements ApiRepositoryPort {
         deliveredAt: notification.deliveredAt.toISOString(),
       };
     });
+  }
+
+  public async listCandidateNotifications(
+    userId: string,
+    organisationId: string,
+  ): Promise<PublicCandidateNotification[]> {
+    await this.requireCandidateNotificationRecipient(organisationId, userId);
+    const notifications = await this.database
+      .selectFrom('notificationRecipientStates as recipientState')
+      .innerJoin(
+        'organisationNotifications as notification',
+        'notification.id',
+        'recipientState.notificationId',
+      )
+      .innerJoin('organisationMemberships as currentMembership', join =>
+        join
+          .onRef('currentMembership.organisationId', '=', 'notification.organisationId')
+          .on('currentMembership.userId', '=', userId)
+          .on('currentMembership.role', 'in', ['owner', 'admin', 'reviewer']),
+      )
+      .innerJoin('organisations as organisation', join =>
+        join
+          .onRef('organisation.id', '=', 'notification.organisationId')
+          .on('organisation.status', '=', 'active'),
+      )
+      .innerJoin(
+        'migrationCandidates as candidate',
+        'candidate.id',
+        'notification.candidateId',
+      )
+      .innerJoin(
+        'repositories as repository',
+        'repository.id',
+        'notification.repositoryId',
+      )
+      .innerJoin(
+        'dependencyObservations as observation',
+        'observation.id',
+        'candidate.dependencyObservationId',
+      )
+      .innerJoin(
+        'migrationSpecifications as specification',
+        'specification.id',
+        'notification.migrationSpecificationId',
+      )
+      .select([
+        'notification.id',
+        'notification.eventType',
+        'notification.candidateId',
+        'notification.title',
+        'notification.safeSummary',
+        'notification.createdAt',
+        'candidate.status as candidateStatus',
+        'repository.fullName as repositoryFullName',
+        'observation.packageName',
+        'observation.declaredRange',
+        'observation.resolvedVersion',
+        'specification.targetVersion',
+        'recipientState.deliveredAt',
+        'recipientState.readAt',
+        'recipientState.dismissedAt',
+        'recipientState.version',
+      ])
+      .where('notification.organisationId', '=', organisationId)
+      .where('recipientState.userId', '=', userId)
+      .where('recipientState.channel', '=', 'in_app')
+      .orderBy('recipientState.deliveredAt', 'desc')
+      .limit(100)
+      .execute();
+
+    const candidateIds = notifications.map(notification => notification.candidateId);
+    const impacts =
+      candidateIds.length === 0
+        ? []
+        : await this.database
+            .selectFrom('impactReports as impact')
+            .distinctOn('impact.candidateId')
+            .select(['impact.candidateId', 'impact.riskCategory', 'impact.uncertainty'])
+            .where('impact.candidateId', 'in', candidateIds)
+            .orderBy('impact.candidateId', 'asc')
+            .orderBy('impact.revision', 'desc')
+            .orderBy('impact.createdAt', 'desc')
+            .execute();
+    const impactsByCandidate = new Map(
+      impacts.map(impact => [impact.candidateId, impact]),
+    );
+
+    return notifications.map(notification => {
+      const impact = impactsByCandidate.get(notification.candidateId);
+      return {
+        notificationId: notification.id,
+        eventType: notification.eventType,
+        candidateId: notification.candidateId,
+        candidateStatus: notification.candidateStatus,
+        repositoryFullName: notification.repositoryFullName,
+        packageName: notification.packageName,
+        currentVersion: notification.resolvedVersion ?? notification.declaredRange,
+        targetVersion: notification.targetVersion,
+        title: notification.title,
+        summary: notification.safeSummary,
+        sourceProvenance: 'trusted_registry_and_reviewed_specification',
+        impactStatus: impact ? 'ready' : 'pending',
+        riskCategory: impact?.riskCategory ?? null,
+        uncertaintyCount: impact
+          ? Array.isArray(impact.uncertainty)
+            ? impact.uncertainty.length
+            : 0
+          : null,
+        deliveredAt: notification.deliveredAt.toISOString(),
+        readAt: notification.readAt?.toISOString() ?? null,
+        dismissedAt: notification.dismissedAt?.toISOString() ?? null,
+        version: notification.version,
+        createdAt: notification.createdAt.toISOString(),
+      };
+    });
+  }
+
+  public async updateCandidateNotificationState(
+    userId: string,
+    input: UpdateCandidateNotificationStateInput,
+  ): Promise<PublicCandidateNotificationState> {
+    await this.requireCandidateNotificationRecipient(input.organisationId, userId);
+    try {
+      const result = await sql<{
+        readonly notificationId: string;
+        readonly readAt: Date | null;
+        readonly dismissedAt: Date | null;
+        readonly version: number;
+      }>`
+        select
+          notification_id as "notificationId",
+          read_at as "readAt",
+          dismissed_at as "dismissedAt",
+          version
+        from update_notification_recipient_state(
+          ${userId}::uuid,
+          ${input.organisationId}::uuid,
+          ${input.notificationId}::uuid,
+          ${input.action},
+          ${input.requestId}::uuid
+        )
+      `.execute(this.database);
+      const state = result.rows[0];
+      if (!state) {
+        throw new DomainError(
+          'DEPENDENCY_NOTIFICATION_NOT_FOUND',
+          'The dependency notification was not found.',
+          404,
+        );
+      }
+      return {
+        notificationId: state.notificationId,
+        readAt: state.readAt?.toISOString() ?? null,
+        dismissedAt: state.dismissedAt?.toISOString() ?? null,
+        version: state.version,
+      };
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      const code = postgresErrorCode(error);
+      if (code === '42501') {
+        throw new DomainError(
+          'DEPENDENCY_NOTIFICATION_ACCESS_DENIED',
+          'The actor is not eligible to receive dependency notifications.',
+          403,
+        );
+      }
+      if (code === 'P0002') {
+        throw new DomainError(
+          'DEPENDENCY_NOTIFICATION_NOT_FOUND',
+          'The dependency notification was not found.',
+          404,
+        );
+      }
+      throw error;
+    }
+  }
+
+  private async requireCandidateNotificationRecipient(
+    organisationId: string,
+    userId: string,
+  ): Promise<void> {
+    const membership = requireAction(
+      await this.membership(organisationId, userId),
+      'migration:read',
+    );
+    if (membership.role === 'viewer') {
+      throw new DomainError(
+        'DEPENDENCY_NOTIFICATION_ACCESS_DENIED',
+        'The actor is not eligible to receive dependency notifications.',
+        403,
+      );
+    }
   }
 
   public async cancelMigrationRun(

@@ -11,6 +11,7 @@ import {
 
 import type {
   PublicAgentRun,
+  PublicCandidateNotification,
   PublicDependencyObservation,
   PublicGithubInstallation,
   PublicMigrationCandidate,
@@ -41,6 +42,7 @@ import {
   loadMe,
   loadMigrationCandidate,
   loadMigrationCandidates,
+  loadCandidateNotifications,
   loadMigrationRun,
   loadMigrationPatchReview,
   loadMigrationRuns,
@@ -57,6 +59,7 @@ import {
   revokeMigrationApproval,
   startRepositoryScan,
   setPackageSourceMappingState,
+  updateCandidateNotificationState,
 } from './api.js';
 import { useAuth } from './auth.js';
 import { supabase } from './supabase.js';
@@ -1530,6 +1533,12 @@ function MigrationInboxPage(): React.JSX.Element {
   const [notifications, setNotifications] = useState<PublicPublicationNotification[]>(
     [],
   );
+  const [candidateNotifications, setCandidateNotifications] = useState<
+    PublicCandidateNotification[]
+  >([]);
+  const [notificationActionId, setNotificationActionId] = useState<string | null>(null);
+  const [notificationError, setNotificationError] = useState<string | null>(null);
+  const [showDismissedNotifications, setShowDismissedNotifications] = useState(false);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -1539,11 +1548,13 @@ function MigrationInboxPage(): React.JSX.Element {
     void Promise.all([
       loadMigrationCandidates(session.access_token, orgId),
       loadPublicationNotifications(session.access_token, orgId),
+      loadCandidateNotifications(session.access_token, orgId),
     ])
-      .then(([candidateData, notificationData]) => {
+      .then(([candidateData, notificationData, candidateNotificationData]) => {
         if (active) {
           setCandidates(candidateData.candidates);
           setNotifications(notificationData.notifications);
+          setCandidateNotifications(candidateNotificationData.notifications);
         }
       })
       .catch((caught: unknown) => {
@@ -1556,6 +1567,41 @@ function MigrationInboxPage(): React.JSX.Element {
       active = false;
     };
   }, [orgId, session]);
+
+  const visibleCandidateNotifications = candidateNotifications.filter(
+    notification => showDismissedNotifications || notification.dismissedAt === null,
+  );
+  const unreadCandidateNotifications = candidateNotifications.filter(
+    notification => notification.readAt === null && notification.dismissedAt === null,
+  ).length;
+
+  async function setCandidateNotificationState(
+    notification: PublicCandidateNotification,
+    action: 'mark_read' | 'dismiss',
+  ): Promise<void> {
+    if (!session || !orgId || notificationActionId !== null) return;
+    setNotificationActionId(notification.notificationId);
+    setNotificationError(null);
+    try {
+      const { state } = await updateCandidateNotificationState(
+        session.access_token,
+        orgId,
+        notification.notificationId,
+        { action },
+      );
+      setCandidateNotifications(current =>
+        current.map(candidateNotification =>
+          candidateNotification.notificationId === state.notificationId
+            ? { ...candidateNotification, ...state }
+            : candidateNotification,
+        ),
+      );
+    } catch (caught) {
+      setNotificationError(errorText(caught));
+    } finally {
+      setNotificationActionId(null);
+    }
+  }
 
   return (
     <div className="page migration-page">
@@ -1585,6 +1631,130 @@ function MigrationInboxPage(): React.JSX.Element {
           </div>
         )}
       </div>
+      {candidateNotifications.length > 0 && (
+        <section
+          className="panel candidate-notifications"
+          aria-labelledby="dependency-updates-heading"
+        >
+          <div className="candidate-notification-heading">
+            <div>
+              <p className="section-kicker">Dependency updates</p>
+              <h2 id="dependency-updates-heading">Updates ready to review</h2>
+              <p>
+                Each update has a trusted registry source, reviewed migration guidance,
+                and a dependency match in this workspace.
+              </p>
+            </div>
+            <div className="candidate-notification-summary">
+              <span className="dependency-count">
+                {unreadCandidateNotifications} unread
+              </span>
+              {candidateNotifications.some(
+                notification => notification.dismissedAt !== null,
+              ) && (
+                <button
+                  className="text-button"
+                  type="button"
+                  onClick={() => setShowDismissedNotifications(current => !current)}
+                >
+                  {showDismissedNotifications ? 'Hide dismissed' : 'Show dismissed'}
+                </button>
+              )}
+            </div>
+          </div>
+          {notificationError && (
+            <p className="error-message" role="alert">
+              {notificationError}
+            </p>
+          )}
+          {visibleCandidateNotifications.length === 0 ? (
+            <p className="candidate-notification-empty">
+              All dependency notifications are dismissed.
+            </p>
+          ) : (
+            <ul className="candidate-notification-list">
+              {visibleCandidateNotifications.map(notification => {
+                const busy = notificationActionId === notification.notificationId;
+                const actionable = notification.candidateStatus === 'open';
+                return (
+                  <li
+                    className={notification.readAt === null ? 'is-unread' : undefined}
+                    key={notification.notificationId}
+                  >
+                    <div className="candidate-notification-copy">
+                      <div className="candidate-notification-title">
+                        <strong>{notification.packageName}</strong>
+                        {notification.readAt === null && (
+                          <span className="unread-marker">New</span>
+                        )}
+                        {notification.dismissedAt !== null && (
+                          <span className="notification-state">Dismissed</span>
+                        )}
+                      </div>
+                      <p>
+                        {notification.repositoryFullName} ·{' '}
+                        {notification.currentVersion} → {notification.targetVersion}
+                      </p>
+                      <div className="candidate-notification-facts">
+                        <span>Trusted npm source</span>
+                        <span>Guidance reviewed</span>
+                        <span>
+                          {notification.impactStatus === 'ready'
+                            ? `${notification.riskCategory ?? 'unknown'} risk · ${String(notification.uncertaintyCount ?? 0)} uncertainties`
+                            : 'Impact analysis pending'}
+                        </span>
+                        {!actionable && (
+                          <span className="notification-not-actionable">
+                            No longer actionable
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="candidate-notification-actions">
+                      {actionable && (
+                        <Link
+                          to={`/organisations/${orgId ?? ''}/migrations/${notification.candidateId}`}
+                        >
+                          Review update
+                        </Link>
+                      )}
+                      {notification.readAt === null && (
+                        <button
+                          className="secondary-button"
+                          type="button"
+                          disabled={notificationActionId !== null}
+                          aria-busy={busy}
+                          onClick={() =>
+                            void setCandidateNotificationState(
+                              notification,
+                              'mark_read',
+                            )
+                          }
+                        >
+                          {busy ? 'Saving…' : 'Mark as read'}
+                        </button>
+                      )}
+                      {notification.dismissedAt === null && (
+                        <button
+                          className="text-button"
+                          type="button"
+                          disabled={notificationActionId !== null}
+                          aria-busy={busy}
+                          onClick={() =>
+                            void setCandidateNotificationState(notification, 'dismiss')
+                          }
+                        >
+                          Dismiss
+                        </button>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </section>
+      )}
       {notifications.length > 0 && (
         <section className="panel publication-notifications">
           <div className="patch-review-heading">

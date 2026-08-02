@@ -17,6 +17,7 @@ import {
 } from '@migration/authorization';
 import {
   agentResultEnvelopeSchema,
+  candidateNotificationStateRequestSchema,
   cancelMigrationRunRequestSchema,
   createMigrationApprovalRequestSchema,
   demoRunRequestSchema,
@@ -223,6 +224,18 @@ export async function handleRequest(
       const publicationNotificationsMatch =
         method === 'GET'
           ? /^\/v1\/organisations\/([0-9a-f-]{36})\/notifications$/u.exec(path)
+          : null;
+      const candidateNotificationsMatch =
+        method === 'GET'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/dependency-notifications$/u.exec(
+              path,
+            )
+          : null;
+      const candidateNotificationStateMatch =
+        method === 'POST'
+          ? /^\/v1\/organisations\/([0-9a-f-]{36})\/dependency-notifications\/([0-9a-f-]{36})\/state$/u.exec(
+              path,
+            )
           : null;
       const cancelMigrationRunMatch =
         method === 'POST'
@@ -471,6 +484,26 @@ export async function handleRequest(
             userId,
             z.uuid().parse(publicationNotificationsMatch[1]),
           ),
+        });
+      } else if (candidateNotificationsMatch?.[1]) {
+        response = json(200, {
+          notifications: await repository.listCandidateNotifications(
+            userId,
+            z.uuid().parse(candidateNotificationsMatch[1]),
+          ),
+        });
+      } else if (
+        candidateNotificationStateMatch?.[1] &&
+        candidateNotificationStateMatch[2]
+      ) {
+        const input = candidateNotificationStateRequestSchema.parse(parseBody(event));
+        response = json(200, {
+          state: await repository.updateCandidateNotificationState(userId, {
+            ...input,
+            organisationId: z.uuid().parse(candidateNotificationStateMatch[1]),
+            notificationId: z.uuid().parse(candidateNotificationStateMatch[2]),
+            requestId,
+          }),
         });
       } else if (cancelMigrationRunMatch?.[1] && cancelMigrationRunMatch[2]) {
         const input = cancelMigrationRunRequestSchema.parse(parseBody(event));

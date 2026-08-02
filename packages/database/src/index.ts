@@ -526,6 +526,32 @@ export interface MigrationCandidateTable {
   updatedAt: Timestamp;
 }
 
+export interface OrganisationNotificationTable {
+  id: string;
+  organisationId: string;
+  eventType: 'migration_candidate_ready';
+  repositoryId: string;
+  candidateId: string;
+  migrationSpecificationId: string;
+  vendorReleaseId: string;
+  title: string;
+  safeSummary: string;
+  idempotencyKey: string;
+  createdAt: Timestamp;
+}
+
+export interface NotificationRecipientStateTable {
+  notificationId: string;
+  userId: string;
+  channel: 'in_app';
+  deliveredAt: Timestamp;
+  readAt: Timestamp | null;
+  dismissedAt: Timestamp | null;
+  version: number;
+  createdAt: Timestamp;
+  updatedAt: Timestamp;
+}
+
 export interface ImpactReportTable {
   id: string;
   candidateId: string;
@@ -1015,6 +1041,8 @@ export interface Database {
   packageSourceCandidates: PackageSourceCandidateTable;
   migrationSpecifications: MigrationSpecificationTable;
   migrationCandidates: MigrationCandidateTable;
+  organisationNotifications: OrganisationNotificationTable;
+  notificationRecipientStates: NotificationRecipientStateTable;
   impactReports: ImpactReportTable;
   impactAnalysisRuns: ImpactAnalysisRunTable;
   migrationApprovals: MigrationApprovalTable;

@@ -7,6 +7,8 @@ import { DomainError, type Actor } from '@migration/domain';
 
 import { handleRequest, type ApiDependencies } from '../services/api/src/handler.js';
 import type {
+  PublicCandidateNotification,
+  PublicCandidateNotificationState,
   PublicDependencyObservation,
   PublicGithubInstallation,
   PublicMigrationCandidate,
@@ -45,6 +47,7 @@ import type {
   ReplacePackageSourceCandidateInput,
   RevokeMigrationApprovalInput,
   SetPackageSourceMappingStateInput,
+  UpdateCandidateNotificationStateInput,
 } from '../services/api/src/repository.js';
 
 const organisationId = '6b768f2a-7bd0-47b7-8acb-f8c7ebfd8624';
@@ -391,6 +394,48 @@ class FakeRepository implements ApiRepositoryPort {
     _organisationId: string,
   ): Promise<PublicPublicationNotification[]> {
     return Promise.resolve([]);
+  }
+
+  public listCandidateNotifications(
+    _userId: string,
+    _organisationId: string,
+  ): Promise<PublicCandidateNotification[]> {
+    return Promise.resolve([
+      {
+        notificationId: runId,
+        eventType: 'migration_candidate_ready',
+        candidateId: runId,
+        candidateStatus: 'open',
+        repositoryFullName: 'SharmaKunal14/orbitchat-migration-fixture',
+        packageName: '@orbitchat/sdk',
+        currentVersion: '1.0.0',
+        targetVersion: '2.0.0',
+        title: 'Dependency update ready',
+        summary:
+          'A trusted package release has reviewed migration guidance and matches this repository.',
+        sourceProvenance: 'trusted_registry_and_reviewed_specification',
+        impactStatus: 'pending',
+        riskCategory: null,
+        uncertaintyCount: null,
+        deliveredAt: '2026-08-02T00:00:00.000Z',
+        readAt: null,
+        dismissedAt: null,
+        version: 1,
+        createdAt: '2026-08-02T00:00:00.000Z',
+      },
+    ]);
+  }
+
+  public updateCandidateNotificationState(
+    _userId: string,
+    input: UpdateCandidateNotificationStateInput,
+  ): Promise<PublicCandidateNotificationState> {
+    return Promise.resolve({
+      notificationId: input.notificationId,
+      readAt: '2026-08-02T00:01:00.000Z',
+      dismissedAt: input.action === 'dismiss' ? '2026-08-02T00:01:00.000Z' : null,
+      version: 2,
+    });
   }
 
   public cancelMigrationRun(
@@ -1047,6 +1092,48 @@ describe('API handler trust boundary', () => {
     );
     expect(response.statusCode).toBe(200);
     expect(parsedBody(response)).toEqual({ notifications: [] });
+  });
+
+  it('returns dependency notifications independently from publication alerts', async () => {
+    const response = await handleRequest(
+      event('GET', `/api/v1/organisations/${organisationId}/dependency-notifications`),
+      dependencies(),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(parsedBody(response)).toMatchObject({
+      notifications: [
+        {
+          eventType: 'migration_candidate_ready',
+          packageName: '@orbitchat/sdk',
+          currentVersion: '1.0.0',
+          targetVersion: '2.0.0',
+          impactStatus: 'pending',
+        },
+      ],
+    });
+  });
+
+  it('updates only a strict dependency-notification recipient state action', async () => {
+    const path = `/api/v1/organisations/${organisationId}/dependency-notifications/${runId}/state`;
+    const invalid = await handleRequest(
+      event('POST', path, { action: 'dismiss', unexpected: true }),
+      dependencies(),
+    );
+    expect(invalid.statusCode).toBe(400);
+
+    const response = await handleRequest(
+      event('POST', path, { action: 'dismiss' }),
+      dependencies(),
+    );
+    expect(response.statusCode).toBe(200);
+    expect(parsedBody(response)).toEqual({
+      state: {
+        notificationId: runId,
+        readAt: '2026-08-02T00:01:00.000Z',
+        dismissedAt: '2026-08-02T00:01:00.000Z',
+        version: 2,
+      },
+    });
   });
 
   it('requires strict input and an idempotency key to cancel a migration', async () => {

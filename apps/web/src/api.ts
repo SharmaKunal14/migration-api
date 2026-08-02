@@ -1,7 +1,10 @@
 import type {
   CreateMigrationApprovalRequest,
   CancelMigrationRunRequest,
+  CandidateNotificationStateRequest,
   PublicAgentRun,
+  PublicCandidateNotification,
+  PublicCandidateNotificationState,
   PublicGithubInstallation,
   PublicGithubInstallLink,
   PublicGithubSetupCompletion,
@@ -328,6 +331,29 @@ export async function loadPublicationNotifications(
   organisationId: string,
 ): Promise<{ notifications: PublicPublicationNotification[] }> {
   return request(token, `/v1/organisations/${organisationId}/notifications`);
+}
+
+export async function loadCandidateNotifications(
+  token: string,
+  organisationId: string,
+): Promise<{ notifications: PublicCandidateNotification[] }> {
+  return request(token, `/v1/organisations/${organisationId}/dependency-notifications`);
+}
+
+export async function updateCandidateNotificationState(
+  token: string,
+  organisationId: string,
+  notificationId: string,
+  input: CandidateNotificationStateRequest,
+): Promise<{ state: PublicCandidateNotificationState }> {
+  return request(
+    token,
+    `/v1/organisations/${organisationId}/dependency-notifications/${notificationId}/state`,
+    {
+      method: 'POST',
+      body: JSON.stringify(input),
+    },
+  );
 }
 
 export async function loadMigrationPatchReview(
