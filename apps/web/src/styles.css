@@ -138,44 +138,94 @@ a:focus-visible {
   color: var(--lime);
 }
 
-.specification-change-list {
+.spec-review-explainer {
+  display: grid;
+  gap: 0.35rem;
+  max-width: 72ch;
+  margin: -0.75rem 0 2rem;
+  padding: 1rem 1.1rem;
+  border: 1px solid rgb(137 247 194 / 24%);
+  border-radius: 12px;
+  background: rgb(137 247 194 / 6%);
+}
+
+.spec-review-explainer span {
+  color: var(--muted);
+  line-height: 1.5;
+}
+
+.spec-review-change-list {
   display: grid;
   gap: 0.75rem;
 }
 
-.specification-change {
+.spec-review-change-card {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 0.65rem 1rem;
+  gap: 0.8rem;
   padding: 1rem;
   border: 1px solid var(--line);
   border-radius: 12px;
   background: rgb(8 17 15 / 42%);
 }
 
-.specification-change > div {
-  display: grid;
-  gap: 0.35rem;
+.spec-review-change-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  flex-wrap: wrap;
 }
 
-.specification-change > div span,
-.certainty {
+.spec-review-category,
+.spec-review-certainty {
   color: var(--muted);
   font-size: 0.75rem;
   text-transform: capitalize;
 }
 
-.specification-change ul {
-  grid-column: 1 / -1;
-  margin-bottom: 0;
+.spec-review-category {
+  font-weight: 750;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
 }
 
-.certainty-ambiguous,
+.spec-review-change-card h4 {
+  max-width: 70ch;
+  margin: 0;
+  line-height: 1.45;
+}
+
+.spec-review-transformations {
+  display: grid;
+  gap: 0.55rem;
+}
+
+.spec-review-transformations > div {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 0.65rem;
+  align-items: center;
+}
+
+.spec-review-transformations code {
+  min-width: 0;
+  padding: 0.55rem 0.65rem;
+  border-radius: 7px;
+  background: rgb(137 247 194 / 7%);
+  overflow-wrap: anywhere;
+}
+
+.spec-review-transformations small {
+  grid-column: 1 / -1;
+  color: var(--muted);
+}
+
+.spec-review-certainty-ambiguous,
 .review-blocker {
   color: var(--danger);
 }
 
-.certainty-vendor_confirmed {
+.spec-review-certainty-vendor_confirmed {
   color: var(--mint);
 }
 
@@ -2322,11 +2372,11 @@ input {
     grid-template-columns: 1fr;
   }
 
-  .specification-change {
+  .spec-review-transformations > div {
     grid-template-columns: 1fr;
   }
 
-  .specification-change ul {
+  .spec-review-transformations small {
     grid-column: 1;
   }
 

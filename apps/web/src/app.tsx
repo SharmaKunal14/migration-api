@@ -423,6 +423,13 @@ function MigrationSpecificationReviewPage(): React.JSX.Element {
         Review evidence-backed guidance before it can be matched to customer
         repositories. Drafts with ambiguous changes stay blocked.
       </p>
+      <aside className="spec-review-explainer">
+        <strong>Package-level guidance, not a repository impact report.</strong>
+        <span>
+          Reviewed guidance can be matched to repositories using this package. It cannot
+          edit code, approve a migration, or publish a pull request.
+        </span>
+      </aside>
       <div className="queue-filters" aria-label="Migration guidance filters">
         {(
           [
@@ -504,26 +511,38 @@ function MigrationSpecificationReviewPage(): React.JSX.Element {
                 </header>
                 <section>
                   <h3>What changes</h3>
-                  <div className="specification-change-list">
+                  <div className="spec-review-change-list">
                     {detail.specification.changes.map(change => (
-                      <article className="specification-change" key={change.changeId}>
-                        <div>
-                          <strong>{change.summary}</strong>
-                          <span>{change.category}</span>
-                        </div>
-                        <span className={`certainty certainty-${change.certainty}`}>
-                          {change.certainty === 'vendor_confirmed'
-                            ? 'Evidence confirmed'
-                            : 'Ambiguous'}
-                        </span>
+                      <article
+                        className="spec-review-change-card"
+                        key={change.changeId}
+                      >
+                        <header className="spec-review-change-header">
+                          <span className="spec-review-category">
+                            {change.category}
+                          </span>
+                          <span
+                            className={`spec-review-certainty spec-review-certainty-${change.certainty}`}
+                          >
+                            {change.certainty === 'vendor_confirmed'
+                              ? 'Evidence confirmed'
+                              : 'Ambiguous'}
+                          </span>
+                        </header>
+                        <h4>{change.summary}</h4>
                         {change.transformations.length > 0 && (
-                          <ul>
+                          <div className="spec-review-transformations">
                             {change.transformations.map((transformation, index) => (
-                              <li key={`${change.changeId}-${String(index)}`}>
-                                {transformation.before} → {transformation.after}
-                              </li>
+                              <div key={`${change.changeId}-${String(index)}`}>
+                                <code>{transformation.before}</code>
+                                <span aria-hidden="true">→</span>
+                                <code>{transformation.after}</code>
+                                {transformation.condition && (
+                                  <small>{transformation.condition}</small>
+                                )}
+                              </div>
                             ))}
-                          </ul>
+                          </div>
                         )}
                       </article>
                     ))}

@@ -14,6 +14,7 @@ const iam = source('infra/terraform/environments/development/iam.tf');
 const dispatcher = source('services/outbox-dispatcher/src/handler.ts');
 const repository = source('services/api/src/repository.ts');
 const web = source('apps/web/src/app.tsx');
+const styles = source('apps/web/src/styles.css');
 
 describe('Stage 8F generic release ingestion', () => {
   it('registers only trusted fixed-origin npm detections and emits one durable event', () => {
@@ -79,5 +80,8 @@ describe('Stage 8F generic release ingestion', () => {
     expect(web).toContain('Approve migration guidance');
     expect(web).toContain('Drafts with ambiguous changes stay blocked.');
     expect(web).toContain('does not modify code or create a pull request.');
+    expect(web).toContain('className="spec-review-change-list"');
+    expect(styles).toContain('.spec-review-change-card');
+    expect(styles).toContain('.spec-review-transformations > div');
   });
 });
