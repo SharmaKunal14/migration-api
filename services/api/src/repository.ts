@@ -20,6 +20,7 @@ import type {
   GithubInstallationVerification,
   MigrationApprovalAuthority,
   MigrationSpecification,
+  PackageReleasePilotBackfillRequest,
   PackageSourceCandidateReviewRequest,
   PackageSourceCandidateReplacementRequest,
   PackageSourceMappingStateRequest,
@@ -43,6 +44,7 @@ import type {
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
   PublicPackageSourceCandidateReview,
+  PublicPackageReleasePilotBackfill,
   PublicPackageSourceCatalogEntry,
   PublicPackageSourceMapping,
   PublicPackageSourceVendor,
@@ -134,6 +136,13 @@ export type SetPackageSourceMappingStateInput = PackageSourceMappingStateRequest
   readonly idempotencyKey: string;
   readonly requestId: string;
 };
+
+export type RequestPackageReleasePilotBackfillInput =
+  PackageReleasePilotBackfillRequest & {
+    readonly mappingId: string;
+    readonly idempotencyKey: string;
+    readonly requestId: string;
+  };
 
 export type UpdateCandidateNotificationStateInput =
   CandidateNotificationStateRequest & {
@@ -277,6 +286,10 @@ export interface ApiRepositoryPort {
     userId: string,
     input: SetPackageSourceMappingStateInput,
   ): Promise<PublicPackageSourceCandidateReview>;
+  requestPackageReleasePilotBackfill(
+    userId: string,
+    input: RequestPackageReleasePilotBackfillInput,
+  ): Promise<PublicPackageReleasePilotBackfill>;
   listMigrationSpecifications(
     userId: string,
     trustState: 'draft' | 'reviewed' | 'vendor_verified',
@@ -1599,6 +1612,118 @@ export class ApiRepository implements ApiRepositoryPort {
       });
     } catch (error) {
       throwPackageSourceMutationError(error, 'state change');
+    }
+  }
+
+  public async requestPackageReleasePilotBackfill(
+    userId: string,
+    input: RequestPackageReleasePilotBackfillInput,
+  ): Promise<PublicPackageReleasePilotBackfill> {
+    const requestDigest = digestJson({
+      mappingId: input.mappingId,
+      expectedMappingVersion: input.expectedMappingVersion,
+    });
+    try {
+      return await this.database.transaction().execute(async transaction => {
+        await requirePlatformOperator(transaction, userId);
+        const previous = await transaction
+          .selectFrom('apiIdempotencyKeys')
+          .select(['requestDigest', 'resultResourceId'])
+          .where('actorId', '=', userId)
+          .where('action', '=', 'package_release:pilot_backfill')
+          .where('idempotencyKey', '=', input.idempotencyKey)
+          .executeTakeFirst();
+        if (previous) {
+          if (previous.requestDigest !== requestDigest) {
+            throw new DomainError(
+              'IDEMPOTENCY_CONFLICT',
+              'The idempotency key was already used for another request.',
+              409,
+            );
+          }
+          return loadPackageReleasePilotBackfill(
+            transaction,
+            previous.resultResourceId,
+            false,
+          );
+        }
+
+        const result = await sql<{
+          detectionId: string;
+          vendorReleaseId: string;
+          sourceVersion: string;
+          targetVersion: string;
+          created: boolean;
+        }>`
+          select
+            detection_id as "detectionId",
+            vendor_release_id as "vendorReleaseId",
+            source_version as "sourceVersion",
+            target_version as "targetVersion",
+            created
+          from request_current_package_release_pilot_backfill(
+            ${input.mappingId}::uuid,
+            ${userId}::uuid,
+            ${input.expectedMappingVersion},
+            ${input.requestId}::uuid
+          )
+        `.execute(transaction);
+        const backfill = result.rows[0];
+        if (!backfill?.vendorReleaseId) {
+          throw new DomainError(
+            'PACKAGE_RELEASE_BACKFILL_FAILED',
+            'The current package release could not be registered.',
+            500,
+          );
+        }
+        const now = new Date();
+        await transaction
+          .insertInto('apiIdempotencyKeys')
+          .values({
+            actorId: userId,
+            action: 'package_release:pilot_backfill',
+            idempotencyKey: input.idempotencyKey,
+            requestDigest,
+            resultResourceId: backfill.detectionId,
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
+          })
+          .executeTakeFirstOrThrow();
+        return backfill;
+      });
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      const code = postgresErrorCode(error);
+      const message = postgresErrorMessage(error) ?? '';
+      if (code === '40001') {
+        throw new DomainError(
+          'PACKAGE_RELEASE_BACKFILL_CONFLICT',
+          'The package mapping changed before the release could be ingested.',
+          409,
+        );
+      }
+      if (code === 'P0002' && message === 'pilot dependency version not found') {
+        throw new DomainError(
+          'PACKAGE_RELEASE_BACKFILL_DEPENDENCY_NOT_FOUND',
+          'Scan a selected repository with this direct dependency before ingesting the current release.',
+          409,
+        );
+      }
+      if (code === 'P0002' && message === 'current release poll evidence not found') {
+        throw new DomainError(
+          'PACKAGE_RELEASE_BACKFILL_EVIDENCE_PENDING',
+          'Wait for a successful package release poll before ingesting the current release.',
+          409,
+        );
+      }
+      if (code === '23514') {
+        throw new DomainError(
+          'PACKAGE_RELEASE_BACKFILL_NOT_ELIGIBLE',
+          'The current release is not eligible for pilot ingestion.',
+          409,
+        );
+      }
+      throw error;
     }
   }
 
@@ -3915,6 +4040,36 @@ async function loadPackageSourceMappingByCandidate(
     );
   }
   return mapping;
+}
+
+async function loadPackageReleasePilotBackfill(
+  database: PackageSourceDatabase,
+  detectionId: string,
+  created: boolean,
+): Promise<PublicPackageReleasePilotBackfill> {
+  const row = await database
+    .selectFrom('packageReleaseDetections')
+    .select([
+      'id as detectionId',
+      'vendorReleaseId',
+      'sourceVersion',
+      'version as targetVersion',
+    ])
+    .where('id', '=', detectionId)
+    .executeTakeFirst();
+  if (!row?.vendorReleaseId || !row.sourceVersion) {
+    throw new DomainError(
+      'PACKAGE_RELEASE_BACKFILL_NOT_FOUND',
+      'The pilot release backfill could not be loaded.',
+      404,
+    );
+  }
+  return {
+    ...row,
+    vendorReleaseId: row.vendorReleaseId,
+    sourceVersion: row.sourceVersion,
+    created,
+  };
 }
 
 async function loadPackageSourceMappingById(

@@ -322,6 +322,12 @@ export const packageSourceMappingStateRequestSchema = z.discriminatedUnion('acti
     .strict(),
 ]);
 
+export const packageReleasePilotBackfillRequestSchema = z
+  .object({
+    expectedMappingVersion: packageSourceReviewVersionSchema,
+  })
+  .strict();
+
 export const workflowInputSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -2564,6 +2570,9 @@ export type PackageSourceCandidateReplacementRequest = z.infer<
 export type PackageSourceMappingStateRequest = z.infer<
   typeof packageSourceMappingStateRequestSchema
 >;
+export type PackageReleasePilotBackfillRequest = z.infer<
+  typeof packageReleasePilotBackfillRequestSchema
+>;
 export type WorkflowInput = z.infer<typeof workflowInputSchema>;
 export type MigrationPlan = z.infer<typeof migrationPlanSchema>;
 export type MigrationSpecification = z.infer<typeof migrationSpecificationSchema>;
@@ -2852,6 +2861,14 @@ export interface PublicPackageSourceVendor {
 
 export interface PublicPackageSourceCandidateReview {
   readonly mapping: PublicPackageSourceMapping;
+}
+
+export interface PublicPackageReleasePilotBackfill {
+  readonly detectionId: string;
+  readonly vendorReleaseId: string;
+  readonly sourceVersion: string;
+  readonly targetVersion: string;
+  readonly created: boolean;
 }
 
 export interface PublicMigrationSpecificationReview {

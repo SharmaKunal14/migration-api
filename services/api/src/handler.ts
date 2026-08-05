@@ -26,6 +26,7 @@ import {
   githubSetupCompletionRequestSchema,
   impactAnalysisWorkflowInputSchema,
   migrationSpecificationReviewRequestSchema,
+  packageReleasePilotBackfillRequestSchema,
   packageSourceCandidateReviewRequestSchema,
   packageSourceCandidateReplacementRequestSchema,
   packageSourceMappingStateRequestSchema,
@@ -277,6 +278,12 @@ export async function handleRequest(
               path,
             )
           : null;
+      const packageReleasePilotBackfillMatch =
+        method === 'POST'
+          ? /^\/v1\/operator\/package-source-mappings\/([0-9a-f-]{36})\/pilot-backfill$/u.exec(
+              path,
+            )
+          : null;
       if (method === 'POST' && path === '/v1/github/setup/callback') {
         const input = githubSetupCompletionRequestSchema.parse(parseBody(event));
         await repository.validateGithubInstallState(userId, input.state);
@@ -372,6 +379,16 @@ export async function handleRequest(
           review: await repository.setPackageSourceMappingState(userId, {
             ...input,
             mappingId: z.uuid().parse(packageSourceMappingStateMatch[1]),
+            idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+            requestId,
+          }),
+        });
+      } else if (packageReleasePilotBackfillMatch?.[1]) {
+        const input = packageReleasePilotBackfillRequestSchema.parse(parseBody(event));
+        response = json(202, {
+          backfill: await repository.requestPackageReleasePilotBackfill(userId, {
+            mappingId: z.uuid().parse(packageReleasePilotBackfillMatch[1]),
+            expectedMappingVersion: input.expectedMappingVersion,
             idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
             requestId,
           }),

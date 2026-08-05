@@ -22,6 +22,7 @@ import type {
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
   PublicPackageSourceCandidateReview,
+  PublicPackageReleasePilotBackfill,
   PublicPackageSourceCatalogEntry,
   PublicPackageSourceMapping,
   PublicPackageSourceVendor,
@@ -45,6 +46,7 @@ import type {
   RequestImpactAnalysisInput,
   ReviewPackageSourceCandidateInput,
   ReplacePackageSourceCandidateInput,
+  RequestPackageReleasePilotBackfillInput,
   RevokeMigrationApprovalInput,
   SetPackageSourceMappingStateInput,
   UpdateCandidateNotificationStateInput,
@@ -291,6 +293,20 @@ class FakeRepository implements ApiRepositoryPort {
       input: SetPackageSourceMappingStateInput,
     ) => Promise<PublicPackageSourceCandidateReview>
   >(() => Promise.resolve({ mapping: packageSourceMapping }));
+  public readonly requestPackageReleasePilotBackfillMock = vi.fn<
+    (
+      userId: string,
+      input: RequestPackageReleasePilotBackfillInput,
+    ) => Promise<PublicPackageReleasePilotBackfill>
+  >(() =>
+    Promise.resolve({
+      detectionId: runId,
+      vendorReleaseId: organisationId,
+      sourceVersion: '5.9.0',
+      targetVersion: '5.10.0',
+      created: true,
+    }),
+  );
 
   public ensureUser(_actor: Actor): Promise<string> {
     return Promise.resolve(userId);
@@ -333,6 +349,13 @@ class FakeRepository implements ApiRepositoryPort {
     _input: SetPackageSourceMappingStateInput,
   ): Promise<PublicPackageSourceCandidateReview> {
     return this.setPackageSourceMappingStateMock(_userId, _input);
+  }
+
+  public requestPackageReleasePilotBackfill(
+    _userId: string,
+    _input: RequestPackageReleasePilotBackfillInput,
+  ): Promise<PublicPackageReleasePilotBackfill> {
+    return this.requestPackageReleasePilotBackfillMock(_userId, _input);
   }
 
   public listOrganisations(_userId: string): Promise<OrganisationRecord[]> {
@@ -1399,6 +1422,32 @@ describe('API handler trust boundary', () => {
         mappingId: organisationId,
         action: 'disable',
         disabledReasonCode: 'SECURITY_CONCERN',
+      }),
+    );
+  });
+
+  it('requests an operator-authorized current release pilot backfill', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-mappings/${organisationId}/pilot-backfill`,
+        { expectedMappingVersion: 1 },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-release-backfill:01J7Y5ABCH',
+        },
+      ),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(202);
+    expect(repository.requestPackageReleasePilotBackfillMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        mappingId: organisationId,
+        expectedMappingVersion: 1,
+        idempotencyKey: 'package-release-backfill:01J7Y5ABCH',
       }),
     );
   });

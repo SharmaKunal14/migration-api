@@ -21,6 +21,7 @@ import type {
   PackageSourceCandidateReviewRequest,
   PackageSourceCandidateReplacementRequest,
   PackageSourceMappingStateRequest,
+  PublicPackageReleasePilotBackfill,
   PublicPackageSourceCandidateReview,
   PublicPackageSourceCatalogEntry,
   PublicPackageSourceMapping,
@@ -181,6 +182,23 @@ export async function setPackageSourceMappingState(
     headers: { 'idempotency-key': idempotencyKey },
     body: JSON.stringify(input),
   });
+}
+
+export async function requestPackageReleasePilotBackfill(
+  token: string,
+  mappingId: string,
+  idempotencyKey: string,
+  expectedMappingVersion: number,
+): Promise<{ backfill: PublicPackageReleasePilotBackfill }> {
+  return request(
+    token,
+    `/v1/operator/package-source-mappings/${mappingId}/pilot-backfill`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify({ expectedMappingVersion }),
+    },
+  );
 }
 
 export async function createOrganisation(

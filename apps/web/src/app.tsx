@@ -53,6 +53,7 @@ import {
   loadRepositories,
   loadRun,
   requestImpactAnalysis,
+  requestPackageReleasePilotBackfill,
   reviewPackageSourceCandidate,
   replacePackageSourceCandidate,
   reviewMigrationSpecification,
@@ -762,7 +763,7 @@ function PackageSourceMappingCard({
   const pollIntervalSeconds = 86_400;
   const [busyOperation, setBusyOperation] = useState<{
     readonly targetId: string;
-    readonly action: 'approve' | 'reject' | 'replace' | 'mapping';
+    readonly action: 'approve' | 'reject' | 'replace' | 'mapping' | 'backfill';
   } | null>(null);
   const [replacementKind, setReplacementKind] = useState<
     'sdk_repository_release' | 'changelog' | 'release_feed' | 'migration_guide'
@@ -774,6 +775,7 @@ function PackageSourceMappingCard({
   >('OPERATOR_DISABLED');
   const [rejectingCandidateId, setRejectingCandidateId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [backfillResult, setBackfillResult] = useState<string | null>(null);
 
   async function review(
     candidate: PublicPackageSourceCandidate,
@@ -844,6 +846,27 @@ function PackageSourceMappingCard({
             },
       );
       onReviewed();
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setBusyOperation(null);
+    }
+  }
+
+  async function backfillCurrentRelease(): Promise<void> {
+    setBusyOperation({ targetId: mapping.id, action: 'backfill' });
+    setError(null);
+    setBackfillResult(null);
+    try {
+      const result = await requestPackageReleasePilotBackfill(
+        token,
+        mapping.id,
+        crypto.randomUUID(),
+        mapping.version,
+      );
+      setBackfillResult(
+        `${result.backfill.sourceVersion} → ${result.backfill.targetVersion} queued for migration-guidance analysis.`,
+      );
     } catch (caught) {
       setError(errorText(caught));
     } finally {
@@ -1054,6 +1077,41 @@ function PackageSourceMappingCard({
           );
         })}
       </div>
+      {mapping.status === 'mapped' && pendingCount === 0 && (
+        <section
+          className="pilot-release-backfill"
+          aria-labelledby={`pilot-${mapping.id}`}
+        >
+          <div>
+            <h3 id={`pilot-${mapping.id}`}>Pilot an existing release</h3>
+            <p>
+              Use the installed version from the latest selected repository scan and the
+              current npm release evidence. No version or source URL can be entered
+              manually.
+            </p>
+            {backfillResult && <p className="success-message">{backfillResult}</p>}
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={
+              busyOperation !== null ||
+              mapping.repositoryUsage.direct === 0 ||
+              mapping.latestDeprecated !== false
+            }
+            aria-busy={
+              busyOperation?.targetId === mapping.id &&
+              busyOperation.action === 'backfill'
+            }
+            onClick={() => void backfillCurrentRelease()}
+          >
+            {busyOperation?.targetId === mapping.id &&
+            busyOperation.action === 'backfill'
+              ? 'Queuing…'
+              : 'Ingest current release'}
+          </button>
+        </section>
+      )}
       <details className="package-source-technical">
         <summary>Technical details and controls</summary>
         <div className="package-source-technical-content">
