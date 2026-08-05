@@ -22,6 +22,7 @@ import type {
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
   PublicPackageSourceCandidateReview,
+  PublicPackageEvidenceRefresh,
   PublicPackageSourceCatalogEntry,
   PublicPackageSourceMapping,
   PublicPackageSourceVendor,
@@ -42,10 +43,12 @@ import type {
   MigrationPatchReviewRecord,
   OrganisationRecord,
   PackageReleasePilotBackfillDispatch,
+  AddPackageSourceCandidateInput,
   ReviewMigrationSpecificationInput,
   RequestImpactAnalysisInput,
   ReviewPackageSourceCandidateInput,
   ReplacePackageSourceCandidateInput,
+  RequestPackageEvidenceRefreshInput,
   RequestPackageReleasePilotBackfillInput,
   RetryPackageReleasePilotBackfillInput,
   RevokeMigrationApprovalInput,
@@ -125,6 +128,7 @@ const packageSourceMapping: PublicPackageSourceMapping = {
     optional: 0,
     peer: 0,
   },
+  guidanceRefreshAvailable: false,
   version: 1,
   candidates: [
     {
@@ -288,6 +292,12 @@ class FakeRepository implements ApiRepositoryPort {
       input: ReplacePackageSourceCandidateInput,
     ) => Promise<PublicPackageSourceCandidateReview>
   >(() => Promise.resolve({ mapping: packageSourceMapping }));
+  public readonly addPackageSourceCandidateMock = vi.fn<
+    (
+      userId: string,
+      input: AddPackageSourceCandidateInput,
+    ) => Promise<PublicPackageSourceCandidateReview>
+  >(() => Promise.resolve({ mapping: packageSourceMapping }));
   public readonly setPackageSourceMappingStateMock = vi.fn<
     (
       userId: string,
@@ -315,6 +325,19 @@ class FakeRepository implements ApiRepositoryPort {
   public readonly retryPackageReleasePilotBackfillMock = vi.fn<
     (userId: string, input: RetryPackageReleasePilotBackfillInput) => Promise<void>
   >(() => Promise.resolve());
+  public readonly requestPackageEvidenceRefreshMock = vi.fn<
+    (
+      userId: string,
+      input: RequestPackageEvidenceRefreshInput,
+    ) => Promise<PublicPackageEvidenceRefresh>
+  >(() =>
+    Promise.resolve({
+      vendorReleaseId: organisationId,
+      sourceVersion: '4.29.1',
+      targetVersion: '5.11.2',
+      releaseRevision: 2,
+    }),
+  );
 
   public ensureUser(_actor: Actor): Promise<string> {
     return Promise.resolve(userId);
@@ -352,6 +375,13 @@ class FakeRepository implements ApiRepositoryPort {
     return this.replacePackageSourceCandidateMock(_userId, _input);
   }
 
+  public addPackageSourceCandidate(
+    _userId: string,
+    _input: AddPackageSourceCandidateInput,
+  ): Promise<PublicPackageSourceCandidateReview> {
+    return this.addPackageSourceCandidateMock(_userId, _input);
+  }
+
   public setPackageSourceMappingState(
     _userId: string,
     _input: SetPackageSourceMappingStateInput,
@@ -364,6 +394,13 @@ class FakeRepository implements ApiRepositoryPort {
     _input: RequestPackageReleasePilotBackfillInput,
   ): Promise<PackageReleasePilotBackfillDispatch> {
     return this.requestPackageReleasePilotBackfillMock(_userId, _input);
+  }
+
+  public requestPackageEvidenceRefresh(
+    _userId: string,
+    _input: RequestPackageEvidenceRefreshInput,
+  ): Promise<PublicPackageEvidenceRefresh> {
+    return this.requestPackageEvidenceRefreshMock(_userId, _input);
   }
 
   public retryPackageReleasePilotBackfill(
@@ -1414,6 +1451,37 @@ describe('API handler trust boundary', () => {
     );
   });
 
+  it('adds an exact source as an untrusted candidate', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-mappings/${organisationId}/source-candidates`,
+        {
+          expectedMappingVersion: 5,
+          sourceKind: 'migration_guide',
+          canonicalUrl: 'https://fastify.dev/docs/latest/Guides/Migration-Guide-V5/',
+          proposalNote: 'Verified through the official Fastify documentation.',
+        },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-source-addition:01J7Y5ABCF',
+        },
+      ),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(201);
+    expect(repository.addPackageSourceCandidateMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        mappingId: organisationId,
+        sourceKind: 'migration_guide',
+        expectedMappingVersion: 5,
+      }),
+    );
+  });
+
   it('disables a package source mapping with an explicit reason', async () => {
     const repository = new FakeRepository();
     const response = await handleRequest(
@@ -1470,6 +1538,34 @@ describe('API handler trust boundary', () => {
     );
     expect(parsedBody(response)).toMatchObject({
       backfill: { queueState: 'queued' },
+    });
+  });
+
+  it('queues a new immutable evidence revision for blocked guidance', async () => {
+    const repository = new FakeRepository();
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-mappings/${organisationId}/evidence-refresh`,
+        { expectedMappingVersion: 6 },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-evidence-refresh:01J7Y5ABCH',
+        },
+      ),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(202);
+    expect(repository.requestPackageEvidenceRefreshMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        mappingId: organisationId,
+        expectedMappingVersion: 6,
+      }),
+    );
+    expect(parsedBody(response)).toMatchObject({
+      refresh: { releaseRevision: 2, targetVersion: '5.11.2' },
     });
   });
 

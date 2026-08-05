@@ -3,10 +3,20 @@ import { readFileSync } from 'node:fs';
 import { describe, expect, it } from 'vitest';
 
 import {
+  packageEvidenceRefreshRequestSchema,
+  packageSourceCandidateAdditionRequestSchema,
   packageSourceCandidateReplacementRequestSchema,
   packageSourceCandidateReviewRequestSchema,
   packageSourceMappingStateRequestSchema,
 } from '@migration/contracts';
+
+const evidenceRefreshMigration = readFileSync(
+  new URL(
+    '../supabase/migrations/0036_source_suggestions_and_evidence_refresh.sql',
+    import.meta.url,
+  ),
+  'utf8',
+);
 
 const migration = readFileSync(
   new URL(
@@ -40,6 +50,55 @@ const operatorStyles = readFileSync(
 );
 
 describe('stage 8C package source review', () => {
+  it('proposes bounded GitHub evidence locations without trusting or fetching them', () => {
+    expect(evidenceRefreshMigration).toContain(
+      'create function propose_github_package_evidence_candidates()',
+    );
+    expect(evidenceRefreshMigration).toContain("repository_root || '/releases'");
+    expect(evidenceRefreshMigration).toContain(
+      "repository_root || '/blob/HEAD/CHANGELOG.md'",
+    );
+    expect(evidenceRefreshMigration).toContain(
+      "repository_root || '/blob/HEAD/MIGRATION.md'",
+    );
+    expect(evidenceRefreshMigration).toContain("'pending_review'");
+    expect(evidenceRefreshMigration).not.toContain(
+      "repository_root || '/releases', 'github.com', new.evidence_digest,\n      'approved'",
+    );
+  });
+
+  it('accepts only bounded operator additions and queues immutable evidence revisions', () => {
+    expect(
+      packageSourceCandidateAdditionRequestSchema.safeParse({
+        expectedMappingVersion: 5,
+        sourceKind: 'migration_guide',
+        canonicalUrl: 'https://fastify.dev/docs/latest/Guides/Migration-Guide-V5/',
+        proposalNote: 'Linked from the Fastify documentation navigation.',
+      }).success,
+    ).toBe(true);
+    expect(
+      packageSourceCandidateAdditionRequestSchema.safeParse({
+        expectedMappingVersion: 5,
+        sourceKind: 'migration_guide',
+        canonicalUrl: 'http://169.254.169.254/latest/meta-data',
+        proposalNote: 'unsafe',
+      }).success,
+    ).toBe(false);
+    expect(
+      packageEvidenceRefreshRequestSchema.safeParse({ expectedMappingVersion: 6 })
+        .success,
+    ).toBe(true);
+    expect(evidenceRefreshMigration).toContain(
+      'create function request_package_evidence_refresh(',
+    );
+    expect(evidenceRefreshMigration).toContain("'registered', 'draft'");
+    expect(evidenceRefreshMigration).toContain(
+      "'previous_vendor_release_id', current_release.id",
+    );
+    expect(evidenceRefreshMigration).toContain(
+      'no newly trusted evidence source is available',
+    );
+  });
   it('accepts bounded approvals and rejects source URL substitution', () => {
     expect(
       packageSourceCandidateReviewRequestSchema.safeParse({

@@ -426,10 +426,17 @@ export function draftSpecificationJsonSchema(
       verificationRecommendations: {
         type: 'array',
         minItems: 1,
-        maxItems: 2,
+        maxItems: 6,
         items: {
           type: 'string',
-          enum: ['typescript_static', 'typescript_unit'],
+          enum: [
+            'package_test',
+            'typecheck',
+            'lint',
+            'build',
+            'startup_smoke',
+            'integration_test',
+          ],
         },
       },
       uncertainties: {

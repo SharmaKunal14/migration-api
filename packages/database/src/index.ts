@@ -469,13 +469,18 @@ export interface PackageSourceCandidateTable {
   reviewState: 'pending_review' | 'approved' | 'rejected';
   reviewedByUserId: string | null;
   reviewedAt: Timestamp | null;
-  discoveryMethod: 'npm_registry_metadata' | 'operator_replacement';
+  discoveryMethod:
+    'npm_registry_metadata' | 'operator_replacement' | 'operator_addition';
   proposalReasonCode:
     | 'NPM_REGISTRY_AUTHORITATIVE'
     | 'NPM_REPOSITORY_DECLARATION'
     | 'NPM_HOMEPAGE_DECLARATION'
     | 'NPM_BUGS_DECLARATION'
-    | 'OPERATOR_REPLACEMENT';
+    | 'NPM_REPOSITORY_RELEASES_DERIVED'
+    | 'NPM_REPOSITORY_CHANGELOG_DERIVED'
+    | 'NPM_REPOSITORY_MIGRATION_DERIVED'
+    | 'OPERATOR_REPLACEMENT'
+    | 'OPERATOR_ADDITION';
   proposalNote: string | null;
   supersedesCandidateId: string | null;
   proposedByUserId: string | null;

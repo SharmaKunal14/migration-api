@@ -19,9 +19,11 @@ import type {
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
   PackageSourceCandidateReviewRequest,
+  PackageSourceCandidateAdditionRequest,
   PackageSourceCandidateReplacementRequest,
   PackageSourceMappingStateRequest,
   PublicPackageReleasePilotBackfill,
+  PublicPackageEvidenceRefresh,
   PublicPackageSourceCandidateReview,
   PublicPackageSourceCatalogEntry,
   PublicPackageSourceMapping,
@@ -171,6 +173,23 @@ export async function replacePackageSourceCandidate(
   );
 }
 
+export async function addPackageSourceCandidate(
+  token: string,
+  mappingId: string,
+  idempotencyKey: string,
+  input: PackageSourceCandidateAdditionRequest,
+): Promise<{ review: PublicPackageSourceCandidateReview }> {
+  return request(
+    token,
+    `/v1/operator/package-source-mappings/${mappingId}/source-candidates`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify(input),
+    },
+  );
+}
+
 export async function setPackageSourceMappingState(
   token: string,
   mappingId: string,
@@ -193,6 +212,23 @@ export async function requestPackageReleasePilotBackfill(
   return request(
     token,
     `/v1/operator/package-source-mappings/${mappingId}/pilot-backfill`,
+    {
+      method: 'POST',
+      headers: { 'idempotency-key': idempotencyKey },
+      body: JSON.stringify({ expectedMappingVersion }),
+    },
+  );
+}
+
+export async function requestPackageEvidenceRefresh(
+  token: string,
+  mappingId: string,
+  idempotencyKey: string,
+  expectedMappingVersion: number,
+): Promise<{ refresh: PublicPackageEvidenceRefresh }> {
+  return request(
+    token,
+    `/v1/operator/package-source-mappings/${mappingId}/evidence-refresh`,
     {
       method: 'POST',
       headers: { 'idempotency-key': idempotencyKey },

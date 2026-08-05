@@ -260,7 +260,7 @@ describe('Stage 3C change-intelligence boundary', () => {
             },
           ],
           preconditions: ['The installed version satisfies ^4.0.0.'],
-          verificationRecommendations: ['typescript_static'],
+          verificationRecommendations: ['package_test', 'startup_smoke'],
           uncertainties: [],
         }),
         secondIdentity,

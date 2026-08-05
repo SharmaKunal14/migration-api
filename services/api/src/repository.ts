@@ -20,7 +20,9 @@ import type {
   GithubInstallationVerification,
   MigrationApprovalAuthority,
   MigrationSpecification,
+  PackageEvidenceRefreshRequest,
   PackageReleasePilotBackfillRequest,
+  PackageSourceCandidateAdditionRequest,
   PackageSourceCandidateReviewRequest,
   PackageSourceCandidateReplacementRequest,
   PackageSourceMappingStateRequest,
@@ -45,6 +47,7 @@ import type {
   PublicMigrationSpecificationReview,
   PublicPackageSourceCandidateReview,
   PublicPackageReleasePilotBackfill,
+  PublicPackageEvidenceRefresh,
   PublicPackageSourceCatalogEntry,
   PublicPackageSourceMapping,
   PublicPackageSourceVendor,
@@ -131,6 +134,12 @@ export type ReplacePackageSourceCandidateInput =
     readonly requestId: string;
   };
 
+export type AddPackageSourceCandidateInput = PackageSourceCandidateAdditionRequest & {
+  readonly mappingId: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+};
+
 export type SetPackageSourceMappingStateInput = PackageSourceMappingStateRequest & {
   readonly mappingId: string;
   readonly idempotencyKey: string;
@@ -143,6 +152,12 @@ export type RequestPackageReleasePilotBackfillInput =
     readonly idempotencyKey: string;
     readonly requestId: string;
   };
+
+export type RequestPackageEvidenceRefreshInput = PackageEvidenceRefreshRequest & {
+  readonly mappingId: string;
+  readonly idempotencyKey: string;
+  readonly requestId: string;
+};
 
 export interface PackageReleasePilotBackfillDispatch {
   readonly backfill: Omit<PublicPackageReleasePilotBackfill, 'queueState'>;
@@ -294,6 +309,10 @@ export interface ApiRepositoryPort {
     userId: string,
     input: ReplacePackageSourceCandidateInput,
   ): Promise<PublicPackageSourceCandidateReview>;
+  addPackageSourceCandidate(
+    userId: string,
+    input: AddPackageSourceCandidateInput,
+  ): Promise<PublicPackageSourceCandidateReview>;
   setPackageSourceMappingState(
     userId: string,
     input: SetPackageSourceMappingStateInput,
@@ -302,6 +321,10 @@ export interface ApiRepositoryPort {
     userId: string,
     input: RequestPackageReleasePilotBackfillInput,
   ): Promise<PackageReleasePilotBackfillDispatch>;
+  requestPackageEvidenceRefresh(
+    userId: string,
+    input: RequestPackageEvidenceRefreshInput,
+  ): Promise<PublicPackageEvidenceRefresh>;
   retryPackageReleasePilotBackfill(
     userId: string,
     input: RetryPackageReleasePilotBackfillInput,
@@ -1563,6 +1586,85 @@ export class ApiRepository implements ApiRepositoryPort {
     }
   }
 
+  public async addPackageSourceCandidate(
+    userId: string,
+    input: AddPackageSourceCandidateInput,
+  ): Promise<PublicPackageSourceCandidateReview> {
+    const candidate = canonicalPackageSourceUrl(input.canonicalUrl);
+    const requestDigest = digestJson({
+      mappingId: input.mappingId,
+      expectedMappingVersion: input.expectedMappingVersion,
+      sourceKind: input.sourceKind,
+      canonicalUrl: candidate.url,
+      proposalNote: input.proposalNote,
+    });
+    try {
+      return await this.database.transaction().execute(async transaction => {
+        await requirePlatformOperator(transaction, userId);
+        const previous = await transaction
+          .selectFrom('apiIdempotencyKeys')
+          .select(['requestDigest', 'resultResourceId'])
+          .where('actorId', '=', userId)
+          .where('action', '=', 'package_source_candidate:add')
+          .where('idempotencyKey', '=', input.idempotencyKey)
+          .executeTakeFirst();
+        if (previous) {
+          if (previous.requestDigest !== requestDigest) {
+            throw new DomainError(
+              'IDEMPOTENCY_CONFLICT',
+              'The idempotency key was already used for another request.',
+              409,
+            );
+          }
+          return {
+            mapping: await loadPackageSourceMappingByCandidate(
+              transaction,
+              previous.resultResourceId,
+            ),
+          };
+        }
+        const result = await sql<{ candidateId: string }>`
+          select add_package_source_candidate(
+            ${input.mappingId}::uuid,
+            ${userId}::uuid,
+            ${input.expectedMappingVersion},
+            ${input.sourceKind},
+            ${candidate.url},
+            ${candidate.domain},
+            ${input.proposalNote},
+            ${input.requestId}::uuid
+          ) as "candidateId"
+        `.execute(transaction);
+        const candidateId = result.rows[0]?.candidateId;
+        if (!candidateId) {
+          throw new DomainError(
+            'PACKAGE_SOURCE_ADDITION_FAILED',
+            'The source candidate could not be created.',
+            500,
+          );
+        }
+        const now = new Date();
+        await transaction
+          .insertInto('apiIdempotencyKeys')
+          .values({
+            actorId: userId,
+            action: 'package_source_candidate:add',
+            idempotencyKey: input.idempotencyKey,
+            requestDigest,
+            resultResourceId: candidateId,
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
+          })
+          .executeTakeFirstOrThrow();
+        return {
+          mapping: await loadPackageSourceMappingByCandidate(transaction, candidateId),
+        };
+      });
+    } catch (error) {
+      throwPackageSourceMutationError(error, 'addition');
+    }
+  }
+
   public async setPackageSourceMappingState(
     userId: string,
     input: SetPackageSourceMappingStateInput,
@@ -1743,6 +1845,130 @@ export class ApiRepository implements ApiRepositoryPort {
           'PACKAGE_RELEASE_BACKFILL_NOT_ELIGIBLE',
           'The current release is not eligible for pilot ingestion.',
           409,
+        );
+      }
+      throw error;
+    }
+  }
+
+  public async requestPackageEvidenceRefresh(
+    userId: string,
+    input: RequestPackageEvidenceRefreshInput,
+  ): Promise<PublicPackageEvidenceRefresh> {
+    const requestDigest = digestJson({
+      mappingId: input.mappingId,
+      expectedMappingVersion: input.expectedMappingVersion,
+    });
+    try {
+      return await this.database.transaction().execute(async transaction => {
+        await requirePlatformOperator(transaction, userId);
+        const previous = await transaction
+          .selectFrom('apiIdempotencyKeys')
+          .select(['requestDigest', 'resultResourceId'])
+          .where('actorId', '=', userId)
+          .where('action', '=', 'package_evidence:refresh')
+          .where('idempotencyKey', '=', input.idempotencyKey)
+          .executeTakeFirst();
+        if (previous) {
+          if (previous.requestDigest !== requestDigest) {
+            throw new DomainError(
+              'IDEMPOTENCY_CONFLICT',
+              'The idempotency key was already used for another request.',
+              409,
+            );
+          }
+          const repeated = await sql<{
+            vendorReleaseId: string;
+            sourceVersion: string;
+            targetVersion: string;
+            releaseRevision: number;
+          }>`
+            select
+              release.id as "vendorReleaseId",
+              release.source_compatibility as "sourceVersion",
+              release.version as "targetVersion",
+              release.revision as "releaseRevision"
+            from vendor_releases as release
+            inner join release_intelligence_outbox as outbox
+              on outbox.aggregate_id = release.id
+            where release.id = ${previous.resultResourceId}::uuid
+          `.execute(transaction);
+          const refresh = repeated.rows[0];
+          if (!refresh?.vendorReleaseId) {
+            throw new DomainError(
+              'PACKAGE_EVIDENCE_REFRESH_NOT_FOUND',
+              'The previous evidence refresh could not be loaded.',
+              404,
+            );
+          }
+          return refresh;
+        }
+        const result = await sql<{
+          vendorReleaseId: string;
+          sourceVersion: string;
+          targetVersion: string;
+          releaseRevision: number;
+        }>`
+          select
+            vendor_release_id as "vendorReleaseId",
+            source_version as "sourceVersion",
+            target_version as "targetVersion",
+            release_revision as "releaseRevision"
+          from request_package_evidence_refresh(
+            ${input.mappingId}::uuid,
+            ${userId}::uuid,
+            ${input.expectedMappingVersion},
+            ${input.requestId}::uuid
+          )
+        `.execute(transaction);
+        const refresh = result.rows[0];
+        if (!refresh?.vendorReleaseId) {
+          throw new DomainError(
+            'PACKAGE_EVIDENCE_REFRESH_FAILED',
+            'The evidence refresh could not be queued.',
+            500,
+          );
+        }
+        const now = new Date();
+        await transaction
+          .insertInto('apiIdempotencyKeys')
+          .values({
+            actorId: userId,
+            action: 'package_evidence:refresh',
+            idempotencyKey: input.idempotencyKey,
+            requestDigest,
+            resultResourceId: refresh.vendorReleaseId,
+            createdAt: now,
+            expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
+          })
+          .executeTakeFirstOrThrow();
+        return refresh;
+      });
+    } catch (error) {
+      if (error instanceof DomainError) throw error;
+      const code = postgresErrorCode(error);
+      const message = postgresErrorMessage(error) ?? '';
+      if (code === '40001' || code === '23505') {
+        throw new DomainError(
+          'PACKAGE_EVIDENCE_REFRESH_CONFLICT',
+          'The package evidence changed before the refresh could be queued.',
+          409,
+        );
+      }
+      if (code === '23514') {
+        throw new DomainError(
+          'PACKAGE_EVIDENCE_REFRESH_NOT_ELIGIBLE',
+          message === 'no newly trusted evidence source is available'
+            ? 'Confirm at least one new official evidence source before regenerating guidance.'
+            : 'Only an ambiguous draft with newly confirmed evidence can be regenerated.',
+          409,
+        );
+      }
+      if (code === '42501') {
+        throw new DomainError(
+          'PLATFORM_OPERATOR_REQUIRED',
+          'Platform operator authorization is required.',
+          403,
         );
       }
       throw error;
@@ -4289,6 +4515,52 @@ async function loadPackageSourceMappings(
       },
     ]),
   );
+  const refreshResult = await sql<{ mappingId: string; available: boolean }>`
+    select
+      mapping.id as "mappingId",
+      exists (
+        select 1
+        from vendor_releases as release
+        inner join migration_specifications as specification
+          on specification.vendor_release_id = release.id
+        where release.api_product_id = mapping.api_product_id
+          and specification.trust_state = 'draft'
+          and jsonb_path_exists(
+            specification.specification,
+            '$.changes[*] ? (@.certainty == "ambiguous")'
+          )
+          and not exists (
+            select 1
+            from vendor_releases as newer_release
+            where newer_release.api_product_id = release.api_product_id
+              and newer_release.version = release.version
+              and newer_release.revision > release.revision
+              and newer_release.processing_state in ('registered', 'fetched', 'validated')
+              and not exists (
+                select 1
+                from migration_specifications as newer_specification
+                where newer_specification.vendor_release_id = newer_release.id
+              )
+          )
+          and exists (
+            select 1
+            from vendor_sources as source
+            where source.api_product_id = mapping.api_product_id
+              and source.trust_state = 'trusted'
+              and not exists (
+                select 1
+                from vendor_evidence_items as item
+                where item.vendor_release_id = release.id
+                  and item.vendor_source_id = source.id
+              )
+          )
+      ) as available
+    from package_source_mappings as mapping
+    where mapping.id in (${sql.join(mappingIds.map(id => sql`${id}::uuid`))})
+  `.execute(database);
+  const refreshByMapping = new Map(
+    refreshResult.rows.map(row => [row.mappingId, row.available]),
+  );
   return rows.map(row => {
     if (
       row.status !== 'needs_review' &&
@@ -4323,6 +4595,7 @@ async function loadPackageSourceMappings(
         optional: 0,
         peer: 0,
       },
+      guidanceRefreshAvailable: refreshByMapping.get(row.id) ?? false,
       candidates: candidates
         .filter(candidate => candidate.mappingId === row.id)
         .map(candidate => ({

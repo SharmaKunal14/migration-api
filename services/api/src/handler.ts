@@ -27,7 +27,9 @@ import {
   githubSetupCompletionRequestSchema,
   impactAnalysisWorkflowInputSchema,
   migrationSpecificationReviewRequestSchema,
+  packageEvidenceRefreshRequestSchema,
   packageReleasePilotBackfillRequestSchema,
+  packageSourceCandidateAdditionRequestSchema,
   packageSourceCandidateReviewRequestSchema,
   packageSourceCandidateReplacementRequestSchema,
   packageSourceMappingStateRequestSchema,
@@ -291,9 +293,21 @@ export async function handleRequest(
               path,
             )
           : null;
+      const packageSourceAdditionMatch =
+        method === 'POST'
+          ? /^\/v1\/operator\/package-source-mappings\/([0-9a-f-]{36})\/source-candidates$/u.exec(
+              path,
+            )
+          : null;
       const packageReleasePilotBackfillMatch =
         method === 'POST'
           ? /^\/v1\/operator\/package-source-mappings\/([0-9a-f-]{36})\/pilot-backfill$/u.exec(
+              path,
+            )
+          : null;
+      const packageEvidenceRefreshMatch =
+        method === 'POST'
+          ? /^\/v1\/operator\/package-source-mappings\/([0-9a-f-]{36})\/evidence-refresh$/u.exec(
               path,
             )
           : null;
@@ -386,6 +400,18 @@ export async function handleRequest(
             requestId,
           }),
         });
+      } else if (packageSourceAdditionMatch?.[1]) {
+        const input = packageSourceCandidateAdditionRequestSchema.parse(
+          parseBody(event),
+        );
+        response = json(201, {
+          review: await repository.addPackageSourceCandidate(userId, {
+            ...input,
+            mappingId: z.uuid().parse(packageSourceAdditionMatch[1]),
+            idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+            requestId,
+          }),
+        });
       } else if (packageSourceMappingStateMatch?.[1]) {
         const input = packageSourceMappingStateRequestSchema.parse(parseBody(event));
         response = json(200, {
@@ -413,6 +439,16 @@ export async function handleRequest(
         );
         response = json(202, {
           backfill,
+        });
+      } else if (packageEvidenceRefreshMatch?.[1]) {
+        const input = packageEvidenceRefreshRequestSchema.parse(parseBody(event));
+        response = json(202, {
+          refresh: await repository.requestPackageEvidenceRefresh(userId, {
+            mappingId: z.uuid().parse(packageEvidenceRefreshMatch[1]),
+            expectedMappingVersion: input.expectedMappingVersion,
+            idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+            requestId,
+          }),
         });
       } else if (method === 'GET' && path === '/v1/operator/package-source-catalog') {
         response = json(200, await repository.listPackageSourceCatalog(userId));

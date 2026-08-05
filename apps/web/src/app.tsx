@@ -31,6 +31,7 @@ import type {
 
 import {
   ApiError,
+  addPackageSourceCandidate,
   approveMigrationCandidate,
   cancelMigrationRun,
   completeGithubSetup,
@@ -54,6 +55,7 @@ import {
   loadRun,
   requestImpactAnalysis,
   requestPackageReleasePilotBackfill,
+  requestPackageEvidenceRefresh,
   reviewPackageSourceCandidate,
   replacePackageSourceCandidate,
   reviewMigrationSpecification,
@@ -763,19 +765,26 @@ function PackageSourceMappingCard({
   const pollIntervalSeconds = 86_400;
   const [busyOperation, setBusyOperation] = useState<{
     readonly targetId: string;
-    readonly action: 'approve' | 'reject' | 'replace' | 'mapping' | 'backfill';
+    readonly action:
+      'approve' | 'reject' | 'replace' | 'add' | 'mapping' | 'backfill' | 'refresh';
   } | null>(null);
   const [replacementKind, setReplacementKind] = useState<
     'sdk_repository_release' | 'changelog' | 'release_feed' | 'migration_guide'
   >('sdk_repository_release');
   const [replacementUrl, setReplacementUrl] = useState('');
   const [replacementNote, setReplacementNote] = useState('');
+  const [newSourceKind, setNewSourceKind] = useState<
+    'sdk_repository_release' | 'changelog' | 'release_feed' | 'migration_guide'
+  >('migration_guide');
+  const [newSourceUrl, setNewSourceUrl] = useState('');
+  const [newSourceNote, setNewSourceNote] = useState('');
   const [disabledReasonCode, setDisabledReasonCode] = useState<
     'OPERATOR_DISABLED' | 'PACKAGE_UNSUPPORTED' | 'SECURITY_CONCERN'
   >('OPERATOR_DISABLED');
   const [rejectingCandidateId, setRejectingCandidateId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [backfillResult, setBackfillResult] = useState<string | null>(null);
+  const [refreshResult, setRefreshResult] = useState<string | null>(null);
 
   async function review(
     candidate: PublicPackageSourceCandidate,
@@ -846,6 +855,47 @@ function PackageSourceMappingCard({
             },
       );
       onReviewed();
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setBusyOperation(null);
+    }
+  }
+
+  async function addSourceCandidate(): Promise<void> {
+    setBusyOperation({ targetId: mapping.id, action: 'add' });
+    setError(null);
+    try {
+      await addPackageSourceCandidate(token, mapping.id, crypto.randomUUID(), {
+        expectedMappingVersion: mapping.version,
+        sourceKind: newSourceKind,
+        canonicalUrl: newSourceUrl,
+        proposalNote: newSourceNote,
+      });
+      setNewSourceUrl('');
+      setNewSourceNote('');
+      onReviewed();
+    } catch (caught) {
+      setError(errorText(caught));
+    } finally {
+      setBusyOperation(null);
+    }
+  }
+
+  async function refreshEvidence(): Promise<void> {
+    setBusyOperation({ targetId: mapping.id, action: 'refresh' });
+    setError(null);
+    setRefreshResult(null);
+    try {
+      const result = await requestPackageEvidenceRefresh(
+        token,
+        mapping.id,
+        crypto.randomUUID(),
+        mapping.version,
+      );
+      setRefreshResult(
+        `${result.refresh.sourceVersion} → ${result.refresh.targetVersion} queued with the newly confirmed evidence. The previous draft remains available for audit.`,
+      );
     } catch (caught) {
       setError(errorText(caught));
     } finally {
@@ -1082,6 +1132,80 @@ function PackageSourceMappingCard({
           );
         })}
       </div>
+      {mapping.status === 'mapped' && (
+        <section className="source-evidence-controls">
+          <div>
+            <h3>Add official migration evidence</h3>
+            <p>
+              Use this only when the confirmed sources do not explain an upgrade. Open
+              the proposed URL yourself first; adding it creates an untrusted candidate
+              and does not fetch or trust it.
+            </p>
+          </div>
+          <div className="source-evidence-addition">
+            <select
+              aria-label="Evidence source type"
+              value={newSourceKind}
+              onChange={event =>
+                setNewSourceKind(event.target.value as typeof newSourceKind)
+              }
+            >
+              <option value="migration_guide">Migration guide</option>
+              <option value="changelog">Changelog</option>
+              <option value="release_feed">Release page or feed</option>
+              <option value="sdk_repository_release">Source repository</option>
+            </select>
+            <input
+              aria-label="Official evidence URL"
+              type="url"
+              placeholder="https://official-project.example/migration-guide"
+              value={newSourceUrl}
+              onChange={event => setNewSourceUrl(event.target.value)}
+            />
+            <input
+              aria-label="How the source was verified"
+              maxLength={500}
+              placeholder="Why this URL belongs to the package publisher"
+              value={newSourceNote}
+              onChange={event => setNewSourceNote(event.target.value)}
+            />
+            <button
+              className="secondary-button"
+              type="button"
+              disabled={
+                busyOperation !== null || !newSourceUrl || !newSourceNote.trim()
+              }
+              aria-busy={busyOperation?.action === 'add'}
+              onClick={() => void addSourceCandidate()}
+            >
+              {busyOperation?.action === 'add' ? 'Adding…' : 'Add for confirmation'}
+            </button>
+          </div>
+        </section>
+      )}
+      {mapping.status === 'mapped' && mapping.guidanceRefreshAvailable && (
+        <section className="source-evidence-refresh">
+          <div>
+            <h3>Regenerate blocked guidance</h3>
+            <p>
+              After confirming a new changelog or migration guide, create a new
+              immutable evidence revision and analyse it again.
+            </p>
+            {refreshResult && <p className="success-message">{refreshResult}</p>}
+          </div>
+          <button
+            className="secondary-button"
+            type="button"
+            disabled={busyOperation !== null}
+            aria-busy={busyOperation?.action === 'refresh'}
+            onClick={() => void refreshEvidence()}
+          >
+            {busyOperation?.action === 'refresh'
+              ? 'Queuing…'
+              : 'Regenerate with confirmed sources'}
+          </button>
+        </section>
+      )}
       {mapping.status === 'mapped' && pendingCount === 0 && (
         <section
           className="pilot-release-backfill"
@@ -3702,7 +3826,15 @@ function packageSourceProposalText(
     NPM_REPOSITORY_DECLARATION: 'npm metadata declared this repository',
     NPM_HOMEPAGE_DECLARATION: 'npm metadata declared this homepage',
     NPM_BUGS_DECLARATION: 'npm metadata declared this issue tracker',
+    NPM_REPOSITORY_RELEASES_DERIVED:
+      'suggested from the publisher-declared GitHub repository; verify that this release page is real before confirming',
+    NPM_REPOSITORY_CHANGELOG_DERIVED:
+      'suggested from the publisher-declared GitHub repository; verify that this changelog exists and belongs to the project',
+    NPM_REPOSITORY_MIGRATION_DERIVED:
+      'suggested from the publisher-declared GitHub repository; verify that this migration guide exists and is official',
     OPERATOR_REPLACEMENT: 'a platform operator proposed a reviewed replacement',
+    OPERATOR_ADDITION:
+      'a platform operator proposed this exact URL; it remains untrusted until confirmed',
   };
   return descriptions[code];
 }

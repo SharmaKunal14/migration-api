@@ -302,6 +302,32 @@ export const packageSourceCandidateReplacementRequestSchema = z
   })
   .strict();
 
+export const packageSourceCandidateAdditionRequestSchema = z
+  .object({
+    expectedMappingVersion: packageSourceReviewVersionSchema,
+    sourceKind: z.enum([
+      'sdk_repository_release',
+      'changelog',
+      'release_feed',
+      'migration_guide',
+    ]),
+    canonicalUrl: z
+      .url()
+      .max(2_048)
+      .refine(value => {
+        const parsed = new URL(value);
+        return (
+          parsed.protocol === 'https:' &&
+          parsed.username === '' &&
+          parsed.password === '' &&
+          parsed.port === '' &&
+          parsed.hash === ''
+        );
+      }, 'Source URL must be an HTTPS URL without credentials, port, or fragment.'),
+    proposalNote: z.string().trim().min(1).max(500),
+  })
+  .strict();
+
 export const packageSourceMappingStateRequestSchema = z.discriminatedUnion('action', [
   z
     .object({
@@ -323,6 +349,12 @@ export const packageSourceMappingStateRequestSchema = z.discriminatedUnion('acti
 ]);
 
 export const packageReleasePilotBackfillRequestSchema = z
+  .object({
+    expectedMappingVersion: packageSourceReviewVersionSchema,
+  })
+  .strict();
+
+export const packageEvidenceRefreshRequestSchema = z
   .object({
     expectedMappingVersion: packageSourceReviewVersionSchema,
   })
@@ -456,6 +488,18 @@ const migrationSpecificationChangeSchema = z
   })
   .strict();
 
+export const migrationSpecificationVerificationRecommendationSchema = z.enum([
+  // Retained so previously generated, immutable specifications remain readable.
+  'typescript_static',
+  'typescript_unit',
+  'package_test',
+  'typecheck',
+  'lint',
+  'build',
+  'startup_smoke',
+  'integration_test',
+]);
+
 export const migrationSpecificationSchema = z
   .object({
     schemaVersion: z.literal('1.0'),
@@ -477,9 +521,9 @@ export const migrationSpecificationSchema = z
     evidence: z.array(migrationEvidenceReferenceSchema).min(1).max(100),
     preconditions: z.array(z.string().min(1).max(512)).max(50),
     verificationRecommendations: z
-      .array(z.enum(['typescript_static', 'typescript_unit']))
+      .array(migrationSpecificationVerificationRecommendationSchema)
       .min(1)
-      .max(2),
+      .max(6),
     uncertainties: z
       .array(
         z
@@ -2567,11 +2611,17 @@ export type PackageSourceCandidateReviewRequest = z.infer<
 export type PackageSourceCandidateReplacementRequest = z.infer<
   typeof packageSourceCandidateReplacementRequestSchema
 >;
+export type PackageSourceCandidateAdditionRequest = z.infer<
+  typeof packageSourceCandidateAdditionRequestSchema
+>;
 export type PackageSourceMappingStateRequest = z.infer<
   typeof packageSourceMappingStateRequestSchema
 >;
 export type PackageReleasePilotBackfillRequest = z.infer<
   typeof packageReleasePilotBackfillRequestSchema
+>;
+export type PackageEvidenceRefreshRequest = z.infer<
+  typeof packageEvidenceRefreshRequestSchema
 >;
 export type WorkflowInput = z.infer<typeof workflowInputSchema>;
 export type MigrationPlan = z.infer<typeof migrationPlanSchema>;
@@ -2798,13 +2848,18 @@ export interface PublicPackageSourceCandidate {
   readonly canonicalUrl: string;
   readonly canonicalDomain: string;
   readonly reviewState: 'pending_review' | 'approved' | 'rejected';
-  readonly discoveryMethod: 'npm_registry_metadata' | 'operator_replacement';
+  readonly discoveryMethod:
+    'npm_registry_metadata' | 'operator_replacement' | 'operator_addition';
   readonly proposalReasonCode:
     | 'NPM_REGISTRY_AUTHORITATIVE'
     | 'NPM_REPOSITORY_DECLARATION'
     | 'NPM_HOMEPAGE_DECLARATION'
     | 'NPM_BUGS_DECLARATION'
-    | 'OPERATOR_REPLACEMENT';
+    | 'NPM_REPOSITORY_RELEASES_DERIVED'
+    | 'NPM_REPOSITORY_CHANGELOG_DERIVED'
+    | 'NPM_REPOSITORY_MIGRATION_DERIVED'
+    | 'OPERATOR_REPLACEMENT'
+    | 'OPERATOR_ADDITION';
   readonly proposalNote: string | null;
   readonly supersedesCandidateId: string | null;
   readonly rejectionReasonCode:
@@ -2836,6 +2891,7 @@ export interface PublicPackageSourceMapping {
     readonly optional: number;
     readonly peer: number;
   };
+  readonly guidanceRefreshAvailable: boolean;
   readonly version: number;
   readonly candidates: readonly PublicPackageSourceCandidate[];
 }
@@ -2870,6 +2926,13 @@ export interface PublicPackageReleasePilotBackfill {
   readonly targetVersion: string;
   readonly created: boolean;
   readonly queueState: 'queued' | 'in_progress' | 'completed';
+}
+
+export interface PublicPackageEvidenceRefresh {
+  readonly vendorReleaseId: string;
+  readonly sourceVersion: string;
+  readonly targetVersion: string;
+  readonly releaseRevision: number;
 }
 
 export interface PublicMigrationSpecificationReview {
