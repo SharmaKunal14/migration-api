@@ -15,6 +15,9 @@ const vendorFetcherGrant = source(
 const workflowRetry = source(
   'supabase/migrations/0034_pilot_release_workflow_retry.sql',
 );
+const dispatchReader = source(
+  'supabase/migrations/0035_pilot_backfill_dispatch_reader.sql',
+);
 const dispatcher = source('services/outbox-dispatcher/src/handler.ts');
 const repository = source('services/api/src/repository.ts');
 const web = source('apps/web/src/app.tsx');
@@ -85,6 +88,17 @@ describe('Stage 8H current release pilot backfill', () => {
     expect(dispatcher).toContain(
       '`release-intelligence-${event.payload.correlationId}`',
     );
+  });
+
+  it('loads retry state through an operator-bounded function without broader table grants', () => {
+    expect(dispatchReader).toContain(
+      'create function load_package_release_pilot_backfill_dispatch',
+    );
+    expect(dispatchReader).toContain('if not is_platform_operator');
+    expect(dispatchReader).toContain('inner join release_intelligence_outbox');
+    expect(dispatchReader).toContain('grant execute on function');
+    expect(dispatchReader).not.toContain('grant select on package_release_detections');
+    expect(repository).toContain('from load_package_release_pilot_backfill_dispatch(');
   });
 
   it('keeps the operator interaction bounded and explains the derived authority', () => {

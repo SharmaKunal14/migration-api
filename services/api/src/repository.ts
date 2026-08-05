@@ -1660,6 +1660,7 @@ export class ApiRepository implements ApiRepositoryPort {
           return loadPackageReleasePilotBackfillDispatch(
             transaction,
             previous.resultResourceId,
+            userId,
             false,
           );
         }
@@ -1708,6 +1709,7 @@ export class ApiRepository implements ApiRepositoryPort {
         return loadPackageReleasePilotBackfillDispatch(
           transaction,
           backfill.detectionId,
+          userId,
           backfill.created,
         );
       });
@@ -4102,18 +4104,30 @@ async function loadPackageSourceMappingByCandidate(
 async function loadPackageReleasePilotBackfillDispatch(
   database: PackageSourceDatabase,
   detectionId: string,
+  operatorUserId: string,
   created: boolean,
 ): Promise<PackageReleasePilotBackfillDispatch> {
-  const row = await database
-    .selectFrom('packageReleaseDetections')
-    .select([
-      'id as detectionId',
-      'vendorReleaseId',
-      'sourceVersion',
-      'version as targetVersion',
-    ])
-    .where('id', '=', detectionId)
-    .executeTakeFirst();
+  const result = await sql<{
+    detectionId: string;
+    vendorReleaseId: string;
+    sourceVersion: string;
+    targetVersion: string;
+    deliveredAt: Date | null;
+    workflowExecutionArn: string | null;
+  }>`
+    select
+      detection_id as "detectionId",
+      vendor_release_id as "vendorReleaseId",
+      source_version as "sourceVersion",
+      target_version as "targetVersion",
+      delivered_at as "deliveredAt",
+      workflow_execution_arn as "workflowExecutionArn"
+    from load_package_release_pilot_backfill_dispatch(
+      ${detectionId}::uuid,
+      ${operatorUserId}::uuid
+    )
+  `.execute(database);
+  const row = result.rows[0];
   if (!row?.vendorReleaseId || !row.sourceVersion) {
     throw new DomainError(
       'PACKAGE_RELEASE_BACKFILL_NOT_FOUND',
@@ -4121,27 +4135,16 @@ async function loadPackageReleasePilotBackfillDispatch(
       404,
     );
   }
-  const outbox = await database
-    .selectFrom('releaseIntelligenceOutbox')
-    .select(['deliveredAt', 'workflowExecutionArn'])
-    .where('aggregateId', '=', row.vendorReleaseId)
-    .executeTakeFirst();
-  if (!outbox) {
-    throw new DomainError(
-      'PACKAGE_RELEASE_BACKFILL_OUTBOX_NOT_FOUND',
-      'The pilot release workflow request could not be loaded.',
-      500,
-    );
-  }
   return {
     backfill: {
-      ...row,
+      detectionId: row.detectionId,
       vendorReleaseId: row.vendorReleaseId,
       sourceVersion: row.sourceVersion,
+      targetVersion: row.targetVersion,
       created,
     },
-    workflowExecutionArn: outbox.workflowExecutionArn,
-    outboxPending: outbox.deliveredAt === null,
+    workflowExecutionArn: row.workflowExecutionArn,
+    outboxPending: row.deliveredAt === null,
   };
 }
 
