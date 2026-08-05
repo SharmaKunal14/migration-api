@@ -864,8 +864,13 @@ function PackageSourceMappingCard({
         crypto.randomUUID(),
         mapping.version,
       );
+      const route = `${result.backfill.sourceVersion} → ${result.backfill.targetVersion}`;
       setBackfillResult(
-        `${result.backfill.sourceVersion} → ${result.backfill.targetVersion} queued for migration-guidance analysis.`,
+        result.backfill.queueState === 'completed'
+          ? `${route} analysis is complete. Refresh Review migration guidance.`
+          : result.backfill.queueState === 'in_progress'
+            ? `${route} migration-guidance analysis is already running.`
+            : `${route} queued for migration-guidance analysis.`,
       );
     } catch (caught) {
       setError(errorText(caught));

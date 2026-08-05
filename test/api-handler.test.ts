@@ -22,7 +22,6 @@ import type {
   PublicMigrationSpecificationDetail,
   PublicMigrationSpecificationReview,
   PublicPackageSourceCandidateReview,
-  PublicPackageReleasePilotBackfill,
   PublicPackageSourceCatalogEntry,
   PublicPackageSourceMapping,
   PublicPackageSourceVendor,
@@ -42,11 +41,13 @@ import type {
   InstallationLinkRecord,
   MigrationPatchReviewRecord,
   OrganisationRecord,
+  PackageReleasePilotBackfillDispatch,
   ReviewMigrationSpecificationInput,
   RequestImpactAnalysisInput,
   ReviewPackageSourceCandidateInput,
   ReplacePackageSourceCandidateInput,
   RequestPackageReleasePilotBackfillInput,
+  RetryPackageReleasePilotBackfillInput,
   RevokeMigrationApprovalInput,
   SetPackageSourceMappingStateInput,
   UpdateCandidateNotificationStateInput,
@@ -297,16 +298,23 @@ class FakeRepository implements ApiRepositoryPort {
     (
       userId: string,
       input: RequestPackageReleasePilotBackfillInput,
-    ) => Promise<PublicPackageReleasePilotBackfill>
+    ) => Promise<PackageReleasePilotBackfillDispatch>
   >(() =>
     Promise.resolve({
-      detectionId: runId,
-      vendorReleaseId: organisationId,
-      sourceVersion: '5.9.0',
-      targetVersion: '5.10.0',
-      created: true,
+      backfill: {
+        detectionId: runId,
+        vendorReleaseId: organisationId,
+        sourceVersion: '5.9.0',
+        targetVersion: '5.10.0',
+        created: true,
+      },
+      workflowExecutionArn: null,
+      outboxPending: true,
     }),
   );
+  public readonly retryPackageReleasePilotBackfillMock = vi.fn<
+    (userId: string, input: RetryPackageReleasePilotBackfillInput) => Promise<void>
+  >(() => Promise.resolve());
 
   public ensureUser(_actor: Actor): Promise<string> {
     return Promise.resolve(userId);
@@ -354,8 +362,15 @@ class FakeRepository implements ApiRepositoryPort {
   public requestPackageReleasePilotBackfill(
     _userId: string,
     _input: RequestPackageReleasePilotBackfillInput,
-  ): Promise<PublicPackageReleasePilotBackfill> {
+  ): Promise<PackageReleasePilotBackfillDispatch> {
     return this.requestPackageReleasePilotBackfillMock(_userId, _input);
+  }
+
+  public retryPackageReleasePilotBackfill(
+    _userId: string,
+    _input: RetryPackageReleasePilotBackfillInput,
+  ): Promise<void> {
+    return this.retryPackageReleasePilotBackfillMock(_userId, _input);
   }
 
   public listOrganisations(_userId: string): Promise<OrganisationRecord[]> {
@@ -726,6 +741,9 @@ function dependencies(
     s3: new S3Client({ region: 'ap-southeast-2' }),
     stepFunctions: {
       send: stepFunctionsSend,
+    },
+    workflowExecutionInspector: {
+      describe: vi.fn(() => Promise.resolve('RUNNING' as const)),
     },
     tokenVerifier: {
       verify(): Promise<Actor> {
@@ -1450,6 +1468,91 @@ describe('API handler trust boundary', () => {
         idempotencyKey: 'package-release-backfill:01J7Y5ABCH',
       }),
     );
+    expect(parsedBody(response)).toMatchObject({
+      backfill: { queueState: 'queued' },
+    });
+  });
+
+  it('requeues an operator pilot only after its prior workflow failed', async () => {
+    const repository = new FakeRepository();
+    const workflowExecutionArn =
+      'arn:aws:states:ap-southeast-2:123456789012:execution:vendor-ingestion:failed';
+    repository.requestPackageReleasePilotBackfillMock.mockResolvedValueOnce({
+      backfill: {
+        detectionId: runId,
+        vendorReleaseId: organisationId,
+        sourceVersion: '5.9.0',
+        targetVersion: '5.10.0',
+        created: false,
+      },
+      workflowExecutionArn,
+      outboxPending: false,
+    });
+    const dependency: ApiDependencies = {
+      ...dependencies(repository),
+      workflowExecutionInspector: {
+        describe: vi.fn(() => Promise.resolve('FAILED' as const)),
+      },
+    };
+
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-mappings/${organisationId}/pilot-backfill`,
+        { expectedMappingVersion: 1 },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-release-backfill:retry-01J7Y5ABCH',
+        },
+      ),
+      dependency,
+    );
+
+    expect(response.statusCode).toBe(202);
+    expect(repository.retryPackageReleasePilotBackfillMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        detectionId: runId,
+        expectedWorkflowExecutionArn: workflowExecutionArn,
+      }),
+    );
+    expect(parsedBody(response)).toMatchObject({
+      backfill: { created: false, queueState: 'queued' },
+    });
+  });
+
+  it('does not duplicate a pilot workflow that is still running', async () => {
+    const repository = new FakeRepository();
+    repository.requestPackageReleasePilotBackfillMock.mockResolvedValueOnce({
+      backfill: {
+        detectionId: runId,
+        vendorReleaseId: organisationId,
+        sourceVersion: '5.9.0',
+        targetVersion: '5.10.0',
+        created: false,
+      },
+      workflowExecutionArn:
+        'arn:aws:states:ap-southeast-2:123456789012:execution:vendor-ingestion:running',
+      outboxPending: false,
+    });
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-mappings/${organisationId}/pilot-backfill`,
+        { expectedMappingVersion: 1 },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-release-backfill:running-01J7Y5ABCH',
+        },
+      ),
+      dependencies(repository),
+    );
+
+    expect(response.statusCode).toBe(202);
+    expect(repository.retryPackageReleasePilotBackfillMock).not.toHaveBeenCalled();
+    expect(parsedBody(response)).toMatchObject({
+      backfill: { queueState: 'in_progress' },
+    });
   });
 
   it('rejects unsafe replacement URL shapes before catalog mutation', async () => {

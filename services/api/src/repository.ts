@@ -144,6 +144,18 @@ export type RequestPackageReleasePilotBackfillInput =
     readonly requestId: string;
   };
 
+export interface PackageReleasePilotBackfillDispatch {
+  readonly backfill: Omit<PublicPackageReleasePilotBackfill, 'queueState'>;
+  readonly workflowExecutionArn: string | null;
+  readonly outboxPending: boolean;
+}
+
+export interface RetryPackageReleasePilotBackfillInput {
+  readonly detectionId: string;
+  readonly expectedWorkflowExecutionArn: string;
+  readonly requestId: string;
+}
+
 export type UpdateCandidateNotificationStateInput =
   CandidateNotificationStateRequest & {
     readonly organisationId: string;
@@ -289,7 +301,11 @@ export interface ApiRepositoryPort {
   requestPackageReleasePilotBackfill(
     userId: string,
     input: RequestPackageReleasePilotBackfillInput,
-  ): Promise<PublicPackageReleasePilotBackfill>;
+  ): Promise<PackageReleasePilotBackfillDispatch>;
+  retryPackageReleasePilotBackfill(
+    userId: string,
+    input: RetryPackageReleasePilotBackfillInput,
+  ): Promise<void>;
   listMigrationSpecifications(
     userId: string,
     trustState: 'draft' | 'reviewed' | 'vendor_verified',
@@ -1618,7 +1634,7 @@ export class ApiRepository implements ApiRepositoryPort {
   public async requestPackageReleasePilotBackfill(
     userId: string,
     input: RequestPackageReleasePilotBackfillInput,
-  ): Promise<PublicPackageReleasePilotBackfill> {
+  ): Promise<PackageReleasePilotBackfillDispatch> {
     const requestDigest = digestJson({
       mappingId: input.mappingId,
       expectedMappingVersion: input.expectedMappingVersion,
@@ -1641,7 +1657,7 @@ export class ApiRepository implements ApiRepositoryPort {
               409,
             );
           }
-          return loadPackageReleasePilotBackfill(
+          return loadPackageReleasePilotBackfillDispatch(
             transaction,
             previous.resultResourceId,
             false,
@@ -1689,7 +1705,11 @@ export class ApiRepository implements ApiRepositoryPort {
             expiresAt: new Date(now.getTime() + 24 * 60 * 60 * 1_000),
           })
           .executeTakeFirstOrThrow();
-        return backfill;
+        return loadPackageReleasePilotBackfillDispatch(
+          transaction,
+          backfill.detectionId,
+          backfill.created,
+        );
       });
     } catch (error) {
       if (error instanceof DomainError) throw error;
@@ -1724,6 +1744,43 @@ export class ApiRepository implements ApiRepositoryPort {
         );
       }
       throw error;
+    }
+  }
+
+  public async retryPackageReleasePilotBackfill(
+    userId: string,
+    input: RetryPackageReleasePilotBackfillInput,
+  ): Promise<void> {
+    try {
+      await sql`
+        select requeue_current_package_release_pilot_backfill(
+          ${input.detectionId}::uuid,
+          ${userId}::uuid,
+          ${input.expectedWorkflowExecutionArn},
+          ${input.requestId}::uuid
+        )
+      `.execute(this.database);
+    } catch (error) {
+      const code = postgresErrorCode(error);
+      if (code === '40001') {
+        throw new DomainError(
+          'PACKAGE_RELEASE_BACKFILL_RETRY_CONFLICT',
+          'The release workflow changed before it could be retried.',
+          409,
+        );
+      }
+      if (code === '23514' || code === 'P0002') {
+        throw new DomainError(
+          'PACKAGE_RELEASE_BACKFILL_RETRY_NOT_ELIGIBLE',
+          'The release workflow is no longer eligible for retry.',
+          409,
+        );
+      }
+      throw new DomainError(
+        'PACKAGE_RELEASE_BACKFILL_RETRY_FAILED',
+        'The release workflow could not be retried.',
+        500,
+      );
     }
   }
 
@@ -4042,11 +4099,11 @@ async function loadPackageSourceMappingByCandidate(
   return mapping;
 }
 
-async function loadPackageReleasePilotBackfill(
+async function loadPackageReleasePilotBackfillDispatch(
   database: PackageSourceDatabase,
   detectionId: string,
   created: boolean,
-): Promise<PublicPackageReleasePilotBackfill> {
+): Promise<PackageReleasePilotBackfillDispatch> {
   const row = await database
     .selectFrom('packageReleaseDetections')
     .select([
@@ -4064,11 +4121,27 @@ async function loadPackageReleasePilotBackfill(
       404,
     );
   }
+  const outbox = await database
+    .selectFrom('releaseIntelligenceOutbox')
+    .select(['deliveredAt', 'workflowExecutionArn'])
+    .where('aggregateId', '=', row.vendorReleaseId)
+    .executeTakeFirst();
+  if (!outbox) {
+    throw new DomainError(
+      'PACKAGE_RELEASE_BACKFILL_OUTBOX_NOT_FOUND',
+      'The pilot release workflow request could not be loaded.',
+      500,
+    );
+  }
   return {
-    ...row,
-    vendorReleaseId: row.vendorReleaseId,
-    sourceVersion: row.sourceVersion,
-    created,
+    backfill: {
+      ...row,
+      vendorReleaseId: row.vendorReleaseId,
+      sourceVersion: row.sourceVersion,
+      created,
+    },
+    workflowExecutionArn: outbox.workflowExecutionArn,
+    outboxPending: outbox.deliveredAt === null,
   };
 }
 

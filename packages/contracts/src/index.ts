@@ -2869,6 +2869,7 @@ export interface PublicPackageReleasePilotBackfill {
   readonly sourceVersion: string;
   readonly targetVersion: string;
   readonly created: boolean;
+  readonly queueState: 'queued' | 'in_progress' | 'completed';
 }
 
 export interface PublicMigrationSpecificationReview {

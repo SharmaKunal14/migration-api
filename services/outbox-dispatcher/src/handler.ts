@@ -195,7 +195,7 @@ export function workflowExecutionName(event: ClaimedEvent): string {
   }
   if (event.kind === 'agent') return `agent-${event.payload.agentRunId}`;
   if (event.kind === 'release_intelligence') {
-    return `release-intelligence-${event.payload.vendorReleaseId}`;
+    return `release-intelligence-${event.payload.correlationId}`;
   }
   if (event.kind === 'repository_scan') {
     return `repository-scan-${event.payload.repositoryScanId}`;

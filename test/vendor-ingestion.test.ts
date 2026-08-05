@@ -314,31 +314,91 @@ describe('Stage 8F detected registry evidence', () => {
     canonicalUrl: 'https://registry.npmjs.org/%40types%2Fnode',
     expectedMediaTypes: ['application/json'],
   } as const;
+  const releaseRoute = {
+    packageIdentifier: '@types/node',
+    sourceVersion: '22.0.0',
+    targetVersion: '24.0.0',
+  } as const;
+
+  function packument(extra: Readonly<Record<string, unknown>> = {}): Uint8Array {
+    return Buffer.from(
+      JSON.stringify({
+        name: releaseRoute.packageIdentifier,
+        'dist-tags': { latest: releaseRoute.targetVersion },
+        time: { [releaseRoute.targetVersion]: '2026-08-01T00:00:00.000Z' },
+        versions: {
+          [releaseRoute.sourceVersion]: {
+            version: releaseRoute.sourceVersion,
+            engines: { node: '>=18' },
+          },
+          [releaseRoute.targetVersion]: {
+            version: releaseRoute.targetVersion,
+            engines: { node: '>=22' },
+          },
+        },
+        ...extra,
+      }),
+      'utf8',
+    );
+  }
 
   it('reads only the immutable fixed-origin evidence object and verifies its digest', async () => {
-    const body = Buffer.from('{"dist-tags":{"latest":"24.0.0"}}', 'utf8');
+    const body = packument();
     const evidenceDigest = createHash('sha256').update(body).digest('hex');
     const s3 = registryEvidenceClient(body, evidenceDigest);
 
-    await expect(
-      readDetectedRegistryEvidence(
-        s3.client,
-        'artifacts',
-        'development',
-        {
-          sourceId: detectedSourceId,
-          objectKey: detectedObjectKey,
-          digest: evidenceDigest,
-        },
-        sourceDefinition,
-      ),
-    ).resolves.toMatchObject({
+    const result = await readDetectedRegistryEvidence(
+      s3.client,
+      'artifacts',
+      'development',
+      {
+        sourceId: detectedSourceId,
+        objectKey: detectedObjectKey,
+        digest: evidenceDigest,
+      },
+      sourceDefinition,
+      releaseRoute,
+    );
+
+    expect(result).toMatchObject({
       canonicalUrl: sourceDefinition.canonicalUrl,
       finalUrl: sourceDefinition.canonicalUrl,
-      digest: evidenceDigest,
       mediaType: 'application/json',
     });
+    expect(result.digest).not.toBe(evidenceDigest);
+    expect(JSON.parse(Buffer.from(result.bytes).toString('utf8'))).toMatchObject({
+      packageIdentifier: '@types/node',
+      sourceVersion: '22.0.0',
+      targetVersion: '24.0.0',
+      rawEvidenceDigest: evidenceDigest,
+      target: { version: '24.0.0', engines: { entries: { node: '>=22' } } },
+    });
     expect(s3.send).toHaveBeenCalledOnce();
+  });
+
+  it('normalizes a bounded large npm packument into tool-readable evidence', async () => {
+    const body = packument({ ignoredPublisherData: 'x'.repeat(2 * 1024 * 1024) });
+    const evidenceDigest = createHash('sha256').update(body).digest('hex');
+    const s3 = registryEvidenceClient(body, evidenceDigest);
+
+    const result = await readDetectedRegistryEvidence(
+      s3.client,
+      'artifacts',
+      'development',
+      {
+        sourceId: detectedSourceId,
+        objectKey: detectedObjectKey,
+        digest: evidenceDigest,
+      },
+      sourceDefinition,
+      releaseRoute,
+    );
+
+    expect(body.byteLength).toBeGreaterThan(1024 * 1024);
+    expect(result.bytes.byteLength).toBeLessThanOrEqual(64 * 1024);
+    expect(Buffer.from(result.bytes).toString('utf8')).not.toContain(
+      'ignoredPublisherData',
+    );
   });
 
   it('rejects an object key outside the exact source boundary before reading S3', async () => {
@@ -357,6 +417,7 @@ describe('Stage 8F detected registry evidence', () => {
           digest: evidenceDigest,
         },
         sourceDefinition,
+        releaseRoute,
       ),
     ).rejects.toMatchObject({
       safeCode: 'VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID',
@@ -382,6 +443,7 @@ describe('Stage 8F detected registry evidence', () => {
           digest: evidenceDigest,
         },
         sourceDefinition,
+        releaseRoute,
       ),
     ).rejects.toMatchObject({
       safeCode: 'VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID',

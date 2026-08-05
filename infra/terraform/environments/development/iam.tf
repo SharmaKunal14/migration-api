@@ -293,6 +293,14 @@ data "aws_iam_policy_document" "api_impact_analysis" {
     actions   = ["states:StartExecution"]
     resources = [aws_sfn_state_machine.impact_analysis.arn]
   }
+
+  statement {
+    sid     = "DescribeReleaseIntelligence"
+    actions = ["states:DescribeExecution"]
+    resources = [
+      "arn:aws:states:${var.aws_region}:${data.aws_caller_identity.current.account_id}:execution:${aws_sfn_state_machine.vendor_ingestion.name}:*"
+    ]
+  }
 }
 
 resource "aws_iam_role_policy" "api_impact_analysis" {

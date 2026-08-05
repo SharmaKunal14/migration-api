@@ -121,15 +121,15 @@ describe('Stage 4C durable migration dispatch', () => {
       dispatcherConfig,
     );
     expect(workflowExecutionName(releaseIntelligenceEvent)).toBe(
-      `release-intelligence-${vendorReleaseId}`,
+      `release-intelligence-${releaseIntelligenceEvent.payload.correlationId}`,
     );
     expect(executionArn).toContain(
-      `:execution:migration-api-development-vendor-ingestion:release-intelligence-${vendorReleaseId}`,
+      `:execution:migration-api-development-vendor-ingestion:release-intelligence-${releaseIntelligenceEvent.payload.correlationId}`,
     );
     expect(send).toHaveBeenCalledOnce();
     expect(send.mock.calls[0]?.[0]?.input).toMatchObject({
       stateMachineArn: dispatcherConfig.RELEASE_INTELLIGENCE_STATE_MACHINE_ARN,
-      name: `release-intelligence-${vendorReleaseId}`,
+      name: `release-intelligence-${releaseIntelligenceEvent.payload.correlationId}`,
     });
   });
 

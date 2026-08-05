@@ -12,6 +12,10 @@ const migration = source('supabase/migrations/0032_pilot_current_release_backfil
 const vendorFetcherGrant = source(
   'supabase/migrations/0033_vendor_fetcher_release_detection_read.sql',
 );
+const workflowRetry = source(
+  'supabase/migrations/0034_pilot_release_workflow_retry.sql',
+);
+const dispatcher = source('services/outbox-dispatcher/src/handler.ts');
 const repository = source('services/api/src/repository.ts');
 const web = source('apps/web/src/app.tsx');
 
@@ -64,6 +68,22 @@ describe('Stage 8H current release pilot backfill', () => {
     );
     expect(vendorFetcherGrant).not.toContain(
       'grant select on package_release_detections',
+    );
+  });
+
+  it('requeues only a terminal workflow through an audited operator operation', () => {
+    expect(workflowRetry).toContain(
+      'create function requeue_current_package_release_pilot_backfill',
+    );
+    expect(workflowRetry).toContain('if not is_platform_operator');
+    expect(workflowRetry).toContain(
+      'current_outbox.workflow_execution_arn is distinct from',
+    );
+    expect(workflowRetry).toContain('delivered_at = null');
+    expect(workflowRetry).toContain("'package_release.pilot_backfill_requeued'");
+    expect(workflowRetry).toContain('grant execute on function');
+    expect(dispatcher).toContain(
+      '`release-intelligence-${event.payload.correlationId}`',
     );
   });
 

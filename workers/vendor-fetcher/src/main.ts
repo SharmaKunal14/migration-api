@@ -23,6 +23,8 @@ import {
 
 const RESULT_MEDIA_TYPE = 'application/json';
 const STALE_RUN_MS = 20 * 60 * 1000;
+const MAX_REGISTRY_PACKUMENT_BYTES = 32 * 1024 * 1024;
+const MAX_NORMALIZED_REGISTRY_EVIDENCE_BYTES = 64 * 1024;
 
 interface VendorFetcherDependencies {
   readonly database: AppDatabase;
@@ -34,9 +36,11 @@ interface VendorFetcherDependencies {
 interface ReleaseContext {
   readonly releaseId: string;
   readonly version: string;
+  readonly sourceVersion: string;
   readonly sourceDigest: string;
   readonly processingState: 'registered' | 'fetched' | 'validated' | 'rejected';
   readonly productId: string;
+  readonly packageIdentifier: string;
   readonly vendorSlug: string;
   readonly officialDomains: readonly string[];
   readonly detectedRegistryEvidence: {
@@ -102,22 +106,29 @@ export async function ingestVendorRelease(
     const acquired: AcquiredSource[] = [];
     const allowedDomains = new Set(context.officialDomains);
     for (const source of context.sources) {
-      const evidence =
-        context.detectedRegistryEvidence?.sourceId === source.id
-          ? await readDetectedRegistryEvidence(
-              dependencies.s3,
-              config.ARTIFACT_BUCKET,
-              config.APP_ENVIRONMENT,
-              context.detectedRegistryEvidence,
-              source,
-            )
-          : await dependencies.retrieve({
-              sourceKey: source.sourceKey,
-              canonicalUrl: source.canonicalUrl,
-              expectedMediaTypes: source.expectedMediaTypes,
-              allowedDomains,
-            });
+      const usesDetectedRegistryEvidence =
+        context.detectedRegistryEvidence?.sourceId === source.id;
+      const evidence = usesDetectedRegistryEvidence
+        ? await readDetectedRegistryEvidence(
+            dependencies.s3,
+            config.ARTIFACT_BUCKET,
+            config.APP_ENVIRONMENT,
+            context.detectedRegistryEvidence,
+            source,
+            {
+              packageIdentifier: context.packageIdentifier,
+              sourceVersion: context.sourceVersion,
+              targetVersion: context.version,
+            },
+          )
+        : await dependencies.retrieve({
+            sourceKey: source.sourceKey,
+            canonicalUrl: source.canonicalUrl,
+            expectedMediaTypes: source.expectedMediaTypes,
+            allowedDomains,
+          });
       if (
+        !usesDetectedRegistryEvidence &&
         source.sourceKey === 'release_metadata' &&
         evidence.digest !== context.sourceDigest
       ) {
@@ -273,9 +284,11 @@ async function loadReleaseContext(
     .select([
       'release.id as releaseId',
       'release.version',
+      'release.sourceCompatibility as sourceVersion',
       'release.sourceDigest',
       'release.processingState',
       'product.id as productId',
+      'product.canonicalIdentifier as packageIdentifier',
       'vendor.slug as vendorSlug',
       'vendor.officialDomains',
       'vendor.trustState as vendorTrustState',
@@ -289,6 +302,7 @@ async function loadReleaseContext(
   if (
     release?.vendorTrustState !== 'trusted' ||
     release.productStatus !== 'active' ||
+    release.sourceVersion === null ||
     release.processingState === 'rejected'
   ) {
     throw new VendorEvidenceError('VENDOR_RELEASE_NOT_FETCHABLE');
@@ -331,7 +345,12 @@ async function loadReleaseContext(
   ) {
     throw new VendorEvidenceError('VENDOR_RELEASE_SOURCE_DIGEST_MISMATCH');
   }
-  return { ...release, detectedRegistryEvidence, sources };
+  return {
+    ...release,
+    sourceVersion: release.sourceVersion,
+    detectedRegistryEvidence,
+    sources,
+  };
 }
 
 export async function readDetectedRegistryEvidence(
@@ -340,6 +359,11 @@ export async function readDetectedRegistryEvidence(
   environment: string,
   evidence: NonNullable<ReleaseContext['detectedRegistryEvidence']>,
   source: ReleaseContext['sources'][number],
+  release: {
+    readonly packageIdentifier: string;
+    readonly sourceVersion: string;
+    readonly targetVersion: string;
+  },
 ): Promise<RetrievedVendorSource> {
   const prefix = `env/${environment}/package-release/npm/source/${source.id}/poll/`;
   if (
@@ -359,7 +383,7 @@ export async function readDetectedRegistryEvidence(
   if (
     !object.Body ||
     !object.ContentLength ||
-    object.ContentLength > 1024 * 1024 ||
+    object.ContentLength > MAX_REGISTRY_PACKUMENT_BYTES ||
     object.ContentType?.split(';')[0]?.trim().toLowerCase() !== 'application/json' ||
     object.Metadata?.digest !== evidence.digest ||
     object.Metadata['source-id'] !== source.id
@@ -370,7 +394,7 @@ export async function readDetectedRegistryEvidence(
   const evidenceDigest = digest(bytes);
   if (
     bytes.byteLength === 0 ||
-    bytes.byteLength > 1024 * 1024 ||
+    bytes.byteLength > MAX_REGISTRY_PACKUMENT_BYTES ||
     bytes.byteLength !== object.ContentLength ||
     evidenceDigest !== evidence.digest ||
     (object.ChecksumSHA256 !== undefined &&
@@ -378,14 +402,106 @@ export async function readDetectedRegistryEvidence(
   ) {
     throw new VendorEvidenceError('VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID');
   }
+  const normalizedBytes = normalizeRegistryEvidence(bytes, evidence.digest, release);
   return {
     canonicalUrl: source.canonicalUrl,
     finalUrl: source.canonicalUrl,
-    bytes,
-    digest: evidenceDigest,
+    bytes: normalizedBytes,
+    digest: digest(normalizedBytes),
     mediaType: 'application/json',
     etag: null,
   };
+}
+
+function normalizeRegistryEvidence(
+  rawBytes: Uint8Array,
+  rawDigest: string,
+  release: {
+    readonly packageIdentifier: string;
+    readonly sourceVersion: string;
+    readonly targetVersion: string;
+  },
+): Uint8Array {
+  let document: unknown;
+  try {
+    document = JSON.parse(Buffer.from(rawBytes).toString('utf8'));
+  } catch {
+    throw new VendorEvidenceError('VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID');
+  }
+  const packument = record(document);
+  const distTags = record(packument?.['dist-tags']);
+  const versions = record(packument?.versions);
+  const sourceMetadata = record(versions?.[release.sourceVersion]);
+  const targetMetadata = record(versions?.[release.targetVersion]);
+  if (
+    packument?.name !== release.packageIdentifier ||
+    distTags?.latest !== release.targetVersion ||
+    sourceMetadata?.version !== release.sourceVersion ||
+    targetMetadata?.version !== release.targetVersion
+  ) {
+    throw new VendorEvidenceError('VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID');
+  }
+  const normalized = Buffer.from(
+    JSON.stringify({
+      schemaVersion: '1.0',
+      packageIdentifier: release.packageIdentifier,
+      sourceVersion: release.sourceVersion,
+      targetVersion: release.targetVersion,
+      publishedAt: boundedString(record(packument.time)?.[release.targetVersion], 100),
+      rawEvidenceDigest: rawDigest,
+      source: summarizePackageVersion(sourceMetadata),
+      target: summarizePackageVersion(targetMetadata),
+    }),
+    'utf8',
+  );
+  if (
+    normalized.byteLength === 0 ||
+    normalized.byteLength > MAX_NORMALIZED_REGISTRY_EVIDENCE_BYTES
+  ) {
+    throw new VendorEvidenceError('VENDOR_RELEASE_REGISTRY_EVIDENCE_INVALID');
+  }
+  return normalized;
+}
+
+function summarizePackageVersion(metadata: Record<string, unknown>): unknown {
+  return {
+    version: metadata.version,
+    deprecated: boundedString(metadata.deprecated, 2_000),
+    license: boundedString(metadata.license, 500),
+    type: boundedString(metadata.type, 100),
+    engines: boundedStringRecord(metadata.engines, 25, 200),
+    dependencies: boundedStringRecord(metadata.dependencies, 200, 500),
+    peerDependencies: boundedStringRecord(metadata.peerDependencies, 200, 500),
+  };
+}
+
+function boundedStringRecord(
+  value: unknown,
+  maximumEntries: number,
+  maximumValueLength: number,
+): { readonly entries: Record<string, string>; readonly total: number } | null {
+  const input = record(value);
+  if (!input) return null;
+  const allEntries = Object.entries(input).sort(([left], [right]) =>
+    left.localeCompare(right),
+  );
+  const entries: Record<string, string> = {};
+  for (const [key, candidate] of allEntries.slice(0, maximumEntries)) {
+    if (key.length <= 214 && typeof candidate === 'string') {
+      entries[key] = candidate.slice(0, maximumValueLength);
+    }
+  }
+  return { entries, total: allEntries.length };
+}
+
+function boundedString(value: unknown, maximumLength: number): string | null {
+  return typeof value === 'string' ? value.slice(0, maximumLength) : null;
+}
+
+function record(value: unknown): Record<string, unknown> | null {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
 }
 
 async function beginRun(

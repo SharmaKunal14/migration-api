@@ -3,6 +3,7 @@ import { createHash, randomUUID } from 'node:crypto';
 import { InvokeCommand, LambdaClient } from '@aws-sdk/client-lambda';
 import { GetObjectCommand, S3Client } from '@aws-sdk/client-s3';
 import {
+  DescribeExecutionCommand,
   ExecutionAlreadyExists,
   SFNClient,
   StartExecutionCommand,
@@ -35,6 +36,7 @@ import {
   type GithubInstallationVerification,
   type MigrationPlan,
   type PublicAgentRun,
+  type PublicPackageReleasePilotBackfill,
 } from '@migration/contracts';
 import { apiConfigSchema, parseConfig, type ApiConfig } from '@migration/config';
 import { createDatabase } from '@migration/database';
@@ -45,6 +47,7 @@ import {
   ApiRepository,
   type AgentRunRecord,
   type ApiRepositoryPort,
+  type PackageReleasePilotBackfillDispatch,
 } from './repository.js';
 import { loadPublicMigrationPatchReview } from './patch-review.js';
 
@@ -66,6 +69,7 @@ export interface ApiDependencies {
   readonly installationVerifier: GithubInstallationVerifier;
   readonly s3: S3Client;
   readonly stepFunctions: WorkflowStarter;
+  readonly workflowExecutionInspector: WorkflowExecutionInspector;
 }
 
 export interface GithubInstallationVerifier {
@@ -83,6 +87,13 @@ export interface WorkflowStarter {
   send(command: StartExecutionCommand): Promise<unknown>;
 }
 
+type WorkflowExecutionStatus =
+  'RUNNING' | 'SUCCEEDED' | 'FAILED' | 'TIMED_OUT' | 'ABORTED' | 'NOT_FOUND';
+
+export interface WorkflowExecutionInspector {
+  describe(executionArn: string): Promise<WorkflowExecutionStatus>;
+}
+
 let cachedDependencies: ApiDependencies | undefined;
 
 async function dependencies(): Promise<ApiDependencies> {
@@ -92,6 +103,7 @@ async function dependencies(): Promise<ApiDependencies> {
   const config = parseConfig(apiConfigSchema);
   const database = await createDatabase(config.AWS_REGION, config.DATABASE_SECRET_ARN);
   const lambda = new LambdaClient({ region: config.AWS_REGION });
+  const stepFunctions = new SFNClient({ region: config.AWS_REGION });
   cachedDependencies = {
     config,
     repository: new ApiRepository(database),
@@ -105,7 +117,8 @@ async function dependencies(): Promise<ApiDependencies> {
       config.GITHUB_TOKEN_BROKER_FUNCTION_NAME,
     ),
     s3: new S3Client({ region: config.AWS_REGION }),
-    stepFunctions: new SFNClient({ region: config.AWS_REGION }),
+    stepFunctions,
+    workflowExecutionInspector: createWorkflowExecutionInspector(stepFunctions),
   };
   return cachedDependencies;
 }
@@ -385,13 +398,21 @@ export async function handleRequest(
         });
       } else if (packageReleasePilotBackfillMatch?.[1]) {
         const input = packageReleasePilotBackfillRequestSchema.parse(parseBody(event));
+        const dispatch = await repository.requestPackageReleasePilotBackfill(userId, {
+          mappingId: z.uuid().parse(packageReleasePilotBackfillMatch[1]),
+          expectedMappingVersion: input.expectedMappingVersion,
+          idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
+          requestId,
+        });
+        const backfill = await reconcilePackageReleasePilotBackfill(
+          repository,
+          dependency.workflowExecutionInspector,
+          userId,
+          requestId,
+          dispatch,
+        );
         response = json(202, {
-          backfill: await repository.requestPackageReleasePilotBackfill(userId, {
-            mappingId: z.uuid().parse(packageReleasePilotBackfillMatch[1]),
-            expectedMappingVersion: input.expectedMappingVersion,
-            idempotencyKey: requireIdempotencyKey(event.headers['idempotency-key']),
-            requestId,
-          }),
+          backfill,
         });
       } else if (method === 'GET' && path === '/v1/operator/package-source-catalog') {
         response = json(200, await repository.listPackageSourceCatalog(userId));
@@ -633,6 +654,72 @@ async function startImpactAnalysis(
   } catch (error) {
     if (!(error instanceof ExecutionAlreadyExists)) throw error;
   }
+}
+
+async function reconcilePackageReleasePilotBackfill(
+  repository: ApiRepositoryPort,
+  inspector: WorkflowExecutionInspector,
+  userId: string,
+  requestId: string,
+  dispatch: PackageReleasePilotBackfillDispatch,
+): Promise<PublicPackageReleasePilotBackfill> {
+  if (dispatch.outboxPending) {
+    return { ...dispatch.backfill, queueState: 'queued' };
+  }
+  if (!dispatch.workflowExecutionArn) {
+    throw new DomainError(
+      'PACKAGE_RELEASE_BACKFILL_WORKFLOW_NOT_FOUND',
+      'The release workflow state could not be loaded.',
+      500,
+    );
+  }
+  const status = await inspector.describe(dispatch.workflowExecutionArn);
+  if (
+    status === 'FAILED' ||
+    status === 'TIMED_OUT' ||
+    status === 'ABORTED' ||
+    status === 'NOT_FOUND'
+  ) {
+    await repository.retryPackageReleasePilotBackfill(userId, {
+      detectionId: dispatch.backfill.detectionId,
+      expectedWorkflowExecutionArn: dispatch.workflowExecutionArn,
+      requestId,
+    });
+    return { ...dispatch.backfill, queueState: 'queued' };
+  }
+  return {
+    ...dispatch.backfill,
+    queueState: status === 'SUCCEEDED' ? 'completed' : 'in_progress',
+  };
+}
+
+export function createWorkflowExecutionInspector(
+  stepFunctions: SFNClient,
+): WorkflowExecutionInspector {
+  return {
+    async describe(executionArn): Promise<WorkflowExecutionStatus> {
+      try {
+        const result = await stepFunctions.send(
+          new DescribeExecutionCommand({ executionArn }),
+        );
+        if (
+          result.status === 'RUNNING' ||
+          result.status === 'SUCCEEDED' ||
+          result.status === 'FAILED' ||
+          result.status === 'TIMED_OUT' ||
+          result.status === 'ABORTED'
+        ) {
+          return result.status;
+        }
+        return 'RUNNING';
+      } catch (error) {
+        if (error instanceof Error && error.name === 'ExecutionDoesNotExist') {
+          return 'NOT_FOUND';
+        }
+        throw error;
+      }
+    },
+  };
 }
 
 export function createGithubInstallationVerifier(
