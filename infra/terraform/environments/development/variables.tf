@@ -37,6 +37,12 @@ variable "development_nat_egress_cidr" {
   }
 }
 
+variable "enable_interface_vpc_endpoints" {
+  description = "Whether development uses paid interface VPC endpoints instead of routing AWS service API traffic through the NAT instance."
+  type        = bool
+  default     = false
+}
+
 variable "owner" {
   description = "Resource owner tag."
   type        = string

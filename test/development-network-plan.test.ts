@@ -80,6 +80,86 @@ describe('development NAT Terraform plan validation', () => {
     ).not.toThrow();
   });
 
+  it('allows deletion of the seven approved interface endpoints', () => {
+    const plan = validPlan();
+    const changes = plan.resource_changes as unknown[];
+    for (const service of [
+      'ecr.api',
+      'ecr.dkr',
+      'kms',
+      'lambda',
+      'logs',
+      'secretsmanager',
+      'sts',
+    ]) {
+      changes.push({
+        address: `aws_vpc_endpoint.interface["${service}"]`,
+        change: { actions: ['delete'] },
+      });
+    }
+
+    expect(() =>
+      validateDevelopmentNetworkPlan(plan, routeTableId, networkInterfaceId),
+    ).not.toThrow();
+  });
+
+  it('rejects a paid interface endpoint in the NAT-only topology', () => {
+    const plan = validPlan();
+    const resources = (
+      plan.planned_values as {
+        root_module: { resources: { address: string; values: object }[] };
+      }
+    ).root_module.resources;
+    resources.push({
+      address: 'aws_vpc_endpoint.interface["logs"]',
+      values: {},
+    });
+
+    expect(() =>
+      validateDevelopmentNetworkPlan(plan, routeTableId, networkInterfaceId),
+    ).toThrow(/retain or create paid interface VPC endpoints/u);
+  });
+
+  it('rejects deletion of an unapproved VPC endpoint resource', () => {
+    const plan = validPlan();
+    const changes = plan.resource_changes as unknown[];
+    changes.push({
+      address: 'aws_vpc_endpoint.unrelated',
+      change: { actions: ['delete'] },
+    });
+
+    expect(() =>
+      validateDevelopmentNetworkPlan(plan, routeTableId, networkInterfaceId),
+    ).toThrow(/not an approved interface endpoint deletion/u);
+  });
+
+  it('accepts the exact endpoint set when the rollback switch is enabled', () => {
+    const plan = validPlan();
+    const resources = (
+      plan.planned_values as {
+        root_module: { resources: { address: string; values: object }[] };
+      }
+    ).root_module.resources;
+    for (const service of [
+      'ecr.api',
+      'ecr.dkr',
+      'kms',
+      'lambda',
+      'logs',
+      'secretsmanager',
+      'sts',
+    ]) {
+      resources.push({
+        address: `aws_vpc_endpoint.interface["${service}"]`,
+        values: {},
+      });
+    }
+
+    expect(() =>
+      validateDevelopmentNetworkPlan(plan, routeTableId, networkInterfaceId, true),
+    ).not.toThrow();
+  });
+
   it('rejects a firewall resource remaining in the desired topology', () => {
     const plan = validPlan();
     const resources = (

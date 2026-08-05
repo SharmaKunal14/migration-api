@@ -29,7 +29,9 @@ The development VPC is `10.40.0.0/16` across two Availability Zones.
 - Supabase PostgreSQL network restrictions use
   `control_nat_egress_cidrs`, currently derived from both NAT Elastic IPs.
 - S3 uses a gateway endpoint. ECR, CloudWatch Logs, KMS, Lambda, Secrets
-  Manager, and STS use interface endpoints.
+  Manager, and STS originally used interface endpoints; the follow-up cost
+  cleanup is documented in
+  [Development interface VPC endpoint removal](DEVELOPMENT_INTERFACE_ENDPOINT_REMOVAL.md).
 - Fargate tasks do not receive public IP addresses.
 
 ## Target state
@@ -54,7 +56,7 @@ The following properties remain unchanged:
 - Fargate `AssignPublicIp` remains `DISABLED`.
 - Supabase continues to allowlist one stable `/32` egress address.
 - TLS certificate verification remains enabled.
-- IAM, KMS encryption, Secrets Manager, VPC endpoints, task concurrency,
+- IAM, KMS encryption, Secrets Manager, the S3 gateway endpoint, task concurrency,
   application SSRF controls, byte limits, and timeouts remain enforced.
 
 The following properties intentionally change:
@@ -187,7 +189,7 @@ Keep:
 - Internet Gateway and public subnets;
 - private workload subnets and associations;
 - S3 gateway endpoint;
-- required interface endpoints and their security group;
+- the interface-endpoint security group definition as a rollback control;
 - Fargate private addressing.
 
 ### Outputs and external configuration
@@ -295,8 +297,9 @@ The change must not be described as security-equivalent to Network Firewall.
   protocols merely to make a test pass.
 - **Direct workload public IP:** keep `AssignPublicIp = DISABLED`; otherwise
   traffic bypasses the NAT instance and Supabase allowlist.
-- **Unexpected public endpoint use:** interface endpoints should remain the
-  preferred path for supported AWS services.
+- **AWS API dependency on NAT:** after the interface endpoint cleanup, AWS
+  regional API calls depend on NAT availability, DNS, TLS, and least-privilege
+  IAM. The S3 gateway endpoint remains private.
 - **DNS behavior:** workloads continue using the VPC resolver; the NAT instance
   must not become an ad hoc DNS server.
 - **Time synchronization:** use the Amazon Time Sync Service; do not open broad
@@ -419,7 +422,8 @@ Proceed only after the soak period and explicit approval.
 - Every control, agent, and source-fetcher route table targets the NAT ENI.
 - No workload has a public IP.
 - No route references a deleted Network Firewall endpoint or NAT Gateway.
-- S3 and required interface endpoints remain healthy.
+- The S3 gateway endpoint remains healthy; the seven paid interface endpoints
+  are absent after the separate cost-cleanup procedure.
 - Flow Logs show expected egress and no unexpected source subnet.
 
 ### Public application and authentication

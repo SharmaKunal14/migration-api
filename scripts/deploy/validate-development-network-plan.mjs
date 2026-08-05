@@ -5,6 +5,17 @@ import { resolve } from 'node:path';
 const applicationAssociation =
   /^aws_route_table_association\.(?:control|agent|source_fetcher|verifier)\[/u;
 
+const interfaceEndpointServices = [
+  'ecr.api',
+  'ecr.dkr',
+  'kms',
+  'lambda',
+  'logs',
+  'secretsmanager',
+  'sts',
+];
+const interfaceEndpointResource = /^aws_vpc_endpoint\.interface\["([^"]+)"\]$/u;
+
 const obsoleteEgressResource = [
   /^aws_eip\.nat\[/u,
   /^aws_nat_gateway\.main\[/u,
@@ -28,7 +39,7 @@ const protectedNetworkResource = [
   /^aws_route_table_association\.public\[/u,
   /^aws_subnet\.(?:agent|control|public|source_fetcher|verifier)\[/u,
   /^aws_vpc\.main$/u,
-  /^aws_vpc_endpoint\.(?:interface\[|s3$)/u,
+  /^aws_vpc_endpoint\.s3$/u,
 ];
 
 function flattenResources(module) {
@@ -50,6 +61,7 @@ export function validateDevelopmentNetworkPlan(
   plan,
   expectedRouteTableId,
   expectedNetworkInterfaceId,
+  interfaceEndpointsEnabled = false,
 ) {
   if (!/^rtb-[0-9a-f]+$/u.test(expectedRouteTableId)) {
     throw new Error('Expected development NAT route-table ID is invalid.');
@@ -107,8 +119,39 @@ export function validateDevelopmentNetworkPlan(
     );
   }
 
+  const plannedInterfaceEndpoints = plannedResources
+    .map(resource => interfaceEndpointResource.exec(resource.address)?.[1])
+    .filter(service => service !== undefined)
+    .sort();
+  const expectedInterfaceEndpoints = interfaceEndpointsEnabled
+    ? [...interfaceEndpointServices]
+    : [];
+  if (
+    plannedInterfaceEndpoints.length !== expectedInterfaceEndpoints.length ||
+    plannedInterfaceEndpoints.some(
+      (service, index) => service !== expectedInterfaceEndpoints[index],
+    )
+  ) {
+    throw new Error(
+      interfaceEndpointsEnabled
+        ? 'The development plan does not contain exactly the approved interface VPC endpoints.'
+        : 'The development plan would retain or create paid interface VPC endpoints.',
+    );
+  }
+
   for (const resource of plan.resource_changes ?? []) {
     const actions = resource.change?.actions ?? [];
+    const interfaceEndpointService = interfaceEndpointResource.exec(
+      resource.address,
+    )?.[1];
+    if (
+      interfaceEndpointService &&
+      !interfaceEndpointServices.includes(interfaceEndpointService)
+    ) {
+      throw new Error(
+        `${resource.address} is not an approved development interface endpoint.`,
+      );
+    }
     if (
       applicationAssociation.test(resource.address) &&
       actions.some(action => action !== 'no-op')
@@ -125,6 +168,15 @@ export function validateDevelopmentNetworkPlan(
         `${resource.address} would delete protected NAT-path infrastructure.`,
       );
     }
+    if (
+      actions.includes('delete') &&
+      resource.address.startsWith('aws_vpc_endpoint.') &&
+      !interfaceEndpointService
+    ) {
+      throw new Error(
+        `${resource.address} is not an approved interface endpoint deletion.`,
+      );
+    }
   }
 }
 
@@ -139,6 +191,8 @@ function main() {
     process.env.TF_VAR_development_nat_route_table_id?.trim() ?? '';
   const expectedNetworkInterfaceId =
     process.env.TF_VAR_development_nat_network_interface_id?.trim() ?? '';
+  const interfaceEndpointsEnabled =
+    process.env.TF_VAR_enable_interface_vpc_endpoints?.trim() === 'true';
   const planText =
     planPath === '-'
       ? readFileSync(0, 'utf8')
@@ -148,9 +202,14 @@ function main() {
     plan,
     expectedRouteTableId,
     expectedNetworkInterfaceId,
+    interfaceEndpointsEnabled,
   );
   process.stdout.write(
-    'Validated development NAT route, eight workload associations, S3 endpoint, and obsolete-egress cleanup.\n',
+    `Validated development NAT route, eight workload associations, S3 endpoint, ${
+      interfaceEndpointsEnabled
+        ? 'seven approved interface endpoints'
+        : 'zero interface endpoints'
+    }, and obsolete-egress cleanup.\n`,
   );
 }
 
