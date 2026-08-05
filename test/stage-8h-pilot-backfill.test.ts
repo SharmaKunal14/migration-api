@@ -9,6 +9,9 @@ function source(relativePath: string): string {
 }
 
 const migration = source('supabase/migrations/0032_pilot_current_release_backfill.sql');
+const vendorFetcherGrant = source(
+  'supabase/migrations/0033_vendor_fetcher_release_detection_read.sql',
+);
 const repository = source('services/api/src/repository.ts');
 const web = source('apps/web/src/app.tsx');
 
@@ -48,6 +51,20 @@ describe('Stage 8H current release pilot backfill', () => {
     expect(migration).toContain('grant execute on function');
     expect(migration).not.toContain('grant insert on package_release_detections');
     expect(repository).toContain("action', '=', 'package_release:pilot_backfill'");
+  });
+
+  it('lets the downstream fetcher read only the detection evidence it consumes', () => {
+    expect(vendorFetcherGrant).toContain('grant select (');
+    expect(vendorFetcherGrant).toContain('vendor_release_id');
+    expect(vendorFetcherGrant).toContain('source_id');
+    expect(vendorFetcherGrant).toContain('evidence_object_key');
+    expect(vendorFetcherGrant).toContain('evidence_digest');
+    expect(vendorFetcherGrant).toContain(
+      'on package_release_detections to app_runtime',
+    );
+    expect(vendorFetcherGrant).not.toContain(
+      'grant select on package_release_detections',
+    );
   });
 
   it('keeps the operator interaction bounded and explains the derived authority', () => {
