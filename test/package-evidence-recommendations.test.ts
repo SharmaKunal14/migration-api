@@ -84,7 +84,7 @@ describe('package evidence recommendations', () => {
     ).toEqual(['package_registry_release', 'changelog', 'migration_guide']);
   });
 
-  it('promotes useful fallbacks after a higher-priority source is resolved', () => {
+  it('keeps approved sources inside the three-source review budget', () => {
     const candidates = [
       candidate('sdk_repository_release', 'https://github.com/fastify/fastify'),
       candidate('release_feed', 'https://github.com/fastify/fastify/releases'),
@@ -92,6 +92,27 @@ describe('package evidence recommendations', () => {
         'migration_guide',
         'https://github.com/fastify/fastify/blob/HEAD/MIGRATION.md',
         'approved',
+      ),
+      candidate('package_registry_release', 'https://registry.npmjs.org/fastify'),
+      candidate(
+        'changelog',
+        'https://github.com/fastify/fastify/blob/HEAD/CHANGELOG.md',
+      ),
+    ];
+
+    expect(
+      packageSourceCandidatesForReview(candidates).map(item => item.sourceKind),
+    ).toEqual(['package_registry_release', 'changelog']);
+  });
+
+  it('uses one fallback when a preferred source is rejected', () => {
+    const candidates = [
+      candidate('sdk_repository_release', 'https://github.com/fastify/fastify'),
+      candidate('release_feed', 'https://github.com/fastify/fastify/releases'),
+      candidate(
+        'migration_guide',
+        'https://github.com/fastify/fastify/blob/HEAD/MIGRATION.md',
+        'rejected',
       ),
       candidate('package_registry_release', 'https://registry.npmjs.org/fastify'),
       candidate(
@@ -122,11 +143,11 @@ describe('package evidence recommendations', () => {
     expect(recommendations).toHaveLength(3);
     expect(recommendations.map(item => item.id)).toEqual([
       'direct-migration_guide',
-      'direct-changelog',
       'repository-migration-search',
+      'repository-release-search',
     ]);
     expect(recommendations[0]?.verification).toBe('confirmed');
-    expect(recommendations[1]?.verification).toBe('verify');
+    expect(recommendations[1]?.verification).toBe('suggested');
   });
 
   it('uses scoped publisher locations instead of generic npm history', () => {
@@ -137,11 +158,10 @@ describe('package evidence recommendations', () => {
       ]),
     );
 
-    expect(recommendations).toHaveLength(3);
+    expect(recommendations).toHaveLength(2);
     expect(recommendations.map(item => item.id)).toEqual([
       'repository-migration-search',
       'repository-release-search',
-      'publisher-documentation',
     ]);
     expect(recommendations.every(item => !item.href.includes('npmjs.com'))).toBe(true);
     expect(recommendations[0]?.href).toContain('/fastify/fastify/search?');
@@ -150,7 +170,7 @@ describe('package evidence recommendations', () => {
 
   it('does not pad missing recommendations with low-value package history', () => {
     const recommendations = packageEvidenceRecommendations(
-      mapping([candidate('homepage', 'https://fastify.dev/')]),
+      mapping([candidate('homepage', 'https://fastify.dev/', 'approved')]),
     );
 
     expect(recommendations).toEqual([
@@ -158,7 +178,7 @@ describe('package evidence recommendations', () => {
         id: 'publisher-documentation',
         title: 'Official package documentation',
         href: 'https://fastify.dev/',
-        verification: 'verify',
+        verification: 'confirmed',
       },
     ]);
   });

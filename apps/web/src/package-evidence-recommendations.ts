@@ -7,7 +7,7 @@ export interface PackageEvidenceRecommendation {
   readonly id: string;
   readonly title: string;
   readonly href: string;
-  readonly verification: 'confirmed' | 'verify';
+  readonly verification: 'confirmed' | 'suggested';
 }
 
 const migrationReviewSourceKinds = [
@@ -28,7 +28,7 @@ export function packageSourceCandidatesForReview(
     .filter(
       candidate =>
         candidate.canPromote &&
-        candidate.reviewState === 'pending_review' &&
+        candidate.reviewState !== 'rejected' &&
         priority.has(candidate.sourceKind),
     )
     .sort(
@@ -36,7 +36,8 @@ export function packageSourceCandidatesForReview(
         (priority.get(left.sourceKind) ?? Number.MAX_SAFE_INTEGER) -
         (priority.get(right.sourceKind) ?? Number.MAX_SAFE_INTEGER),
     )
-    .slice(0, 3);
+    .slice(0, 3)
+    .filter(candidate => candidate.reviewState === 'pending_review');
 }
 
 const directSourceKinds = [
@@ -51,24 +52,25 @@ const directSourceTitles: Record<(typeof directSourceKinds)[number], string> = {
   release_feed: 'Target release notes',
 };
 
-function candidateRank(candidate: PublicPackageSourceCandidate): number {
-  return candidate.reviewState === 'approved'
-    ? 0
-    : candidate.reviewState === 'pending_review'
-      ? 1
-      : 2;
-}
-
-function preferredCandidate(
+function approvedCandidate(
   mapping: PublicPackageSourceMapping,
   sourceKind: PublicPackageSourceCandidate['sourceKind'],
 ): PublicPackageSourceCandidate | undefined {
-  return mapping.candidates
-    .filter(
-      candidate =>
-        candidate.sourceKind === sourceKind && candidate.reviewState !== 'rejected',
-    )
-    .sort((left, right) => candidateRank(left) - candidateRank(right))[0];
+  return mapping.candidates.find(
+    candidate =>
+      candidate.sourceKind === sourceKind && candidate.reviewState === 'approved',
+  );
+}
+
+function declaredRepositoryCandidate(
+  mapping: PublicPackageSourceMapping,
+): PublicPackageSourceCandidate | undefined {
+  return mapping.candidates.find(
+    candidate =>
+      candidate.sourceKind === 'sdk_repository_release' &&
+      candidate.reviewState !== 'rejected' &&
+      candidate.discoveryMethod === 'npm_registry_metadata',
+  );
 }
 
 function recommendationFromCandidate(
@@ -80,7 +82,7 @@ function recommendationFromCandidate(
     id,
     title,
     href: candidate.canonicalUrl,
-    verification: candidate.reviewState === 'approved' ? 'confirmed' : 'verify',
+    verification: 'confirmed',
   };
 }
 
@@ -96,7 +98,7 @@ export function packageEvidenceRecommendations(
   };
 
   for (const sourceKind of directSourceKinds) {
-    const candidate = preferredCandidate(mapping, sourceKind);
+    const candidate = approvedCandidate(mapping, sourceKind);
     if (candidate) {
       add(
         recommendationFromCandidate(
@@ -108,7 +110,7 @@ export function packageEvidenceRecommendations(
     }
   }
 
-  const repository = preferredCandidate(mapping, 'sdk_repository_release');
+  const repository = declaredRepositoryCandidate(mapping);
   if (repository && recommendations.length < 3) {
     const repositoryUrl = new URL(repository.canonicalUrl);
     if (repositoryUrl.hostname === 'github.com') {
@@ -123,7 +125,7 @@ export function packageEvidenceRecommendations(
         id: 'repository-migration-search',
         title: 'Search official repository for migration guidance',
         href: migrationSearch.toString(),
-        verification: 'verify',
+        verification: 'suggested',
       });
 
       const releaseSearch = new URL(`${repositoryRoot}/search`);
@@ -136,12 +138,12 @@ export function packageEvidenceRecommendations(
         id: 'repository-release-search',
         title: 'Search official repository for target-version changes',
         href: releaseSearch.toString(),
-        verification: 'verify',
+        verification: 'suggested',
       });
     }
   }
 
-  const homepage = preferredCandidate(mapping, 'homepage');
+  const homepage = approvedCandidate(mapping, 'homepage');
   if (homepage) {
     add(
       recommendationFromCandidate(
@@ -152,7 +154,7 @@ export function packageEvidenceRecommendations(
     );
   }
 
-  if (repository) {
+  if (repository?.reviewState === 'approved') {
     add(
       recommendationFromCandidate(
         'publisher-repository',

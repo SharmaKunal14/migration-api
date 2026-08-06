@@ -586,7 +586,7 @@ a:focus-visible {
   border-top: 1px solid var(--line);
 }
 
-.pilot-release-backfill {
+.source-next-action {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -597,8 +597,7 @@ a:focus-visible {
   border-radius: 0.875rem;
 }
 
-.source-evidence-controls,
-.source-evidence-refresh {
+.source-evidence-controls {
   display: grid;
   gap: 1rem;
   margin-top: 1rem;
@@ -609,13 +608,13 @@ a:focus-visible {
 
 .source-evidence-controls h3,
 .source-evidence-controls p,
-.source-evidence-refresh h3,
-.source-evidence-refresh p {
+.source-next-action h3,
+.source-next-action p {
   margin: 0;
 }
 
 .source-evidence-controls p,
-.source-evidence-refresh p {
+.source-next-action p {
   margin-top: 0.35rem;
   color: var(--muted);
   line-height: 1.5;
@@ -623,6 +622,7 @@ a:focus-visible {
 
 .source-recommendation-list {
   display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
   margin: 0;
   padding: 0;
   gap: 0.75rem;
@@ -630,10 +630,12 @@ a:focus-visible {
 }
 
 .source-recommendation {
-  display: grid;
-  align-items: center;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: 1rem;
+  display: flex;
+  min-width: 0;
+  min-height: 7.5rem;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.75rem;
   padding: 0.9rem 1rem;
   border: 1px solid var(--line);
   border-radius: 0.75rem;
@@ -642,8 +644,19 @@ a:focus-visible {
 
 .source-recommendation-title {
   display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
   align-items: center;
   gap: 0.65rem;
+}
+
+.source-recommendation-link {
+  display: inline-flex;
+  min-height: 2.75rem;
+  margin-top: auto;
+  align-items: center;
+  color: var(--mint);
+  font-weight: 700;
 }
 
 .source-recommendation-status {
@@ -688,36 +701,36 @@ a:focus-visible {
   gap: 0.65rem;
 }
 
-.source-evidence-refresh {
-  align-items: center;
-  grid-template-columns: 1fr auto;
+.source-next-action-label {
+  display: block;
+  margin-bottom: 0.3rem;
+  color: var(--mint);
+  font-size: 0.72rem;
+  font-weight: 800;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
 }
 
-.pilot-release-backfill h3,
-.pilot-release-backfill p {
-  margin: 0;
-}
-
-.pilot-release-backfill p {
-  margin-top: 0.35rem;
-  color: var(--muted);
+.source-next-action > button {
+  min-height: 2.75rem;
 }
 
 @media (max-width: 720px) {
-  .pilot-release-backfill,
-  .source-evidence-refresh {
+  .source-next-action {
     align-items: stretch;
     flex-direction: column;
-    grid-template-columns: 1fr;
   }
 
   .source-evidence-addition {
     grid-template-columns: 1fr;
   }
 
-  .source-recommendation {
-    align-items: stretch;
+  .source-recommendation-list {
     grid-template-columns: 1fr;
+  }
+
+  .source-recommendation {
+    min-height: auto;
   }
 }
 

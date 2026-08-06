@@ -224,7 +224,7 @@ describe('stage 8C package source review', () => {
   it('keeps the normal review path short without weakening explicit trust', () => {
     expect(operatorUi).toContain('Confirm source');
     expect(operatorUi).toContain('Not official');
-    expect(operatorUi).toContain('Add another source');
+    expect(operatorUi).toContain('Add the exact official page');
     expect(operatorUi).toContain('The npm registry is the standard version feed');
     expect(operatorUi).not.toContain('Confirm the package publisher');
     expect(operatorUi).not.toContain('Official website domain');
@@ -234,6 +234,23 @@ describe('stage 8C package source review', () => {
     );
     expect(exactApprovalMigration).toContain('current_candidate.canonical_url');
     expect(exactApprovalMigration).not.toContain('p_official_domains');
+  });
+
+  it('shows confirmed packages one evidence panel and one context-aware next action', () => {
+    expect(operatorUi).toContain('Upgrade resources');
+    expect(operatorUi).toContain("mapping.status === 'mapped' && pendingCount === 0");
+    expect(operatorUi).toContain('Suggested search');
+    expect(operatorUi).toContain('Find page ↗');
+    expect(operatorUi).not.toContain("'Verify'");
+    expect(operatorUi).toContain('source-next-action');
+    expect(operatorUi).toContain('mapping.guidanceRefreshAvailable');
+    expect(operatorUi).toContain("? 'Re-run migration analysis'");
+    expect(operatorUi).toContain(": 'Analyze the current upgrade'");
+    expect(operatorUi).not.toContain('Regenerate blocked guidance');
+    expect(operatorUi).not.toContain('Pilot an existing release');
+    expect(operatorStyles).toContain(
+      'grid-template-columns: repeat(3, minmax(0, 1fr))',
+    );
   });
 
   it('keeps partially reviewed packages in the operator queue', () => {

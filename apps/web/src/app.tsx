@@ -963,7 +963,9 @@ function PackageSourceMappingCard({
               ? pendingCount === 1
                 ? 'Review this migration source'
                 : `Review the ${String(pendingCount)} most useful migration sources`
-              : `${String(confirmedCount)} ${confirmedCount === 1 ? 'source' : 'sources'} confirmed`}
+              : mapping.status === 'mapped'
+                ? 'Monitoring enabled'
+                : `${String(confirmedCount)} ${confirmedCount === 1 ? 'source' : 'sources'} confirmed`}
           </p>
         </div>
         <div className="package-source-facts" aria-label="Package summary">
@@ -1076,13 +1078,13 @@ function PackageSourceMappingCard({
           );
         })}
       </div>
-      {mapping.status === 'mapped' && (
+      {mapping.status === 'mapped' && pendingCount === 0 && (
         <section className="source-evidence-controls">
           <div>
-            <h3>Migration resources</h3>
+            <h3>Upgrade resources</h3>
             <p>
-              Check these three publisher-linked resources for the upgrade. Confirmed
-              links are already trusted; suggested searches still need your review.
+              Confirmed links are ready to use. Suggested searches only help you find an
+              exact publisher page; add that page below before it can be trusted.
             </p>
           </div>
           <ul className="source-recommendation-list">
@@ -1095,16 +1097,18 @@ function PackageSourceMappingCard({
                   >
                     {recommendation.verification === 'confirmed'
                       ? 'Confirmed'
-                      : 'Verify'}
+                      : 'Suggested search'}
                   </span>
                 </div>
                 <a
-                  className="secondary-button"
+                  className="source-recommendation-link"
                   href={recommendation.href}
                   target="_blank"
                   rel="noreferrer"
                 >
-                  Open ↗
+                  {recommendation.verification === 'confirmed'
+                    ? 'Open source ↗'
+                    : 'Find page ↗'}
                 </a>
               </li>
             ))}
@@ -1117,7 +1121,7 @@ function PackageSourceMappingCard({
             </p>
           )}
           <details className="source-evidence-custom">
-            <summary>Add another source</summary>
+            <summary>Add the exact official page</summary>
             <p>
               Paste an exact publisher-owned migration guide, changelog, or release
               page. It will require confirmation before the system trusts it.
@@ -1164,61 +1168,53 @@ function PackageSourceMappingCard({
           </details>
         </section>
       )}
-      {mapping.status === 'mapped' && mapping.guidanceRefreshAvailable && (
-        <section className="source-evidence-refresh">
-          <div>
-            <h3>Regenerate blocked guidance</h3>
-            <p>
-              After confirming a new changelog or migration guide, create a new
-              immutable evidence revision and analyse it again.
-            </p>
-            {refreshResult && <p className="success-message">{refreshResult}</p>}
-          </div>
-          <button
-            className="secondary-button"
-            type="button"
-            disabled={busyOperation !== null}
-            aria-busy={busyOperation?.action === 'refresh'}
-            onClick={() => void refreshEvidence()}
-          >
-            {busyOperation?.action === 'refresh'
-              ? 'Queuing…'
-              : 'Regenerate with confirmed sources'}
-          </button>
-        </section>
-      )}
       {mapping.status === 'mapped' && pendingCount === 0 && (
         <section
-          className="pilot-release-backfill"
-          aria-labelledby={`pilot-${mapping.id}`}
+          className="source-next-action"
+          aria-labelledby={`next-action-${mapping.id}`}
         >
           <div>
-            <h3 id={`pilot-${mapping.id}`}>Pilot an existing release</h3>
+            <span className="source-next-action-label">Next step</span>
+            <h3 id={`next-action-${mapping.id}`}>
+              {mapping.guidanceRefreshAvailable
+                ? 'Re-run migration analysis'
+                : 'Analyze the current upgrade'}
+            </h3>
             <p>
-              Use the installed version from the latest selected repository scan and the
-              current npm release evidence. No version or source URL can be entered
-              manually.
+              {mapping.guidanceRefreshAvailable
+                ? 'Use the newly confirmed sources to replace the blocked draft.'
+                : 'Compare the installed repository version with the latest confirmed release.'}
             </p>
-            {backfillResult && <p className="success-message">{backfillResult}</p>}
+            {mapping.guidanceRefreshAvailable
+              ? refreshResult && <p className="success-message">{refreshResult}</p>
+              : backfillResult && <p className="success-message">{backfillResult}</p>}
           </div>
           <button
             className="secondary-button"
             type="button"
             disabled={
               busyOperation !== null ||
-              mapping.repositoryUsage.direct === 0 ||
-              mapping.latestDeprecated !== false
+              (!mapping.guidanceRefreshAvailable &&
+                (mapping.repositoryUsage.direct === 0 ||
+                  mapping.latestDeprecated !== false))
             }
             aria-busy={
               busyOperation?.targetId === mapping.id &&
-              busyOperation.action === 'backfill'
+              (busyOperation.action === 'backfill' ||
+                busyOperation.action === 'refresh')
             }
-            onClick={() => void backfillCurrentRelease()}
+            onClick={() =>
+              void (mapping.guidanceRefreshAvailable
+                ? refreshEvidence()
+                : backfillCurrentRelease())
+            }
           >
             {busyOperation?.targetId === mapping.id &&
-            busyOperation.action === 'backfill'
+            (busyOperation.action === 'backfill' || busyOperation.action === 'refresh')
               ? 'Queuing…'
-              : 'Ingest current release'}
+              : mapping.guidanceRefreshAvailable
+                ? 'Re-run analysis'
+                : 'Ingest current release'}
           </button>
         </section>
       )}

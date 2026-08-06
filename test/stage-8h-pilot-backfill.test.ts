@@ -103,7 +103,7 @@ describe('Stage 8H current release pilot backfill', () => {
 
   it('keeps the operator interaction bounded and explains the derived authority', () => {
     expect(web).toContain('Ingest current release');
-    expect(web).toContain('No version or source URL can be entered');
+    expect(web).toContain('Compare the installed repository version');
     expect(web).toContain('requestPackageReleasePilotBackfill');
   });
 });
