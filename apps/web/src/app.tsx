@@ -65,6 +65,7 @@ import {
   updateCandidateNotificationState,
 } from './api.js';
 import { useAuth } from './auth.js';
+import { packageEvidenceRecommendations } from './package-evidence-recommendations.js';
 import { supabase } from './supabase.js';
 
 export function App(): React.JSX.Element {
@@ -940,6 +941,7 @@ function PackageSourceMappingCard({
   ).length;
   const displayStatus =
     mapping.status === 'mapped' && pendingCount > 0 ? 'needs_review' : mapping.status;
+  const evidenceRecommendations = packageEvidenceRecommendations(mapping);
 
   return (
     <article className="panel package-source-card">
@@ -1135,52 +1137,78 @@ function PackageSourceMappingCard({
       {mapping.status === 'mapped' && (
         <section className="source-evidence-controls">
           <div>
-            <h3>Add official migration evidence</h3>
+            <h3>Find official migration evidence</h3>
             <p>
-              Use this only when the confirmed sources do not explain an upgrade. Open
-              the proposed URL yourself first; adding it creates an untrusted candidate
-              and does not fetch or trust it.
+              Start with these publisher-linked locations. Open a recommendation and
+              verify that it belongs to the package before adding the exact page you
+              found. Recommendations are not trusted automatically.
             </p>
           </div>
-          <div className="source-evidence-addition">
-            <select
-              aria-label="Evidence source type"
-              value={newSourceKind}
-              onChange={event =>
-                setNewSourceKind(event.target.value as typeof newSourceKind)
-              }
-            >
-              <option value="migration_guide">Migration guide</option>
-              <option value="changelog">Changelog</option>
-              <option value="release_feed">Release page or feed</option>
-              <option value="sdk_repository_release">Source repository</option>
-            </select>
-            <input
-              aria-label="Official evidence URL"
-              type="url"
-              placeholder="https://official-project.example/migration-guide"
-              value={newSourceUrl}
-              onChange={event => setNewSourceUrl(event.target.value)}
-            />
-            <input
-              aria-label="How the source was verified"
-              maxLength={500}
-              placeholder="Why this URL belongs to the package publisher"
-              value={newSourceNote}
-              onChange={event => setNewSourceNote(event.target.value)}
-            />
-            <button
-              className="secondary-button"
-              type="button"
-              disabled={
-                busyOperation !== null || !newSourceUrl || !newSourceNote.trim()
-              }
-              aria-busy={busyOperation?.action === 'add'}
-              onClick={() => void addSourceCandidate()}
-            >
-              {busyOperation?.action === 'add' ? 'Adding…' : 'Add for confirmation'}
-            </button>
-          </div>
+          <ol className="source-recommendation-list">
+            {evidenceRecommendations.slice(0, 3).map(recommendation => (
+              <li className="source-recommendation" key={recommendation.id}>
+                <div>
+                  <strong>{recommendation.title}</strong>
+                  <span>{recommendation.description}</span>
+                  <small>{recommendation.provenance}</small>
+                </div>
+                <a
+                  className="secondary-button"
+                  href={recommendation.href}
+                  target="_blank"
+                  rel="noreferrer"
+                >
+                  {recommendation.action} ↗
+                </a>
+              </li>
+            ))}
+          </ol>
+          <details className="source-evidence-custom">
+            <summary>I found another official source</summary>
+            <p>
+              Paste the exact page you verified. It will still require a separate
+              confirmation before the system trusts or fetches it.
+            </p>
+            <div className="source-evidence-addition">
+              <select
+                aria-label="Evidence source type"
+                value={newSourceKind}
+                onChange={event =>
+                  setNewSourceKind(event.target.value as typeof newSourceKind)
+                }
+              >
+                <option value="migration_guide">Migration guide</option>
+                <option value="changelog">Changelog</option>
+                <option value="release_feed">Release page or feed</option>
+                <option value="sdk_repository_release">Source repository</option>
+              </select>
+              <input
+                aria-label="Official evidence URL"
+                type="url"
+                placeholder="https://official-project.example/migration-guide"
+                value={newSourceUrl}
+                onChange={event => setNewSourceUrl(event.target.value)}
+              />
+              <input
+                aria-label="How the source was verified"
+                maxLength={500}
+                placeholder="Why this URL belongs to the package publisher"
+                value={newSourceNote}
+                onChange={event => setNewSourceNote(event.target.value)}
+              />
+              <button
+                className="secondary-button"
+                type="button"
+                disabled={
+                  busyOperation !== null || !newSourceUrl || !newSourceNote.trim()
+                }
+                aria-busy={busyOperation?.action === 'add'}
+                onClick={() => void addSourceCandidate()}
+              >
+                {busyOperation?.action === 'add' ? 'Adding…' : 'Add for confirmation'}
+              </button>
+            </div>
+          </details>
         </section>
       )}
       {mapping.status === 'mapped' && mapping.guidanceRefreshAvailable && (
