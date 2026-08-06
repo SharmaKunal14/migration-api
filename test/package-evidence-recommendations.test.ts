@@ -5,7 +5,10 @@ import type {
   PublicPackageSourceMapping,
 } from '@migration/contracts';
 
-import { packageEvidenceRecommendations } from '../apps/web/src/package-evidence-recommendations.js';
+import {
+  packageEvidenceRecommendations,
+  packageSourceCandidatesForReview,
+} from '../apps/web/src/package-evidence-recommendations.js';
 
 const candidate = (
   sourceKind: PublicPackageSourceCandidate['sourceKind'],
@@ -61,6 +64,47 @@ const mapping = (
 });
 
 describe('package evidence recommendations', () => {
+  it('limits source approval to the three inputs needed by migration', () => {
+    const candidates = [
+      candidate('sdk_repository_release', 'https://github.com/fastify/fastify'),
+      candidate('release_feed', 'https://github.com/fastify/fastify/releases'),
+      candidate(
+        'migration_guide',
+        'https://github.com/fastify/fastify/blob/HEAD/MIGRATION.md',
+      ),
+      candidate('package_registry_release', 'https://registry.npmjs.org/fastify'),
+      candidate(
+        'changelog',
+        'https://github.com/fastify/fastify/blob/HEAD/CHANGELOG.md',
+      ),
+    ];
+
+    expect(
+      packageSourceCandidatesForReview(candidates).map(item => item.sourceKind),
+    ).toEqual(['package_registry_release', 'changelog', 'migration_guide']);
+  });
+
+  it('promotes useful fallbacks after a higher-priority source is resolved', () => {
+    const candidates = [
+      candidate('sdk_repository_release', 'https://github.com/fastify/fastify'),
+      candidate('release_feed', 'https://github.com/fastify/fastify/releases'),
+      candidate(
+        'migration_guide',
+        'https://github.com/fastify/fastify/blob/HEAD/MIGRATION.md',
+        'approved',
+      ),
+      candidate('package_registry_release', 'https://registry.npmjs.org/fastify'),
+      candidate(
+        'changelog',
+        'https://github.com/fastify/fastify/blob/HEAD/CHANGELOG.md',
+      ),
+    ];
+
+    expect(
+      packageSourceCandidatesForReview(candidates).map(item => item.sourceKind),
+    ).toEqual(['package_registry_release', 'changelog', 'release_feed']);
+  });
+
   it('shows only three migration-oriented recommendations', () => {
     const recommendations = packageEvidenceRecommendations(
       mapping([

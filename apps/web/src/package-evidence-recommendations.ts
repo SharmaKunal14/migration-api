@@ -10,6 +10,35 @@ export interface PackageEvidenceRecommendation {
   readonly verification: 'confirmed' | 'verify';
 }
 
+const migrationReviewSourceKinds = [
+  'package_registry_release',
+  'changelog',
+  'migration_guide',
+  'release_feed',
+  'sdk_repository_release',
+] as const satisfies readonly PublicPackageSourceCandidate['sourceKind'][];
+
+export function packageSourceCandidatesForReview(
+  candidates: readonly PublicPackageSourceCandidate[],
+): readonly PublicPackageSourceCandidate[] {
+  const priority = new Map<PublicPackageSourceCandidate['sourceKind'], number>(
+    migrationReviewSourceKinds.map((sourceKind, index) => [sourceKind, index]),
+  );
+  return candidates
+    .filter(
+      candidate =>
+        candidate.canPromote &&
+        candidate.reviewState === 'pending_review' &&
+        priority.has(candidate.sourceKind),
+    )
+    .sort(
+      (left, right) =>
+        (priority.get(left.sourceKind) ?? Number.MAX_SAFE_INTEGER) -
+        (priority.get(right.sourceKind) ?? Number.MAX_SAFE_INTEGER),
+    )
+    .slice(0, 3);
+}
+
 const directSourceKinds = [
   'migration_guide',
   'changelog',

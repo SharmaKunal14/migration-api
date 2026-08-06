@@ -48,6 +48,10 @@ const operatorStyles = readFileSync(
   new URL('../apps/web/src/styles.css', import.meta.url),
   'utf8',
 );
+const sourceRecommendations = readFileSync(
+  new URL('../apps/web/src/package-evidence-recommendations.ts', import.meta.url),
+  'utf8',
+);
 
 describe('stage 8C package source review', () => {
   it('proposes bounded GitHub evidence locations without trusting or fetching them', () => {
@@ -201,14 +205,17 @@ describe('stage 8C package source review', () => {
     expect(operatorUi).toContain('Technical details and controls');
     expect(operatorUi).toContain('Registry checked');
     expect(operatorUi).toContain('Dependency use');
-    expect(operatorUi).toContain('Why this source?');
+    expect(operatorUi).toContain('source-review-link');
   });
 
-  it('renders clear source decisions and shows progress only while active', () => {
+  it('renders per-source progress without blocking unrelated cards', () => {
     expect(operatorUi).toContain('className="source-confirm-button"');
     expect(operatorUi).toContain('className="source-reject-button"');
-    expect(operatorUi).toContain("busyOperation.action === 'approve'");
-    expect(operatorUi).toContain("busyOperation.action === 'reject'");
+    expect(operatorUi).toContain('candidateReviewOperations[candidate.id]');
+    expect(operatorUi).toContain('disabled={reviewOperation !== undefined}');
+    expect(operatorUi).toContain("reviewOperation === 'queued_approve'");
+    expect(operatorUi).toContain("reviewOperation === 'queued_reject'");
+    expect(operatorUi).toContain('currentMappingVersion.current');
     expect(operatorStyles).toContain('.source-confirm-button:disabled');
     expect(operatorStyles).toContain('cursor: not-allowed');
     expect(operatorStyles).toContain(".source-confirm-button[aria-busy='true']");
@@ -217,7 +224,7 @@ describe('stage 8C package source review', () => {
   it('keeps the normal review path short without weakening explicit trust', () => {
     expect(operatorUi).toContain('Confirm source');
     expect(operatorUi).toContain('Not official');
-    expect(operatorUi).toContain('Suggest a different URL');
+    expect(operatorUi).toContain('Add another source');
     expect(operatorUi).toContain('The npm registry is the standard version feed');
     expect(operatorUi).not.toContain('Confirm the package publisher');
     expect(operatorUi).not.toContain('Official website domain');
@@ -233,20 +240,25 @@ describe('stage 8C package source review', () => {
     expect(operatorUi).toContain(
       "loadPackageSourceMappings(session.access_token, 'mapped')",
     );
-    expect(operatorUi).toContain('candidate.canPromote &&');
-    expect(operatorUi).toContain("candidate.reviewState === 'pending_review'");
+    expect(operatorUi).toContain(
+      'packageSourceCandidatesForReview(mapping.candidates)',
+    );
+    expect(sourceRecommendations).toContain('candidate.canPromote &&');
+    expect(sourceRecommendations).toContain(
+      "candidate.reviewState === 'pending_review'",
+    );
     expect(operatorUi).toContain("status === 'mapped'");
-    expect(operatorUi).toContain('!candidate.canPromote ||');
-    expect(operatorUi).toContain("candidate.reviewState !== 'pending_review'");
   });
 
-  it('does not present non-monitoring metadata links as approval work', () => {
+  it('limits approval work to three migration-useful source types', () => {
+    expect(sourceRecommendations).toContain("'package_registry_release'");
+    expect(sourceRecommendations).toContain("'changelog'");
+    expect(sourceRecommendations).toContain("'migration_guide'");
+    expect(sourceRecommendations).toContain("'release_feed'");
+    expect(sourceRecommendations).toContain("'sdk_repository_release'");
+    expect(sourceRecommendations).toContain('.slice(0, 3)');
     expect(operatorUi).toContain(
-      'const reviewableCandidates = mapping.candidates.filter(',
-    );
-    expect(operatorUi).toContain('candidate => candidate.canPromote');
-    expect(operatorUi).toContain(
-      'const candidatesNeedingReview = reviewableCandidates.filter(',
+      'packageSourceCandidatesForReview(mapping.candidates)',
     );
     expect(operatorUi).toContain('candidatesNeedingReview.map(candidate =>');
   });

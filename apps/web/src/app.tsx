@@ -57,7 +57,6 @@ import {
   requestPackageReleasePilotBackfill,
   requestPackageEvidenceRefresh,
   reviewPackageSourceCandidate,
-  replacePackageSourceCandidate,
   reviewMigrationSpecification,
   revokeMigrationApproval,
   startRepositoryScan,
@@ -65,7 +64,10 @@ import {
   updateCandidateNotificationState,
 } from './api.js';
 import { useAuth } from './auth.js';
-import { packageEvidenceRecommendations } from './package-evidence-recommendations.js';
+import {
+  packageEvidenceRecommendations,
+  packageSourceCandidatesForReview,
+} from './package-evidence-recommendations.js';
 import { supabase } from './supabase.js';
 
 export function App(): React.JSX.Element {
@@ -656,12 +658,9 @@ function PackageSourceReviewPage(): React.JSX.Element {
             mappings: [
               ...new Map(
                 [...pending.mappings, ...mapped.mappings]
-                  .filter(mapping =>
-                    mapping.candidates.some(
-                      candidate =>
-                        candidate.canPromote &&
-                        candidate.reviewState === 'pending_review',
-                    ),
+                  .filter(
+                    mapping =>
+                      packageSourceCandidatesForReview(mapping.candidates).length > 0,
                   )
                   .map(mapping => [mapping.id, mapping]),
               ).values(),
@@ -670,12 +669,9 @@ function PackageSourceReviewPage(): React.JSX.Element {
         : loadPackageSourceMappings(session.access_token, status).then(result => ({
             mappings:
               status === 'mapped'
-                ? result.mappings.filter(mapping =>
-                    mapping.candidates.every(
-                      candidate =>
-                        !candidate.canPromote ||
-                        candidate.reviewState !== 'pending_review',
-                    ),
+                ? result.mappings.filter(
+                    mapping =>
+                      packageSourceCandidatesForReview(mapping.candidates).length === 0,
                   )
                 : result.mappings,
           }));
@@ -764,16 +760,18 @@ function PackageSourceMappingCard({
   readonly onReviewed: () => void;
 }): React.JSX.Element {
   const pollIntervalSeconds = 86_400;
+  type CandidateReviewOperation =
+    'queued_approve' | 'queued_reject' | 'approve' | 'reject';
   const [busyOperation, setBusyOperation] = useState<{
     readonly targetId: string;
-    readonly action:
-      'approve' | 'reject' | 'replace' | 'add' | 'mapping' | 'backfill' | 'refresh';
+    readonly action: 'add' | 'mapping' | 'backfill' | 'refresh';
   } | null>(null);
-  const [replacementKind, setReplacementKind] = useState<
-    'sdk_repository_release' | 'changelog' | 'release_feed' | 'migration_guide'
-  >('sdk_repository_release');
-  const [replacementUrl, setReplacementUrl] = useState('');
-  const [replacementNote, setReplacementNote] = useState('');
+  const [candidateReviewOperations, setCandidateReviewOperations] = useState<
+    Readonly<Record<string, CandidateReviewOperation>>
+  >({});
+  const reviewQueue = useRef<Promise<void>>(Promise.resolve());
+  const queuedReviewCandidateIds = useRef<Set<string>>(new Set());
+  const currentMappingVersion = useRef(mapping.version);
   const [newSourceKind, setNewSourceKind] = useState<
     'sdk_repository_release' | 'changelog' | 'release_feed' | 'migration_guide'
   >('migration_guide');
@@ -787,56 +785,67 @@ function PackageSourceMappingCard({
   const [backfillResult, setBackfillResult] = useState<string | null>(null);
   const [refreshResult, setRefreshResult] = useState<string | null>(null);
 
+  useEffect(() => {
+    currentMappingVersion.current = Math.max(
+      currentMappingVersion.current,
+      mapping.version,
+    );
+  }, [mapping.version]);
+
   async function review(
     candidate: PublicPackageSourceCandidate,
     decision: 'approve' | 'reject',
   ): Promise<void> {
-    setBusyOperation({ targetId: candidate.id, action: decision });
+    if (queuedReviewCandidateIds.current.has(candidate.id)) return;
+    queuedReviewCandidateIds.current.add(candidate.id);
+    setCandidateReviewOperations(current => ({
+      ...current,
+      [candidate.id]: decision === 'approve' ? 'queued_approve' : 'queued_reject',
+    }));
     setError(null);
-    try {
-      await reviewPackageSourceCandidate(
-        token,
-        candidate.id,
-        crypto.randomUUID(),
-        decision === 'approve'
-          ? {
-              decision,
-              expectedCandidateVersion: candidate.version,
-              expectedMappingVersion: mapping.version,
-              pollIntervalSeconds,
-            }
-          : {
-              decision,
-              expectedCandidateVersion: candidate.version,
-              expectedMappingVersion: mapping.version,
-              rejectionReasonCode: 'NOT_OFFICIAL',
-            },
-      );
-      onReviewed();
-    } catch (caught) {
-      setError(errorText(caught));
-    } finally {
-      setBusyOperation(null);
-    }
-  }
-
-  async function replace(candidate: PublicPackageSourceCandidate): Promise<void> {
-    setBusyOperation({ targetId: candidate.id, action: 'replace' });
-    setError(null);
-    try {
-      await replacePackageSourceCandidate(token, candidate.id, crypto.randomUUID(), {
-        expectedCandidateVersion: candidate.version,
-        expectedMappingVersion: mapping.version,
-        sourceKind: replacementKind,
-        canonicalUrl: replacementUrl,
-        proposalNote: replacementNote,
+    const queuedReview = reviewQueue.current
+      .catch(() => undefined)
+      .then(async () => {
+        setCandidateReviewOperations(current => ({
+          ...current,
+          [candidate.id]: decision,
+        }));
+        const result = await reviewPackageSourceCandidate(
+          token,
+          candidate.id,
+          crypto.randomUUID(),
+          decision === 'approve'
+            ? {
+                decision,
+                expectedCandidateVersion: candidate.version,
+                expectedMappingVersion: currentMappingVersion.current,
+                pollIntervalSeconds,
+              }
+            : {
+                decision,
+                expectedCandidateVersion: candidate.version,
+                expectedMappingVersion: currentMappingVersion.current,
+                rejectionReasonCode: 'NOT_OFFICIAL',
+              },
+        );
+        currentMappingVersion.current = result.review.mapping.version;
+        onReviewed();
+      })
+      .catch((caught: unknown) => {
+        setError(errorText(caught));
+      })
+      .finally(() => {
+        queuedReviewCandidateIds.current.delete(candidate.id);
+        setCandidateReviewOperations(current =>
+          Object.fromEntries(
+            Object.entries(current).filter(
+              ([candidateId]) => candidateId !== candidate.id,
+            ),
+          ),
+        );
       });
-      onReviewed();
-    } catch (caught) {
-      setError(errorText(caught));
-    } finally {
-      setBusyOperation(null);
-    }
+    reviewQueue.current = queuedReview;
+    await queuedReview;
   }
 
   async function changeMappingState(): Promise<void> {
@@ -930,17 +939,10 @@ function PackageSourceMappingCard({
     }
   }
 
-  const reviewableCandidates = mapping.candidates.filter(
-    candidate => candidate.canPromote,
-  );
-  const pendingCount = reviewableCandidates.filter(
-    candidate => candidate.reviewState === 'pending_review',
-  ).length;
-  const candidatesNeedingReview = reviewableCandidates.filter(
-    candidate => candidate.reviewState === 'pending_review',
-  );
-  const confirmedCount = reviewableCandidates.filter(
-    candidate => candidate.reviewState === 'approved',
+  const candidatesNeedingReview = packageSourceCandidatesForReview(mapping.candidates);
+  const pendingCount = candidatesNeedingReview.length;
+  const confirmedCount = mapping.candidates.filter(
+    candidate => candidate.canPromote && candidate.reviewState === 'approved',
   ).length;
   const displayStatus =
     mapping.status === 'mapped' && pendingCount > 0 ? 'needs_review' : mapping.status;
@@ -958,7 +960,9 @@ function PackageSourceMappingCard({
           </div>
           <p>
             {pendingCount > 0
-              ? `${String(pendingCount)} ${pendingCount === 1 ? 'source needs' : 'sources need'} your confirmation`
+              ? pendingCount === 1
+                ? 'Review this migration source'
+                : `Review the ${String(pendingCount)} most useful migration sources`
               : `${String(confirmedCount)} ${confirmedCount === 1 ? 'source' : 'sources'} confirmed`}
           </p>
         </div>
@@ -983,58 +987,51 @@ function PackageSourceMappingCard({
       <div className="package-source-candidates">
         {candidatesNeedingReview.map(candidate => {
           const displayUrl = packageSourceDisplayUrl(candidate.canonicalUrl);
-          const approving =
-            busyOperation?.targetId === candidate.id &&
-            busyOperation.action === 'approve';
-          const rejecting =
-            busyOperation?.targetId === candidate.id &&
-            busyOperation.action === 'reject';
+          const copy = packageSourceReviewCopy(candidate.sourceKind);
+          const reviewOperation = candidateReviewOperations[candidate.id];
+          const approving = reviewOperation === 'approve';
+          const approveQueued = reviewOperation === 'queued_approve';
+          const rejecting = reviewOperation === 'reject';
+          const rejectQueued = reviewOperation === 'queued_reject';
           return (
             <section
               className={`package-source-candidate source-${candidate.reviewState}`}
               key={candidate.id}
             >
-              <header className="source-candidate-header">
-                <div>
-                  <span className="source-kind-label">
-                    {packageSourceKindLabel(candidate.sourceKind)}
-                  </span>
-                  <h3>{displayUrl.hostname}</h3>
-                </div>
-                <span
-                  className={`source-status source-status-${candidate.reviewState}`}
+              <div className="source-review-copy">
+                <span className="source-review-step">{copy.step}</span>
+                <h3>{copy.title}</h3>
+                <p>{copy.description}</p>
+                <a
+                  className="source-review-link"
+                  href={candidate.canonicalUrl}
+                  target="_blank"
+                  rel="noreferrer"
                 >
-                  {packageSourceReviewStateLabel(candidate.reviewState)}
-                </span>
-              </header>
-              <a
-                className="source-url"
-                href={candidate.canonicalUrl}
-                target="_blank"
-                rel="noreferrer"
-              >
-                <span>{displayUrl.path}</span>
-                <span aria-hidden="true">↗</span>
-              </a>
-              <p className="source-purpose">
-                {packageSourcePurpose(candidate.sourceKind)}
-              </p>
-              {candidate.reviewState === 'pending_review' &&
-                mapping.status !== 'disabled' && (
-                  <div className="review-actions">
+                  {displayUrl.hostname}
+                  {displayUrl.path} ↗
+                </a>
+              </div>
+              {mapping.status !== 'disabled' && (
+                <div className="review-actions">
+                  <div>
                     <button
                       className="source-confirm-button"
                       type="button"
-                      disabled={!candidate.canPromote || busyOperation !== null}
+                      disabled={!candidate.canPromote || reviewOperation !== undefined}
                       aria-busy={approving}
                       onClick={() => void review(candidate, 'approve')}
                     >
-                      {approving ? 'Confirming…' : 'Confirm source'}
+                      {approveQueued
+                        ? 'Queued…'
+                        : approving
+                          ? 'Confirming…'
+                          : 'Confirm source'}
                     </button>
                     <button
                       className="source-reject-button"
                       type="button"
-                      disabled={busyOperation !== null}
+                      disabled={reviewOperation !== undefined}
                       aria-expanded={rejectingCandidateId === candidate.id}
                       onClick={() =>
                         setRejectingCandidateId(current =>
@@ -1044,95 +1041,37 @@ function PackageSourceMappingCard({
                     >
                       Not official
                     </button>
-                    {rejectingCandidateId === candidate.id && (
-                      <div className="decision-confirmation">
-                        <p>Mark this URL as not official for {mapping.packageName}?</p>
-                        <div>
-                          <button
-                            className="source-reject-confirm-button"
-                            type="button"
-                            disabled={busyOperation !== null}
-                            aria-busy={rejecting}
-                            onClick={() => void review(candidate, 'reject')}
-                          >
-                            {rejecting ? 'Saving…' : 'Yes, mark not official'}
-                          </button>
-                          <button
-                            className="text-button"
-                            type="button"
-                            disabled={busyOperation !== null}
-                            onClick={() => setRejectingCandidateId(null)}
-                          >
-                            Cancel
-                          </button>
-                        </div>
-                      </div>
-                    )}
                   </div>
-                )}
-              <details className="source-card-details">
-                <summary>Why this source?</summary>
-                <p>
-                  {packageSourceProposalText(candidate.proposalReasonCode)}
-                  {candidate.proposalNote ? ` · ${candidate.proposalNote}` : ''}
-                </p>
-                {candidate.reviewState === 'pending_review' &&
-                  candidate.sourceKind !== 'package_registry_release' &&
-                  mapping.status !== 'disabled' && (
-                    <details className="candidate-advanced">
-                      <summary>Suggest a different URL</summary>
-                      <div className="replacement-controls">
-                        <select
-                          aria-label="Replacement source type"
-                          value={replacementKind}
-                          onChange={event =>
-                            setReplacementKind(
-                              event.target.value as typeof replacementKind,
-                            )
-                          }
-                        >
-                          <option value="sdk_repository_release">Repository</option>
-                          <option value="changelog">Changelog</option>
-                          <option value="release_feed">Release feed</option>
-                          <option value="migration_guide">Migration guide</option>
-                        </select>
-                        <input
-                          aria-label="Replacement URL"
-                          type="url"
-                          placeholder="https://official.example/releases"
-                          value={replacementUrl}
-                          onChange={event => setReplacementUrl(event.target.value)}
-                        />
-                        <input
-                          aria-label="Replacement reason"
-                          maxLength={500}
-                          placeholder="How you verified it"
-                          value={replacementNote}
-                          onChange={event => setReplacementNote(event.target.value)}
-                        />
+                  {rejectingCandidateId === candidate.id && (
+                    <div className="decision-confirmation">
+                      <p>Mark this source as not official?</p>
+                      <div>
                         <button
-                          className="secondary-button"
+                          className="source-reject-confirm-button"
                           type="button"
-                          disabled={
-                            busyOperation !== null ||
-                            !replacementUrl ||
-                            !replacementNote.trim()
-                          }
-                          aria-busy={
-                            busyOperation?.targetId === candidate.id &&
-                            busyOperation.action === 'replace'
-                          }
-                          onClick={() => void replace(candidate)}
+                          disabled={reviewOperation !== undefined}
+                          aria-busy={rejecting}
+                          onClick={() => void review(candidate, 'reject')}
                         >
-                          {busyOperation?.targetId === candidate.id &&
-                          busyOperation.action === 'replace'
-                            ? 'Saving…'
-                            : 'Use this URL'}
+                          {rejectQueued
+                            ? 'Queued…'
+                            : rejecting
+                              ? 'Saving…'
+                              : 'Yes, reject'}
+                        </button>
+                        <button
+                          className="text-button"
+                          type="button"
+                          disabled={reviewOperation !== undefined}
+                          onClick={() => setRejectingCandidateId(null)}
+                        >
+                          Cancel
                         </button>
                       </div>
-                    </details>
+                    </div>
                   )}
-              </details>
+                </div>
+              )}
             </section>
           );
         })}
@@ -3860,27 +3799,6 @@ function formatTimestamp(value: string): string {
   }).format(new Date(value));
 }
 
-function packageSourceProposalText(
-  code: PublicPackageSourceCandidate['proposalReasonCode'],
-): string {
-  const descriptions: Record<typeof code, string> = {
-    NPM_REGISTRY_AUTHORITATIVE: 'the fixed-origin npm registry supplied version data',
-    NPM_REPOSITORY_DECLARATION: 'npm metadata declared this repository',
-    NPM_HOMEPAGE_DECLARATION: 'npm metadata declared this homepage',
-    NPM_BUGS_DECLARATION: 'npm metadata declared this issue tracker',
-    NPM_REPOSITORY_RELEASES_DERIVED:
-      'suggested from the publisher-declared GitHub repository; verify that this release page is real before confirming',
-    NPM_REPOSITORY_CHANGELOG_DERIVED:
-      'suggested from the publisher-declared GitHub repository; verify that this changelog exists and belongs to the project',
-    NPM_REPOSITORY_MIGRATION_DERIVED:
-      'suggested from the publisher-declared GitHub repository; verify that this migration guide exists and is official',
-    OPERATOR_REPLACEMENT: 'a platform operator proposed a reviewed replacement',
-    OPERATOR_ADDITION:
-      'a platform operator proposed this exact URL; it remains untrusted until confirmed',
-  };
-  return descriptions[code];
-}
-
 function packageSourceMappingStatusLabel(
   status: PublicPackageSourceMapping['status'],
 ): string {
@@ -3893,47 +3811,50 @@ function packageSourceMappingStatusLabel(
   return labels[status];
 }
 
-function packageSourceKindLabel(
-  kind: PublicPackageSourceCandidate['sourceKind'],
-): string {
-  const labels: Record<typeof kind, string> = {
-    package_registry_release: 'npm version feed',
-    sdk_repository_release: 'Source repository',
-    changelog: 'Changelog',
-    release_feed: 'Release feed',
-    migration_guide: 'Migration guide',
-    homepage: 'Project homepage',
-    issue_tracker: 'Issue tracker',
+function packageSourceReviewCopy(kind: PublicPackageSourceCandidate['sourceKind']): {
+  readonly step: string;
+  readonly title: string;
+  readonly description: string;
+} {
+  const copy: Partial<
+    Record<
+      PublicPackageSourceCandidate['sourceKind'],
+      { readonly step: string; readonly title: string; readonly description: string }
+    >
+  > = {
+    package_registry_release: {
+      step: '1 · Detect updates',
+      title: 'npm version feed',
+      description: 'Tells Upversion when this package publishes a new version.',
+    },
+    changelog: {
+      step: '2 · Understand changes',
+      title: 'Official changelog',
+      description: 'Explains breaking changes and relevant release differences.',
+    },
+    migration_guide: {
+      step: '3 · Apply the upgrade',
+      title: 'Official migration guide',
+      description: 'Provides the concrete steps needed to update application code.',
+    },
+    release_feed: {
+      step: 'Fallback · Release notes',
+      title: 'Official release page',
+      description: 'Use when the package does not publish a useful changelog.',
+    },
+    sdk_repository_release: {
+      step: 'Fallback · Project source',
+      title: 'Official source repository',
+      description: 'Use to locate package-owned upgrade documentation.',
+    },
   };
-  return labels[kind];
-}
-
-function packageSourcePurpose(
-  kind: PublicPackageSourceCandidate['sourceKind'],
-): string {
-  const descriptions: Record<typeof kind, string> = {
-    package_registry_release:
-      'Tracks newly published npm versions. This is the standard source for npm packages.',
-    sdk_repository_release:
-      'Provides releases, source history, and package-owned migration information.',
-    changelog: 'Explains what changed between published versions.',
-    release_feed: 'Publishes a machine-readable stream of new releases.',
-    migration_guide: 'Explains the steps required to move between versions.',
-    homepage: 'Describes the project but is not used as an update source.',
-    issue_tracker: 'Tracks project issues but is not used as an update source.',
-  };
-  return descriptions[kind];
-}
-
-function packageSourceReviewStateLabel(
-  state: PublicPackageSourceCandidate['reviewState'],
-): string {
-  const labels: Record<typeof state, string> = {
-    pending_review: 'Needs confirmation',
-    approved: 'Confirmed',
-    rejected: 'Not official',
-  };
-  return labels[state];
+  return (
+    copy[kind] ?? {
+      step: 'Migration source',
+      title: 'Official package guidance',
+      description: 'Provides package-owned evidence for the migration.',
+    }
+  );
 }
 
 function packageSourceDisplayUrl(value: string): {
