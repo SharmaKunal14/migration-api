@@ -3,11 +3,11 @@
 Migration API is a cloud-first product for reviewing and executing bounded API and SDK
 migrations. Stage 1 implements an authenticated synthetic migration path through AWS
 Step Functions, an isolated Fargate agent, OpenAI Responses, encrypted S3 artifacts,
-Supabase PostgreSQL, and a static React UI.
+Supabase PostgreSQL, and a static React UI. 
 
 The architecture and security baseline are authoritative in [docs](docs/README.md).
 
-## Local verification
+# Local verification
 
 Requirements:
 
