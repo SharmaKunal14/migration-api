@@ -613,7 +613,6 @@ a:focus-visible {
   display: grid;
   margin: 0;
   padding: 0;
-  counter-reset: source-recommendation;
   gap: 0.75rem;
   list-style: none;
 }
@@ -627,27 +626,31 @@ a:focus-visible {
   border: 1px solid var(--line);
   border-radius: 0.75rem;
   background: rgb(8 17 15 / 42%);
-  counter-increment: source-recommendation;
 }
 
-.source-recommendation > div {
-  display: grid;
-  gap: 0.25rem;
+.source-recommendation-title {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
 }
 
-.source-recommendation strong::before {
-  margin-right: 0.5rem;
-  color: var(--mint);
-  content: counter(source-recommendation) '.';
-}
-
-.source-recommendation span {
+.source-recommendation-status {
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--line);
+  border-radius: 999px;
   color: var(--muted);
-  line-height: 1.45;
+  font-size: 0.75rem;
+  font-weight: 700;
 }
 
-.source-recommendation small {
-  color: color-mix(in srgb, var(--muted) 78%, transparent);
+.source-recommendation-confirmed {
+  border-color: rgb(123 242 198 / 35%);
+  color: var(--mint);
+}
+
+.source-recommendation-shortfall {
+  margin: 0;
+  color: var(--muted);
 }
 
 .source-evidence-custom {

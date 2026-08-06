@@ -245,7 +245,10 @@ describe('stage 8C package source review', () => {
       'const reviewableCandidates = mapping.candidates.filter(',
     );
     expect(operatorUi).toContain('candidate => candidate.canPromote');
-    expect(operatorUi).toContain('reviewableCandidates.map(candidate =>');
+    expect(operatorUi).toContain(
+      'const candidatesNeedingReview = reviewableCandidates.filter(',
+    );
+    expect(operatorUi).toContain('candidatesNeedingReview.map(candidate =>');
   });
 
   it('does not misreport unrelated database permission failures as operator denial', () => {

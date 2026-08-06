@@ -936,6 +936,9 @@ function PackageSourceMappingCard({
   const pendingCount = reviewableCandidates.filter(
     candidate => candidate.reviewState === 'pending_review',
   ).length;
+  const candidatesNeedingReview = reviewableCandidates.filter(
+    candidate => candidate.reviewState === 'pending_review',
+  );
   const confirmedCount = reviewableCandidates.filter(
     candidate => candidate.reviewState === 'approved',
   ).length;
@@ -978,7 +981,7 @@ function PackageSourceMappingCard({
       </header>
       {error && <p className="error-message">{error}</p>}
       <div className="package-source-candidates">
-        {reviewableCandidates.map(candidate => {
+        {candidatesNeedingReview.map(candidate => {
           const displayUrl = packageSourceDisplayUrl(candidate.canonicalUrl);
           const approving =
             busyOperation?.targetId === candidate.id &&
@@ -1137,20 +1140,24 @@ function PackageSourceMappingCard({
       {mapping.status === 'mapped' && (
         <section className="source-evidence-controls">
           <div>
-            <h3>Find official migration evidence</h3>
+            <h3>Migration resources</h3>
             <p>
-              Start with these publisher-linked locations. Open a recommendation and
-              verify that it belongs to the package before adding the exact page you
-              found. Recommendations are not trusted automatically.
+              Check these three publisher-linked resources for the upgrade. Confirmed
+              links are already trusted; suggested searches still need your review.
             </p>
           </div>
-          <ol className="source-recommendation-list">
-            {evidenceRecommendations.slice(0, 3).map(recommendation => (
+          <ul className="source-recommendation-list">
+            {evidenceRecommendations.map(recommendation => (
               <li className="source-recommendation" key={recommendation.id}>
-                <div>
+                <div className="source-recommendation-title">
                   <strong>{recommendation.title}</strong>
-                  <span>{recommendation.description}</span>
-                  <small>{recommendation.provenance}</small>
+                  <span
+                    className={`source-recommendation-status source-recommendation-${recommendation.verification}`}
+                  >
+                    {recommendation.verification === 'confirmed'
+                      ? 'Confirmed'
+                      : 'Verify'}
+                  </span>
                 </div>
                 <a
                   className="secondary-button"
@@ -1158,16 +1165,23 @@ function PackageSourceMappingCard({
                   target="_blank"
                   rel="noreferrer"
                 >
-                  {recommendation.action} ↗
+                  Open ↗
                 </a>
               </li>
             ))}
-          </ol>
+          </ul>
+          {evidenceRecommendations.length < 3 && (
+            <p className="source-recommendation-shortfall">
+              Only {String(evidenceRecommendations.length)} credible{' '}
+              {evidenceRecommendations.length === 1 ? 'resource was' : 'resources were'}{' '}
+              found. Add another only if you can verify that the publisher owns it.
+            </p>
+          )}
           <details className="source-evidence-custom">
-            <summary>I found another official source</summary>
+            <summary>Add another source</summary>
             <p>
-              Paste the exact page you verified. It will still require a separate
-              confirmation before the system trusts or fetches it.
+              Paste an exact publisher-owned migration guide, changelog, or release
+              page. It will require confirmation before the system trusts it.
             </p>
             <div className="source-evidence-addition">
               <select
