@@ -272,14 +272,20 @@ async function loadReleaseContext(
   database: AppDatabase,
   releaseId: string,
 ): Promise<ReleaseContext> {
+  // Evidence refresh creates a new immutable release revision, not a duplicate
+  // registry detection. Reuse only the detection bound to this exact version route.
   const release = await database
     .selectFrom('vendorReleases as release')
     .innerJoin('apiProducts as product', 'product.id', 'release.apiProductId')
     .innerJoin('vendors as vendor', 'vendor.id', 'product.vendorId')
-    .leftJoin(
-      'packageReleaseDetections as detection',
-      'detection.vendorReleaseId',
-      'release.id',
+    .leftJoin('packageReleaseDetections as detection', join =>
+      join
+        .onRef('detection.apiProductId', '=', 'release.apiProductId')
+        .onRef('detection.version', '=', 'release.version')
+        .onRef('detection.sourceVersion', '=', 'release.sourceCompatibility')
+        .on('detection.latestDeprecated', '=', false)
+        .on('detection.status', '=', 'detected')
+        .on('detection.vendorReleaseId', 'is not', null),
     )
     .select([
       'release.id as releaseId',
@@ -293,6 +299,7 @@ async function loadReleaseContext(
       'vendor.officialDomains',
       'vendor.trustState as vendorTrustState',
       'product.status as productStatus',
+      'detection.vendorReleaseId as detectedVendorReleaseId',
       'detection.sourceId as detectedSourceId',
       'detection.evidenceObjectKey as detectedEvidenceObjectKey',
       'detection.evidenceDigest as detectedEvidenceDigest',
@@ -340,7 +347,7 @@ async function loadReleaseContext(
         }
       : null;
   if (
-    release.detectedSourceId &&
+    release.detectedVendorReleaseId === release.releaseId &&
     release.sourceDigest !== detectedRegistryEvidence?.digest
   ) {
     throw new VendorEvidenceError('VENDOR_RELEASE_SOURCE_DIGEST_MISMATCH');

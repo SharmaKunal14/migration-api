@@ -13,6 +13,7 @@ const compute = source('infra/terraform/environments/development/compute.tf');
 const iam = source('infra/terraform/environments/development/iam.tf');
 const dispatcher = source('services/outbox-dispatcher/src/handler.ts');
 const repository = source('services/api/src/repository.ts');
+const vendorFetcher = source('workers/vendor-fetcher/src/main.ts');
 const web = source('apps/web/src/app.tsx');
 const styles = source('apps/web/src/styles.css');
 
@@ -72,6 +73,22 @@ describe('Stage 8F generic release ingestion', () => {
     );
     expect(iam).toContain(
       'actions   = ["kms:Decrypt", "kms:Encrypt", "kms:GenerateDataKey"]',
+    );
+  });
+
+  it('reuses fixed-origin registry evidence when a release revision is refreshed', () => {
+    expect(vendorFetcher).toContain(
+      ".onRef('detection.apiProductId', '=', 'release.apiProductId')",
+    );
+    expect(vendorFetcher).toContain(
+      ".onRef('detection.version', '=', 'release.version')",
+    );
+    expect(vendorFetcher).toContain(
+      ".onRef('detection.sourceVersion', '=', 'release.sourceCompatibility')",
+    );
+    expect(vendorFetcher).toContain(".on('detection.vendorReleaseId', 'is not', null)");
+    expect(vendorFetcher).toContain(
+      'release.detectedVendorReleaseId === release.releaseId',
     );
   });
 
