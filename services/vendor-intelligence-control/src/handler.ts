@@ -132,7 +132,13 @@ export async function handleVendorIntelligenceCommand(
     outcome: status,
     safeErrorCode: result.safeErrorCode ?? undefined,
   });
-  return { status };
+  return {
+    status,
+    safeErrorCode:
+      status === 'failed'
+        ? (result.safeErrorCode ?? 'CHANGE_INTELLIGENCE_AGENT_FAILED')
+        : null,
+  };
 }
 
 async function prepareRun(

@@ -1661,9 +1661,9 @@ resource "aws_sfn_state_machine" "change_intelligence" {
         Next       = "ChangeIntelligenceInfrastructureFailed"
       }
       ChangeIntelligenceFailed = {
-        Type  = "Fail"
-        Error = "ChangeIntelligenceFailed"
-        Cause = "The bounded agent did not produce an acceptable draft."
+        Type      = "Fail"
+        Error     = "ChangeIntelligenceFailed"
+        CausePath = "$.safeErrorCode"
       }
       ChangeIntelligenceInfrastructureFailed = {
         Type  = "Fail"

@@ -67,6 +67,48 @@ function mockS3(objects: ReadonlyMap<string, Uint8Array>): S3Client {
   } as unknown as S3Client;
 }
 
+function largeEvidenceTools(sourceBytes: Uint8Array): ChangeIntelligenceTools {
+  const sourceKey = `${releasePrefix}/source/${sourceId}/${sha256(sourceBytes)}`;
+  const manifest = Buffer.from(
+    JSON.stringify({
+      schemaVersion: '1.0',
+      vendorReleaseId: releaseId,
+      vendorSlug: 'orbitchat',
+      productId,
+      version: '2.0.0',
+      sources: [
+        {
+          vendorSourceId: sourceId,
+          sourceKey: 'release_feed',
+          canonicalUrl: 'https://vendor.example/releases',
+          finalUrl: 'https://vendor.example/releases',
+          objectKey: sourceKey,
+          digest: sha256(sourceBytes),
+          bytes: sourceBytes.byteLength,
+          mediaType: 'text/html',
+          etag: null,
+        },
+      ],
+    }),
+  );
+  const manifestKey = `${releasePrefix}/bundle/${sha256(manifest)}.json`;
+  return new ChangeIntelligenceTools(
+    mockS3(
+      new Map([
+        [manifestKey, manifest],
+        [sourceKey, sourceBytes],
+      ]),
+    ),
+    'artifact-bucket',
+    releaseId,
+    productId,
+    '2.0.0',
+    new Set([sourceId]),
+    manifestKey,
+    sha256(manifest),
+  );
+}
+
 describe('Stage 3C change-intelligence boundary', () => {
   it('uses a generic bounded prompt without fixture-specific runtime rules', () => {
     const gatewaySource = readFileSync(
@@ -355,6 +397,88 @@ describe('Stage 3C change-intelligence boundary', () => {
     );
   });
 
+  it('returns bounded relevant excerpts from a large verified source', async () => {
+    const sourceBytes = Buffer.from(
+      [
+        '<html>',
+        '<nav>upgrade deprecated removed runtime Node.js requirements changelog</nav>',
+        'x'.repeat(320_000),
+        '<article>Migration guide for v2.0.0 requires Node.js 22 and removes the legacy API.</article>',
+        'y'.repeat(320_000),
+        '</html>',
+      ].join(''),
+      'utf8',
+    );
+    const tools = largeEvidenceTools(sourceBytes);
+
+    await tools.initialize();
+    const execution = await tools.execute(
+      'read_vendor_evidence',
+      '{"sourceKey":"release_feed"}',
+      1,
+    );
+    const output = JSON.parse(execution.output) as {
+      content: string;
+      presentation: {
+        mode: string;
+        originalBytes: number;
+        presentedBytes: number;
+        truncated: boolean;
+        matchedTerms: string[];
+      };
+    };
+
+    expect(output).toMatchObject({
+      presentation: {
+        mode: 'relevance_excerpts',
+        originalBytes: sourceBytes.byteLength,
+        truncated: true,
+      },
+    });
+    expect(output.content).toContain('requires Node.js 22');
+    expect(output.content.indexOf('v2.0.0')).toBeLessThan(
+      output.content.indexOf('upgrade'),
+    );
+    expect(output.presentation.matchedTerms).toEqual(
+      expect.arrayContaining(['2.0.0', 'migration', 'node.js']),
+    );
+    expect(output.presentation.presentedBytes).toBeLessThanOrEqual(32 * 1024);
+    expect(Buffer.byteLength(execution.output, 'utf8')).toBeLessThan(96 * 1024);
+  });
+
+  it('falls back to bounded boundary excerpts when a large source has no relevant terms', async () => {
+    const sourceBytes = Buffer.from(
+      `${'a'.repeat(220_000)}${'z'.repeat(220_000)}`,
+      'utf8',
+    );
+    const tools = largeEvidenceTools(sourceBytes);
+
+    await tools.initialize();
+    const execution = await tools.execute(
+      'read_vendor_evidence',
+      '{"sourceKey":"release_feed"}',
+      1,
+    );
+    const output = JSON.parse(execution.output) as {
+      content: string;
+      presentation: {
+        mode: string;
+        presentedBytes: number;
+        truncated: boolean;
+        matchedTerms: string[];
+      };
+    };
+
+    expect(output.presentation).toMatchObject({
+      mode: 'boundary_excerpts',
+      truncated: true,
+      matchedTerms: [],
+    });
+    expect(output.content).toMatch(/^a+/u);
+    expect(output.content).toContain('z');
+    expect(output.presentation.presentedBytes).toBeLessThanOrEqual(32 * 1024);
+  });
+
   it('rejects a manifest that redirects evidence outside its release', async () => {
     const sourceBytes = Buffer.from('evidence');
     const manifest = Buffer.from(
@@ -537,6 +661,10 @@ describe('Stage 3C database and infrastructure policy', () => {
     expect(compute).toContain('ChangeIntelligenceFailed = {');
     expect(compute).toContain('ChangeIntelligenceInfrastructureFailed = {');
     expect(compute).toMatch(/ChangeIntelligenceFailed = \{\s*Type\s+= "Fail"/u);
+    expect(compute).toMatch(
+      /ChangeIntelligenceFailed = \{[\s\S]*?CausePath\s+= "\$\.safeErrorCode"/u,
+    );
+    expect(controller).toContain("'CHANGE_INTELLIGENCE_AGENT_FAILED'");
   });
 
   it('derives generic identity from trusted catalogue state', () => {
