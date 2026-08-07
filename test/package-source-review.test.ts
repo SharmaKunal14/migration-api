@@ -17,6 +17,13 @@ const evidenceRefreshMigration = readFileSync(
   ),
   'utf8',
 );
+const evidenceRefreshDigestFixMigration = readFileSync(
+  new URL(
+    '../supabase/migrations/0037_fix_evidence_refresh_digest_resolution.sql',
+    import.meta.url,
+  ),
+  'utf8',
+);
 
 const migration = readFileSync(
   new URL(
@@ -101,6 +108,15 @@ describe('stage 8C package source review', () => {
     );
     expect(evidenceRefreshMigration).toContain(
       'no newly trusted evidence source is available',
+    );
+  });
+
+  it('resolves pgcrypto from the trusted Supabase extensions schema', () => {
+    expect(evidenceRefreshDigestFixMigration).toContain(
+      'alter function request_package_evidence_refresh(uuid, uuid, integer, uuid)',
+    );
+    expect(evidenceRefreshDigestFixMigration).toContain(
+      'set search_path = extensions, public, pg_temp',
     );
   });
   it('accepts bounded approvals and rejects source URL substitution', () => {
