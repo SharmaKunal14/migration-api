@@ -24,6 +24,13 @@ const evidenceRefreshDigestFixMigration = readFileSync(
   ),
   'utf8',
 );
+const evidenceRefreshBuiltinDigestMigration = readFileSync(
+  new URL(
+    '../supabase/migrations/0038_use_builtin_sha256_for_evidence_refresh.sql',
+    import.meta.url,
+  ),
+  'utf8',
+);
 
 const migration = readFileSync(
   new URL(
@@ -118,6 +125,14 @@ describe('stage 8C package source review', () => {
     expect(evidenceRefreshDigestFixMigration).toContain(
       'set search_path = extensions, public, pg_temp',
     );
+  });
+
+  it('uses PostgreSQL SHA-256 without extension schema privileges', () => {
+    expect(evidenceRefreshBuiltinDigestMigration).toContain('pg_catalog.sha256(');
+    expect(evidenceRefreshBuiltinDigestMigration).toContain(
+      'set search_path = public, pg_temp',
+    );
+    expect(evidenceRefreshBuiltinDigestMigration).not.toContain('digest(');
   });
   it('accepts bounded approvals and rejects source URL substitution', () => {
     expect(
