@@ -9,6 +9,9 @@ function source(relativePath: string): string {
 const migration = source(
   'supabase/migrations/0030_stage_8f_generic_release_ingestion.sql',
 );
+const refreshedDetectionGrant = source(
+  'supabase/migrations/0039_allow_refreshed_release_detection_lookup.sql',
+);
 const compute = source('infra/terraform/environments/development/compute.tf');
 const iam = source('infra/terraform/environments/development/iam.tf');
 const dispatcher = source('services/outbox-dispatcher/src/handler.ts');
@@ -89,6 +92,21 @@ describe('Stage 8F generic release ingestion', () => {
     expect(vendorFetcher).toContain(".on('detection.vendorReleaseId', 'is not', null)");
     expect(vendorFetcher).toContain(
       'release.detectedVendorReleaseId === release.releaseId',
+    );
+    for (const column of [
+      'api_product_id',
+      'version',
+      'source_version',
+      'latest_deprecated',
+      'status',
+    ]) {
+      expect(refreshedDetectionGrant).toContain(column);
+    }
+    expect(refreshedDetectionGrant).toContain(
+      'on package_release_detections to app_runtime',
+    );
+    expect(refreshedDetectionGrant).not.toContain(
+      'grant select on package_release_detections',
     );
   });
 
