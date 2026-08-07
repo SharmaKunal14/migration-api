@@ -268,7 +268,11 @@ describe('stage 8C package source review', () => {
   });
 
   it('shows confirmed packages one evidence panel and one context-aware next action', () => {
-    expect(operatorUi).toContain('Upgrade resources');
+    expect(operatorUi).toContain('Migration evidence · up to 3 exact resources');
+    expect(operatorUi).toContain('Generic homepages and');
+    expect(operatorUi).toContain(
+      'repository roots are deliberately excluded from migration analysis.',
+    );
     expect(operatorUi).toContain("mapping.status === 'mapped' && pendingCount === 0");
     expect(operatorUi).toContain('Suggested search');
     expect(operatorUi).toContain('Find page ↗');

@@ -1959,8 +1959,9 @@ export class ApiRepository implements ApiRepositoryPort {
       if (code === '23514') {
         throw new DomainError(
           'PACKAGE_EVIDENCE_REFRESH_NOT_ELIGIBLE',
-          message === 'no newly trusted evidence source is available'
-            ? 'Confirm at least one new official evidence source before regenerating guidance.'
+          message === 'no newly trusted evidence source is available' ||
+            message === 'no newly trusted migration evidence source is available'
+            ? 'Confirm a new migration guide, changelog, release page, or API reference before regenerating guidance.'
             : 'Only an ambiguous draft with newly confirmed evidence can be regenerated.',
           409,
         );
@@ -4554,6 +4555,9 @@ async function loadPackageSourceMappings(
             from vendor_sources as source
             where source.api_product_id = mapping.api_product_id
               and source.trust_state = 'trusted'
+              and source.source_kind in (
+                'migration_guide', 'changelog', 'release_feed', 'api_definition'
+              )
               and not exists (
                 select 1
                 from vendor_evidence_items as item

@@ -25,12 +25,35 @@ const RESULT_MEDIA_TYPE = 'application/json';
 const STALE_RUN_MS = 20 * 60 * 1000;
 const MAX_REGISTRY_PACKUMENT_BYTES = 32 * 1024 * 1024;
 const MAX_NORMALIZED_REGISTRY_EVIDENCE_BYTES = 64 * 1024;
+const MAX_MIGRATION_GUIDANCE_SOURCES = 3;
+
+const migrationEvidencePriority = new Map<ReleaseEvidenceSource['sourceKind'], number>([
+  ['migration_guide', 0],
+  ['changelog', 1],
+  ['release_feed', 2],
+  ['api_definition', 3],
+]);
 
 interface VendorFetcherDependencies {
   readonly database: AppDatabase;
   readonly s3: S3Client;
   readonly retrieve: typeof retrieveVendorSource;
   readonly now: () => Date;
+}
+
+export interface ReleaseEvidenceSource {
+  readonly id: string;
+  readonly sourceKey: string;
+  readonly sourceKind:
+    | 'package_registry_release'
+    | 'migration_guide'
+    | 'changelog'
+    | 'release_feed'
+    | 'api_definition'
+    | 'sdk_repository_release';
+  readonly canonicalUrl: string;
+  readonly canonicalDomain: string;
+  readonly expectedMediaTypes: readonly string[];
 }
 
 interface ReleaseContext {
@@ -48,12 +71,7 @@ interface ReleaseContext {
     readonly objectKey: string;
     readonly digest: string;
   } | null;
-  readonly sources: readonly {
-    id: string;
-    sourceKey: string;
-    canonicalUrl: string;
-    expectedMediaTypes: readonly string[];
-  }[];
+  readonly sources: readonly ReleaseEvidenceSource[];
 }
 
 interface AcquiredSource {
@@ -319,6 +337,7 @@ async function loadReleaseContext(
     .select([
       'id',
       'sourceKey',
+      'sourceKind',
       'canonicalUrl',
       'expectedMediaTypes',
       'canonicalDomain',
@@ -333,6 +352,17 @@ async function loadReleaseContext(
     sources.some(source => !release.officialDomains.includes(source.canonicalDomain)) ||
     (release.detectedSourceId !== null &&
       !sources.some(source => source.id === release.detectedSourceId))
+  ) {
+    throw new VendorEvidenceError('VENDOR_SOURCE_CATALOGUE_INVALID');
+  }
+  const selectedSources = selectReleaseEvidenceSources(
+    sources,
+    release.detectedSourceId,
+  );
+  if (
+    selectedSources.length === 0 ||
+    (release.detectedSourceId !== null &&
+      !selectedSources.some(source => source.id === release.detectedSourceId))
   ) {
     throw new VendorEvidenceError('VENDOR_SOURCE_CATALOGUE_INVALID');
   }
@@ -356,8 +386,49 @@ async function loadReleaseContext(
     ...release,
     sourceVersion: release.sourceVersion,
     detectedRegistryEvidence,
-    sources,
+    sources: selectedSources,
   };
+}
+
+/**
+ * Keep machine-readable registry evidence plus at most three sources that can
+ * directly explain an upgrade. Generic repository roots are identity evidence,
+ * not migration guidance, and are intentionally excluded from model input.
+ */
+export function selectReleaseEvidenceSources(
+  sources: readonly ReleaseEvidenceSource[],
+  detectedSourceId: string | null,
+): readonly ReleaseEvidenceSource[] {
+  const registrySources = sources
+    .filter(source => source.sourceKind === 'package_registry_release')
+    .sort((left, right) => {
+      const leftDetected = left.id === detectedSourceId ? 0 : 1;
+      const rightDetected = right.id === detectedSourceId ? 0 : 1;
+      return (
+        leftDetected - rightDetected || left.sourceKey.localeCompare(right.sourceKey)
+      );
+    })
+    .slice(0, 1);
+  const guidanceSources = sources
+    .filter(
+      source =>
+        migrationEvidencePriority.has(source.sourceKind) &&
+        !isGenericGithubReleaseHistory(source),
+    )
+    .sort(
+      (left, right) =>
+        (migrationEvidencePriority.get(left.sourceKind) ?? Number.MAX_SAFE_INTEGER) -
+          (migrationEvidencePriority.get(right.sourceKind) ??
+            Number.MAX_SAFE_INTEGER) || left.sourceKey.localeCompare(right.sourceKey),
+    )
+    .slice(0, MAX_MIGRATION_GUIDANCE_SOURCES);
+  return [...registrySources, ...guidanceSources];
+}
+
+function isGenericGithubReleaseHistory(source: ReleaseEvidenceSource): boolean {
+  if (source.sourceKind !== 'release_feed') return false;
+  const url = new URL(source.canonicalUrl);
+  return url.hostname === 'github.com' && /\/releases\/?$/u.test(url.pathname);
 }
 
 export async function readDetectedRegistryEvidence(

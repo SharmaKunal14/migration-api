@@ -12,11 +12,15 @@ const migration = source(
 const refreshedDetectionGrant = source(
   'supabase/migrations/0039_allow_refreshed_release_detection_lookup.sql',
 );
+const evidenceSelection = source(
+  'supabase/migrations/0041_prioritize_exact_migration_evidence.sql',
+);
 const compute = source('infra/terraform/environments/development/compute.tf');
 const iam = source('infra/terraform/environments/development/iam.tf');
 const dispatcher = source('services/outbox-dispatcher/src/handler.ts');
 const repository = source('services/api/src/repository.ts');
 const vendorFetcher = source('workers/vendor-fetcher/src/main.ts');
+const intelligenceGateway = source('workers/change-intelligence-agent/src/gateway.ts');
 const web = source('apps/web/src/app.tsx');
 const styles = source('apps/web/src/styles.css');
 
@@ -107,6 +111,45 @@ describe('Stage 8F generic release ingestion', () => {
     );
     expect(refreshedDetectionGrant).not.toContain(
       'grant select on package_release_detections',
+    );
+  });
+
+  it('uses exact migration evidence instead of guessed files or repository history', () => {
+    expect(evidenceSelection).not.toContain("repository_root || '/releases'");
+    expect(evidenceSelection).not.toContain(
+      "repository_root || '/blob/HEAD/CHANGELOG.md'",
+    );
+    expect(evidenceSelection).not.toContain(
+      "repository_root || '/blob/HEAD/MIGRATION.md'",
+    );
+    expect(evidenceSelection).toContain(
+      "'migration_guide', 'changelog', 'release_feed', 'api_definition'",
+    );
+    expect(evidenceSelection).toContain(
+      'no newly trusted migration evidence source is available',
+    );
+    expect(repository).toContain(
+      "'migration_guide', 'changelog', 'release_feed', 'api_definition'",
+    );
+    expect(vendorFetcher).toContain('MAX_MIGRATION_GUIDANCE_SOURCES = 3');
+    expect(vendorFetcher).toContain("['migration_guide', 0]");
+    expect(vendorFetcher).toContain("['changelog', 1]");
+    expect(vendorFetcher).toContain("['release_feed', 2]");
+    expect(vendorFetcher).toContain("source.sourceKind === 'package_registry_release'");
+    expect(vendorFetcher).not.toContain(
+      "migrationEvidencePriority.set('sdk_repository_release'",
+    );
+  });
+
+  it('does not turn undocumented transitive dependency churn into a blocker', () => {
+    expect(intelligenceGateway).toContain(
+      'Do not create a change solely because an internal or transitive dependency version changed.',
+    );
+    expect(intelligenceGateway).toContain(
+      'It must not become a blocking ambiguous change unless publisher evidence identifies an affected public API',
+    );
+    expect(intelligenceGateway).toContain(
+      'Use an ambiguous change only when a public migration surface is established',
     );
   });
 

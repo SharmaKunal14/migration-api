@@ -1081,10 +1081,11 @@ function PackageSourceMappingCard({
       {mapping.status === 'mapped' && pendingCount === 0 && (
         <section className="source-evidence-controls">
           <div>
-            <h3>Upgrade resources</h3>
+            <h3>Migration evidence · up to 3 exact resources</h3>
             <p>
-              Confirmed links are ready to use. Suggested searches only help you find an
-              exact publisher page; add that page below before it can be trusted.
+              Use only publisher pages that explain this upgrade. npm and the source
+              repository establish package identity, but they are not migration
+              guidance.
             </p>
           </div>
           <ul className="source-recommendation-list">
@@ -1100,6 +1101,7 @@ function PackageSourceMappingCard({
                       : 'Suggested search'}
                   </span>
                 </div>
+                <p>{recommendation.purpose}</p>
                 <a
                   className="source-recommendation-link"
                   href={recommendation.href}
@@ -1115,7 +1117,7 @@ function PackageSourceMappingCard({
           </ul>
           {evidenceRecommendations.length < 3 && (
             <p className="source-recommendation-shortfall">
-              Only {String(evidenceRecommendations.length)} credible{' '}
+              Only {String(evidenceRecommendations.length)} useful{' '}
               {evidenceRecommendations.length === 1 ? 'resource was' : 'resources were'}{' '}
               found. Add another only if you can verify that the publisher owns it.
             </p>
@@ -1123,8 +1125,8 @@ function PackageSourceMappingCard({
           <details className="source-evidence-custom">
             <summary>Add the exact official page</summary>
             <p>
-              Paste an exact publisher-owned migration guide, changelog, or release
-              page. It will require confirmation before the system trusts it.
+              Paste the exact publisher-owned page you found. Generic homepages and
+              repository roots are deliberately excluded from migration analysis.
             </p>
             <div className="source-evidence-addition">
               <select
@@ -1137,7 +1139,6 @@ function PackageSourceMappingCard({
                 <option value="migration_guide">Migration guide</option>
                 <option value="changelog">Changelog</option>
                 <option value="release_feed">Release page or feed</option>
-                <option value="sdk_repository_release">Source repository</option>
               </select>
               <input
                 aria-label="Official evidence URL"
@@ -3834,14 +3835,14 @@ function packageSourceReviewCopy(kind: PublicPackageSourceCandidate['sourceKind'
       description: 'Provides the concrete steps needed to update application code.',
     },
     release_feed: {
-      step: 'Fallback · Release notes',
-      title: 'Official release page',
-      description: 'Use when the package does not publish a useful changelog.',
+      step: '3 · Confirm the target release',
+      title: 'Official release notes',
+      description: 'Confirms target-specific behavior, warnings, and compatibility.',
     },
     sdk_repository_release: {
-      step: 'Fallback · Project source',
+      step: 'Package identity',
       title: 'Official source repository',
-      description: 'Use to locate package-owned upgrade documentation.',
+      description: 'Establishes which publisher repository owns this package.',
     },
   };
   return (

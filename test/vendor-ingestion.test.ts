@@ -18,7 +18,9 @@ import {
   bundleObjectKey,
   readDetectedRegistryEvidence,
   resultObjectKey,
+  selectReleaseEvidenceSources,
   sourceObjectKey,
+  type ReleaseEvidenceSource,
 } from '../workers/vendor-fetcher/src/main.js';
 
 const detectedSourceId = '5bbb0741-98ec-4104-b19f-58ae8fc8b67f';
@@ -307,11 +309,71 @@ describe('Stage 3B contracts and keys', () => {
   });
 });
 
+describe('release evidence selection', () => {
+  const evidenceSource = (
+    sourceKind: ReleaseEvidenceSource['sourceKind'],
+    sourceKey: string,
+  ): ReleaseEvidenceSource => ({
+    id: crypto.randomUUID(),
+    sourceKind,
+    sourceKey,
+    canonicalUrl: `https://docs.example.com/${sourceKey}`,
+    canonicalDomain: 'docs.example.com',
+    expectedMediaTypes: ['text/html'],
+  });
+
+  it('keeps registry evidence and only the three highest-signal migration sources', () => {
+    const registry = evidenceSource('package_registry_release', 'package_registry');
+    const repository = evidenceSource('sdk_repository_release', 'sdk_repository');
+    const migrationGuide = evidenceSource('migration_guide', 'migration_guide');
+    const changelog = evidenceSource('changelog', 'changelog');
+    const releases = evidenceSource('release_feed', 'release_feed');
+    const apiDefinition = evidenceSource('api_definition', 'target_api');
+
+    expect(
+      selectReleaseEvidenceSources(
+        [repository, apiDefinition, releases, changelog, registry, migrationGuide],
+        registry.id,
+      ).map(item => item.sourceKind),
+    ).toEqual([
+      'package_registry_release',
+      'migration_guide',
+      'changelog',
+      'release_feed',
+    ]);
+  });
+
+  it('never sends a generic repository root to change intelligence', () => {
+    const repository = evidenceSource('sdk_repository_release', 'sdk_repository');
+
+    expect(selectReleaseEvidenceSources([repository], null)).toEqual([]);
+  });
+
+  it('uses an exact GitHub release page instead of complete release history', () => {
+    const history = {
+      ...evidenceSource('release_feed', 'release_feed'),
+      canonicalUrl: 'https://github.com/fastify/fastify/releases',
+      canonicalDomain: 'github.com',
+    };
+    const targetRelease = {
+      ...evidenceSource('release_feed', 'target_release'),
+      canonicalUrl: 'https://github.com/fastify/fastify/releases/tag/v5.0.0',
+      canonicalDomain: 'github.com',
+    };
+
+    expect(selectReleaseEvidenceSources([history, targetRelease], null)).toEqual([
+      targetRelease,
+    ]);
+  });
+});
+
 describe('Stage 8F detected registry evidence', () => {
   const sourceDefinition = {
     id: detectedSourceId,
     sourceKey: 'package_registry',
+    sourceKind: 'package_registry_release',
     canonicalUrl: 'https://registry.npmjs.org/%40types%2Fnode',
+    canonicalDomain: 'registry.npmjs.org',
     expectedMediaTypes: ['application/json'],
   } as const;
   const releaseRoute = {
