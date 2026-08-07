@@ -320,6 +320,7 @@ class FakeRepository implements ApiRepositoryPort {
       },
       workflowExecutionArn: null,
       outboxPending: true,
+      specificationExists: false,
     }),
   );
   public readonly retryPackageReleasePilotBackfillMock = vi.fn<
@@ -1583,6 +1584,7 @@ describe('API handler trust boundary', () => {
       },
       workflowExecutionArn,
       outboxPending: false,
+      specificationExists: false,
     });
     const dependency: ApiDependencies = {
       ...dependencies(repository),
@@ -1630,6 +1632,7 @@ describe('API handler trust boundary', () => {
       workflowExecutionArn:
         'arn:aws:states:ap-southeast-2:123456789012:execution:vendor-ingestion:running',
       outboxPending: false,
+      specificationExists: false,
     });
     const response = await handleRequest(
       event(
@@ -1648,6 +1651,97 @@ describe('API handler trust boundary', () => {
     expect(repository.retryPackageReleasePilotBackfillMock).not.toHaveBeenCalled();
     expect(parsedBody(response)).toMatchObject({
       backfill: { queueState: 'in_progress' },
+    });
+  });
+
+  it('requeues a completed pilot when its specification is missing', async () => {
+    const repository = new FakeRepository();
+    const workflowExecutionArn =
+      'arn:aws:states:ap-southeast-2:123456789012:execution:vendor-ingestion:succeeded';
+    repository.requestPackageReleasePilotBackfillMock.mockResolvedValueOnce({
+      backfill: {
+        detectionId: runId,
+        vendorReleaseId: organisationId,
+        sourceVersion: '5.9.0',
+        targetVersion: '5.10.0',
+        created: false,
+      },
+      workflowExecutionArn,
+      outboxPending: false,
+      specificationExists: false,
+    });
+    const dependency: ApiDependencies = {
+      ...dependencies(repository),
+      workflowExecutionInspector: {
+        describe: vi.fn(() => Promise.resolve('SUCCEEDED' as const)),
+      },
+    };
+
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-mappings/${organisationId}/pilot-backfill`,
+        { expectedMappingVersion: 1 },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-release-backfill:missing-01J7Y5ABCH',
+        },
+      ),
+      dependency,
+    );
+
+    expect(response.statusCode).toBe(202);
+    expect(repository.retryPackageReleasePilotBackfillMock).toHaveBeenCalledWith(
+      userId,
+      expect.objectContaining({
+        detectionId: runId,
+        expectedWorkflowExecutionArn: workflowExecutionArn,
+      }),
+    );
+    expect(parsedBody(response)).toMatchObject({
+      backfill: { created: false, queueState: 'queued' },
+    });
+  });
+
+  it('does not requeue a completed pilot when its specification exists', async () => {
+    const repository = new FakeRepository();
+    repository.requestPackageReleasePilotBackfillMock.mockResolvedValueOnce({
+      backfill: {
+        detectionId: runId,
+        vendorReleaseId: organisationId,
+        sourceVersion: '5.9.0',
+        targetVersion: '5.10.0',
+        created: false,
+      },
+      workflowExecutionArn:
+        'arn:aws:states:ap-southeast-2:123456789012:execution:vendor-ingestion:succeeded',
+      outboxPending: false,
+      specificationExists: true,
+    });
+    const dependency: ApiDependencies = {
+      ...dependencies(repository),
+      workflowExecutionInspector: {
+        describe: vi.fn(() => Promise.resolve('SUCCEEDED' as const)),
+      },
+    };
+
+    const response = await handleRequest(
+      event(
+        'POST',
+        `/api/v1/operator/package-source-mappings/${organisationId}/pilot-backfill`,
+        { expectedMappingVersion: 1 },
+        {
+          authorization: 'Bearer valid.token.value',
+          'idempotency-key': 'package-release-backfill:complete-01J7Y5ABCH',
+        },
+      ),
+      dependency,
+    );
+
+    expect(response.statusCode).toBe(202);
+    expect(repository.retryPackageReleasePilotBackfillMock).not.toHaveBeenCalled();
+    expect(parsedBody(response)).toMatchObject({
+      backfill: { created: false, queueState: 'completed' },
     });
   });
 

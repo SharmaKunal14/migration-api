@@ -163,6 +163,7 @@ export interface PackageReleasePilotBackfillDispatch {
   readonly backfill: Omit<PublicPackageReleasePilotBackfill, 'queueState'>;
   readonly workflowExecutionArn: string | null;
   readonly outboxPending: boolean;
+  readonly specificationExists: boolean;
 }
 
 export interface RetryPackageReleasePilotBackfillInput {
@@ -4361,6 +4362,11 @@ async function loadPackageReleasePilotBackfillDispatch(
       404,
     );
   }
+  const specification = await database
+    .selectFrom('migrationSpecifications')
+    .select('id')
+    .where('vendorReleaseId', '=', row.vendorReleaseId)
+    .executeTakeFirst();
   return {
     backfill: {
       detectionId: row.detectionId,
@@ -4371,6 +4377,7 @@ async function loadPackageReleasePilotBackfillDispatch(
     },
     workflowExecutionArn: row.workflowExecutionArn,
     outboxPending: row.deliveredAt === null,
+    specificationExists: specification !== undefined,
   };
 }
 

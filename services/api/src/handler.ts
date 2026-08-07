@@ -714,7 +714,8 @@ async function reconcilePackageReleasePilotBackfill(
     status === 'FAILED' ||
     status === 'TIMED_OUT' ||
     status === 'ABORTED' ||
-    status === 'NOT_FOUND'
+    status === 'NOT_FOUND' ||
+    (status === 'SUCCEEDED' && !dispatch.specificationExists)
   ) {
     await repository.retryPackageReleasePilotBackfill(userId, {
       detectionId: dispatch.backfill.detectionId,

@@ -13,7 +13,7 @@ const vendorFetcherGrant = source(
   'supabase/migrations/0033_vendor_fetcher_release_detection_read.sql',
 );
 const workflowRetry = source(
-  'supabase/migrations/0034_pilot_release_workflow_retry.sql',
+  'supabase/migrations/0040_requeue_missing_pilot_specification.sql',
 );
 const dispatchReader = source(
   'supabase/migrations/0035_pilot_backfill_dispatch_reader.sql',
@@ -76,13 +76,16 @@ describe('Stage 8H current release pilot backfill', () => {
 
   it('requeues only a terminal workflow through an audited operator operation', () => {
     expect(workflowRetry).toContain(
-      'create function requeue_current_package_release_pilot_backfill',
+      'create or replace function requeue_current_package_release_pilot_backfill',
     );
     expect(workflowRetry).toContain('if not is_platform_operator');
     expect(workflowRetry).toContain(
       'current_outbox.workflow_execution_arn is distinct from',
     );
     expect(workflowRetry).toContain('delivered_at = null');
+    expect(workflowRetry).toContain("release.processing_state = 'validated'");
+    expect(workflowRetry).toContain("ingestion.status = 'succeeded'");
+    expect(workflowRetry).toContain('from migration_specifications as specification');
     expect(workflowRetry).toContain("'package_release.pilot_backfill_requeued'");
     expect(workflowRetry).toContain('grant execute on function');
     expect(dispatcher).toContain(
